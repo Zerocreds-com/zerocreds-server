@@ -1,0 +1,15 @@
+{
+  "name": "zerocreds-server",
+  "version": "0.1.0",
+  "description": "Self-hosted auth form server — credentials never leave your machine",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
