@@ -23,7 +23,7 @@ setInterval(() => {
       console.log(`[nalog-login] session ${id} expired`);
     }
   }
-}, 5 * 60 * 1000);
+}, 5 * 60 * 1000).unref();
 
 /**
  * Phase 1: navigate to lknpd.nalog.ru, redirect through ESIA, fill credentials.
