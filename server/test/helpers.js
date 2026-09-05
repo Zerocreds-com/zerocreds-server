@@ -33,6 +33,8 @@ async function startServer(opts = {}) {
   return {
     port, adminToken, tmpDir, pendingDir, tokensDir, savedDir, integratorsFile, destinationsFile, server,
     async stop() {
+      http.globalAgent.destroy();
+      server.closeAllConnections();
       await new Promise(r => server.close(r));
       fs.rmSync(tmpDir, { recursive: true, force: true });
     },
