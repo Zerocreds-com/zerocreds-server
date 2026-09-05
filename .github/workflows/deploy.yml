@@ -18,8 +18,8 @@ jobs:
             set -e
             cd ~/zerocreds-server
             git pull origin main
-            EXPECTED=$(git rev-parse --short HEAD)
-            cd server && npm install --production
+            EXPECTED=$(git rev-parse HEAD | cut -c1-12)
+            cd server && npm install --omit=dev
             systemctl restart zerocreds-server
             sleep 2
             LIVE=$(curl -s http://localhost:3456/version | python3 -c "import sys,json; print(json.load(sys.stdin)['commit'])")
