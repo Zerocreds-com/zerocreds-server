@@ -109,7 +109,7 @@
   }
   .btn-outline:hover { border-color: var(--muted); color: var(--text); }
 
-  /* ── TERMINAL ── */
+  /* ── TERMINAL / REGISTER WIDGET ── */
   .hero-right { padding-top: 8px; }
   .terminal-wrap {
     border: 1px solid var(--term-border);
@@ -125,23 +125,72 @@
     font-family: var(--mono); font-size: 11px; color: #555;
     letter-spacing: 0.05em; margin-left: 8px;
   }
-  .service-tabs { margin-left: auto; display: flex; gap: 2px; }
-  .stab {
-    font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em;
-    padding: 4px 10px; border: 1px solid var(--term-border);
-    background: transparent; color: #555; cursor: pointer; transition: all .15s;
-  }
-  .stab:hover { color: #ccc; border-color: #555; }
-  .stab.active { background: #2a2a2a; color: #f0f0f0; border-color: #444; }
-  .terminal-body { padding: 22px 20px; font-family: var(--mono); font-size: 13px; line-height: 2; min-height: 220px; }
+  .reg-widget { padding: 24px 22px; font-family: var(--mono); font-size: 13px; line-height: 1.9; }
   .t-prompt { color: #444; }
   .t-dim { color: #3a3a3a; }
-  .t-out { color: #555; }
   .t-key { color: #888; }
   .t-val { color: #b0b0b0; }
-  .t-ok { color: #7a7a7a; }
   .t-green { color: #5a8a5a; }
   .t-comment { color: #3a5a3a; }
+  .t-str { color: #b0b0b0; }
+  .t-err { color: #a05050; }
+  /* inline editable fields inside code block */
+  .term-input {
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid #3a3a3a;
+    color: #d4a853;
+    font-family: var(--mono); font-size: 13px;
+    outline: none; padding: 0 2px;
+    width: 200px;
+    transition: border-color .15s;
+  }
+  .term-input:focus { border-bottom-color: #666; }
+  .term-select {
+    background: #181818;
+    border: 1px solid #3a3a3a;
+    color: #d4a853;
+    font-family: var(--mono); font-size: 12px;
+    outline: none; padding: 1px 4px;
+    cursor: pointer;
+  }
+  .term-select:focus { border-color: #666; }
+  /* response block */
+  .reg-response {
+    margin-top: 16px;
+    border-top: 1px solid #222;
+    padding-top: 14px;
+  }
+  .token-display-line {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  .token-val {
+    color: #5a8a5a; word-break: break-all;
+  }
+  .copy-btn {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em;
+    background: #2a2a2a; color: #888; border: 1px solid #3a3a3a;
+    padding: 2px 10px; cursor: pointer; transition: all .15s; white-space: nowrap;
+  }
+  .copy-btn:hover { color: #f0f0f0; border-color: #666; }
+  /* get token button */
+  .reg-run-btn {
+    margin-top: 20px;
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.1em;
+    text-transform: uppercase;
+    background: #1a2a1a; color: #5a8a5a;
+    border: 1px solid #2a3a2a; padding: 10px 22px;
+    cursor: pointer; transition: all .15s; display: inline-block;
+  }
+  .reg-run-btn:hover { background: #223322; border-color: #3a5a3a; color: #7aaa7a; }
+  .reg-run-btn:disabled { opacity: .4; cursor: default; }
+  .reg-alt {
+    margin-top: 14px;
+    font-family: var(--mono); font-size: 11px; color: #444;
+    letter-spacing: 0.05em;
+  }
+  .reg-alt a { color: #555; text-decoration: underline; cursor: pointer; }
+  .reg-alt a:hover { color: #888; }
   .cursor {
     display: inline-block; width: 8px; height: 14px;
     background: #555; vertical-align: middle;
@@ -499,61 +548,44 @@
     <div class="terminal-wrap">
       <div class="terminal-bar">
         <div class="dot"></div><div class="dot"></div><div class="dot"></div>
-        <span class="terminal-title">zerocreds · quick connect</span>
-        <div class="service-tabs">
-          <button class="stab active" onclick="switchSvc('register',this)">Register</button>
-          <button class="stab" onclick="switchSvc('create',this)">Create form</button>
-          <button class="stab" onclick="switchSvc('done',this)">Done</button>
+        <span class="terminal-title">POST /api/register</span>
+      </div>
+
+      <div class="reg-widget">
+        <div><span class="t-comment"># Get your API token — edit and run:</span></div>
+        <div>&nbsp;</div>
+        <div><span style="color:#7ec8e3">curl</span> <span class="t-dim">-X POST \</span></div>
+        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-val">https://zerocreds.ru/api/register</span> <span class="t-dim">\</span></div>
+        <div><span class="t-dim">&nbsp;&nbsp;-H </span><span class="t-str">"Content-Type: application/json"</span> <span class="t-dim">\</span></div>
+        <div><span class="t-dim">&nbsp;&nbsp;-d '{</span></div>
+        <div>
+          <span class="t-dim">&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="t-key">"email"</span><span class="t-dim">:</span>
+          <span class="t-dim">"</span><input class="term-input" id="ri-email" type="email" value="you@company.com" placeholder="you@company.com" spellcheck="false"><span class="t-dim">",</span>
         </div>
-      </div>
+        <div>
+          <span class="t-dim">&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="t-key">"website"</span><span class="t-dim">:</span>
+          <span class="t-dim">"</span><input class="term-input" id="ri-website" type="text" value="https://yourapp.com" placeholder="https://yourapp.com" style="width:160px" spellcheck="false"><span class="t-dim">",</span>
+        </div>
+        <div>
+          <span class="t-dim">&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="t-key">"category"</span><span class="t-dim">:</span>
+          <span class="t-dim">"</span><select class="term-select" id="ri-category">
+            <option value="ai_agent">ai_agent</option>
+            <option value="saas">saas</option>
+            <option value="internal">internal</option>
+            <option value="personal">personal</option>
+            <option value="other">other</option>
+          </select><span class="t-dim">"</span>
+        </div>
+        <div><span class="t-dim">&nbsp;&nbsp;}'</span></div>
 
-      <div class="terminal-body" id="term-register">
-        <div><span class="t-comment"># One curl to get your API token:</span></div>
-        <div>&nbsp;</div>
-        <div><span class="t-prompt">POST </span><span class="t-val">https://zerocreds.ru/api/register</span></div>
-        <div class="t-dim">{</div>
-        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">"email":</span> <span class="t-str">"you@company.com"</span><span class="t-dim">,</span></div>
-        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">"website":</span> <span class="t-str">"https://yourapp.com"</span><span class="t-dim">,</span></div>
-        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">"category":</span> <span class="t-str">"ai_agent"</span></div>
-        <div class="t-dim">}</div>
-        <div>&nbsp;</div>
-        <div><span class="t-prompt">← </span><span class="t-val">{</span></div>
-        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">"token":</span> <span class="t-green">"tok_7f3a1c2d4e5b6f8a…"</span><span class="t-dim">,</span></div>
-        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">"base_url":</span> <span class="t-str">"https://zerocreds.ru"</span></div>
-        <div><span class="t-val">}</span></div>
-        <div>&nbsp;</div>
-        <div class="t-green">✓ Token is yours. No credit card. Free.</div>
-        <div><span class="t-prompt">$ </span><span class="cursor"></span></div>
-      </div>
+        <div id="reg-response" class="reg-response" style="display:none">
+          <div id="reg-resp-content"></div>
+        </div>
 
-      <div class="terminal-body" id="term-create" style="display:none">
-        <div><span class="t-comment"># Use the token — create a credential form session:</span></div>
-        <div>&nbsp;</div>
-        <div><span class="t-prompt">POST </span><span class="t-val">/api/session/create</span></div>
-        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">Authorization:</span> <span class="t-str">Bearer tok_7f3a…</span></div>
-        <div class="t-dim">{</div>
-        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">"title":</span> <span class="t-str">"Connect GitHub"</span><span class="t-dim">,</span></div>
-        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">"fields":</span> <span class="t-str">[{name:"token", type:"password"}]</span><span class="t-dim">,</span></div>
-        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">"destination":</span> <span class="t-str">"prod-gcp"</span></div>
-        <div class="t-dim">}</div>
-        <div>&nbsp;</div>
-        <div><span class="t-prompt">← </span><span class="t-val">{ "url": "https://zerocreds.ru/f/8a3f…" }</span></div>
-        <div>&nbsp;</div>
-        <div><span class="t-dim">→ Send this link to your user</span></div>
-      </div>
-
-      <div class="terminal-body" id="term-done" style="display:none">
-        <div><span class="t-comment"># User filled the form. Poll for status:</span></div>
-        <div>&nbsp;</div>
-        <div><span class="t-prompt">GET </span><span class="t-val">/api/session/8a3f…/status</span></div>
-        <div><span class="t-prompt">← </span><span class="t-val">{ status: <span class="t-green">"done"</span> }</span></div>
-        <div>&nbsp;</div>
-        <div><span class="t-comment"># Credentials in GCP Secret Manager.</span></div>
-        <div><span class="t-comment"># ZeroCreds used secretVersionAdder — can't read back.</span></div>
-        <div><span class="t-comment"># Your runtime reads with a separate secretAccessor role.</span></div>
-        <div>&nbsp;</div>
-        <div class="t-green">Agent never saw the credentials. Ever.</div>
-        <div><span class="t-prompt">$ </span><span class="cursor"></span></div>
+        <div style="margin-top:20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+          <button class="reg-run-btn" id="reg-run-btn" onclick="runRegister()">Get token →</button>
+          <span class="reg-alt">or <a onclick="getToken()">fill form</a></span>
+        </div>
       </div>
     </div>
   </div>
@@ -896,31 +928,6 @@
 </div>
 
 <script>
-const SVCS = ['register', 'create', 'done'];
-let autoIdx = 0;
-let autoTimer;
-
-function switchSvc(svc, btn) {
-  clearInterval(autoTimer);
-  _show(svc);
-  autoIdx = SVCS.indexOf(svc);
-  startAuto();
-}
-function _show(svc) {
-  document.querySelectorAll('.terminal-body').forEach(el => el.style.display = 'none');
-  document.querySelectorAll('.stab').forEach(el => el.classList.remove('active'));
-  document.getElementById('term-' + svc).style.display = 'block';
-  const btn = document.querySelector(`.stab[onclick*="${svc}"]`);
-  if (btn) btn.classList.add('active');
-}
-function startAuto() {
-  autoTimer = setInterval(() => {
-    autoIdx = (autoIdx + 1) % SVCS.length;
-    _show(SVCS[autoIdx]);
-  }, 4000);
-}
-startAuto();
-
 let _token = '';
 
 function getToken() {
@@ -928,6 +935,53 @@ function getToken() {
   document.getElementById('token-modal-body').style.display = 'none';
   document.getElementById('reg-error').style.display = 'none';
   document.getElementById('token-modal').style.display = 'flex';
+}
+
+async function runRegister() {
+  const email = document.getElementById('ri-email').value.trim();
+  const website = document.getElementById('ri-website').value.trim();
+  const category = document.getElementById('ri-category').value;
+  if (!email.includes('@')) {
+    showResp('<span class="t-err">← { "error": "valid email required" }</span>');
+    return;
+  }
+  const btn = document.getElementById('reg-run-btn');
+  btn.disabled = true; btn.textContent = 'Running…';
+  try {
+    const r = await fetch('https://zerocreds.ru/api/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, website, category })
+    });
+    const data = await r.json();
+    if (!r.ok) { showResp(`<span class="t-err">← { "error": "${data.error}" }</span>`); return; }
+    _token = data.token;
+    showResp(`<div><span class="t-prompt">← </span><span class="t-val">{</span></div>
+<div>&nbsp;&nbsp;<span class="t-key">"token"</span><span class="t-dim">:</span> <span class="token-val" id="resp-tok">${data.token}</span><span class="t-dim">,</span></div>
+<div>&nbsp;&nbsp;<span class="t-key">"base_url"</span><span class="t-dim">:</span> <span class="t-str">"https://zerocreds.ru"</span></div>
+<div><span class="t-val">}</span></div>
+<div style="margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+  <span class="t-green">✓ Token saved. Use it as Bearer in API requests.</span>
+  <button class="copy-btn" id="tok-copy-btn" onclick="copyTok()">copy token</button>
+</div>`);
+  } catch(e) {
+    showResp(`<span class="t-err">← network error: ${e.message}</span>`);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Get token →';
+  }
+}
+
+function showResp(html) {
+  const el = document.getElementById('reg-response');
+  document.getElementById('reg-resp-content').innerHTML = html;
+  el.style.display = '';
+}
+
+function copyTok() {
+  navigator.clipboard.writeText(_token).then(() => {
+    const b = document.getElementById('tok-copy-btn');
+    if (b) { b.textContent = 'copied!'; setTimeout(() => b.textContent = 'copy token', 2000); }
+  });
 }
 function closeModal() {
   document.getElementById('token-modal').style.display = 'none';
