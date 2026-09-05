@@ -349,12 +349,19 @@ const server = http.createServer(async (req, res) => {
   // Self-serve: anyone can get a token. Rate-limited to 3 per IP per hour.
   if (req.method === 'POST' && url.pathname === '/api/register') {
     const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
-    if (!checkRegisterLimit(ip)) return json(res, 429, { error: 'too many registrations, try again later' });
+    if (!checkRegisterLimit(ip)) return json(res, 429, { error: 'Too many registrations from this IP. Try again in an hour.' });
+    const body = await readBody(req);
+    let payload = {};
+    try { payload = JSON.parse(body); } catch {}
+    const { email, website, category } = payload;
+    if (!email || !email.includes('@')) return json(res, 400, { error: 'Valid email is required' });
+    const VALID_CATEGORIES = ['ai_agent', 'saas', 'internal', 'personal', 'other'];
+    if (!category || !VALID_CATEGORIES.includes(category)) return json(res, 400, { error: 'Category is required' });
     const token = 'tok_' + crypto.randomBytes(20).toString('hex');
     const id = 'u_' + crypto.randomBytes(6).toString('hex');
-    INTEGRATORS[token] = { id, name: id, destinations: {}, created: new Date().toISOString() };
+    INTEGRATORS[token] = { id, name: id, email, website: website || '', category, destinations: {}, created: new Date().toISOString() };
     saveIntegrators();
-    console.log(`[register] new integrator: ${id} from ${ip}`);
+    console.log(`[register] new integrator: ${id} email=${email} category=${category} from ${ip}`);
     return json(res, 200, { token, base_url: process.env.ZEROCREDS_BASE_URL || 'https://zerocreds.ru' });
   }
 
