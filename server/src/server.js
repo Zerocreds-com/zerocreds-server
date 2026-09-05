@@ -151,6 +151,11 @@ function parseCookieUid(req) {
   return m ? m[1] : null;
 }
 
+function getOrCreateUid(req) {
+  const existing = parseCookieUid(req);
+  return { uid: existing || crypto.randomUUID(), hadCookie: !!existing };
+}
+
 function cookieSetHeader(uid, req) {
   const secure = req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '';
   return `zc_uid=${uid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000${secure}`;
@@ -166,7 +171,7 @@ function writeSaved(uid, submittedFields, fieldDefs) {
   if (!uid) return;
   const existing = readSaved(uid);
   for (const f of fieldDefs) {
-    if (f.type !== 'password' && submittedFields[f.name] !== undefined) {
+    if (f.type !== 'password' && submittedFields[f.name] !== undefined && submittedFields[f.name] !== '') {
       existing[f.name] = submittedFields[f.name];
     }
   }
@@ -381,7 +386,7 @@ const server = http.createServer(async (req, res) => {
     let payload;
     try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
 
-    let { title, description, fields, destination, ttl_minutes = 30, notify } = payload;
+    let { title, description, fields, destination, ttl_minutes = 30, notify, allow_save } = payload;
     if (!title || !Array.isArray(fields) || fields.length === 0 || !destination) {
       return json(res, 400, { error: 'missing title, fields, or destination' });
     }
@@ -408,7 +413,8 @@ const server = http.createServer(async (req, res) => {
     const expires = Date.now() + Math.min(Math.max(ttl_minutes, 1), 1440) * 60 * 1000;
 
     const pending = { token, title, description, fields, destination, expires, notify,
-      integrator_id: integrator?.id || 'admin' };
+      integrator_id: integrator?.id || 'admin',
+      allowSave: allow_save !== false };
     fs.mkdirSync(CONNECT_PENDING_DIR, { recursive: true });
     fs.writeFileSync(path.join(CONNECT_PENDING_DIR, `${token}.json`), JSON.stringify(pending), { mode: 0o600 });
 
@@ -453,8 +459,7 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(410, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
         return;
       }
-      let uid = parseCookieUid(req);
-      if (!uid) uid = crypto.randomUUID();
+      const { uid } = getOrCreateUid(req);
       const savedValues = readSaved(uid);
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
@@ -488,6 +493,16 @@ const server = http.createServer(async (req, res) => {
         if (submitted[f.name] !== undefined) clean[f.name] = String(submitted[f.name]);
       }
 
+      // Validate url fields
+      for (const f of pending.fields) {
+        if (f.type === 'url' && clean[f.name]) {
+          try {
+            const u = new URL(clean[f.name]);
+            if (!['http:', 'https:'].includes(u.protocol)) throw new Error();
+          } catch { return json(res, 400, { error: `invalid URL for field: ${f.name}` }); }
+        }
+      }
+
       try {
         await saveToDestination(pending.destination, clean);
       } catch (e) {
@@ -499,11 +514,11 @@ const server = http.createServer(async (req, res) => {
       // Leave a .done marker so status endpoint knows it completed
       try { fs.writeFileSync(path.join(CONNECT_PENDING_DIR, `${token}.done`), '', { mode: 0o600 }); } catch {}
 
-      let uid = parseCookieUid(req);
-      if (!uid) uid = crypto.randomUUID();
-      if (save) writeSaved(uid, clean, pending.fields);
+      const { uid, hadCookie } = getOrCreateUid(req);
+      if (save && pending.allowSave) writeSaved(uid, clean, pending.fields);
 
-      json(res, 200, { ok: true }, { 'Set-Cookie': cookieSetHeader(uid, req) });
+      const respHeaders = (save || hadCookie) ? { 'Set-Cookie': cookieSetHeader(uid, req) } : {};
+      json(res, 200, { ok: true }, respHeaders);
 
       if (pending.notify?.tg_bot_token) {
         tgNotify(pending.notify.tg_bot_token, pending.notify.tg_chat_id,
@@ -674,9 +689,12 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
   function escAttr(s) {
     return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   }
+  function escHtml(s) {
+    return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
 
   const hasNonPasswordFields = fields.some(f => f.type !== 'password');
-  const hasSavedData = hasNonPasswordFields && fields.some(f => f.type !== 'password' && savedValues[f.name]);
+  const hasSavedData = hasNonPasswordFields && fields.some(f => f.type !== 'password' && savedValues[f.name] !== undefined && savedValues[f.name] !== '');
 
   const fieldHtml = fields.map(f => {
     const type = f.type || 'text';
@@ -684,13 +702,13 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
     const req = f.required !== false ? 'required' : '';
     if (type === 'textarea') {
       const val = escAttr(savedValues[f.name] || '');
-      return `<label for="f_${f.name}">${f.label}</label><textarea id="f_${f.name}" name="${f.name}" placeholder="${ph}" ${req} rows="4">${val}</textarea>`;
+      return `<label for="f_${f.name}">${escHtml(f.label)}</label><textarea id="f_${f.name}" name="${f.name}" placeholder="${ph}" ${req} rows="4">${val}</textarea>`;
     }
     if (type === 'password') {
-      return `<label for="f_${f.name}">${f.label}</label><div class="pw-wrap"><input id="f_${f.name}" name="${f.name}" type="password" placeholder="${ph}" autocomplete="current-password" spellcheck="false" ${req}><button type="button" class="pw-btn eye" onclick="togglePw('f_${f.name}')" title="Показать/скрыть">👁</button><button type="button" class="pw-btn paste" onclick="pastePw('f_${f.name}')">Paste</button></div>`;
+      return `<label for="f_${f.name}">${escHtml(f.label)}</label><div class="pw-wrap"><input id="f_${f.name}" name="${f.name}" type="password" placeholder="${ph}" autocomplete="current-password" spellcheck="false" ${req}><button type="button" class="pw-btn eye" onclick="togglePw('f_${f.name}')" title="Показать/скрыть">👁</button><button type="button" class="pw-btn paste" onclick="pastePw('f_${f.name}')">Paste</button></div>`;
     }
     const val = savedValues[f.name] ? ` value="${escAttr(savedValues[f.name])}"` : '';
-    return `<label for="f_${f.name}">${f.label}</label><input id="f_${f.name}" name="${f.name}" type="${type}" placeholder="${ph}" autocomplete="off" spellcheck="false" ${req}${val}>`;
+    return `<label for="f_${f.name}">${escHtml(f.label)}</label><input id="f_${f.name}" name="${f.name}" type="${type}" placeholder="${ph}" autocomplete="off" spellcheck="false" ${req}${val}>`;
   }).join('\n  ');
 
   const rememberHtml = hasNonPasswordFields
@@ -704,7 +722,7 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${title}</title>
+<title>${escHtml(title)}</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f7;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
