@@ -14,7 +14,7 @@ async function saveLocalFile(destination, fields) {
   const { uid, filename } = destination;
   if (!uid || !filename) throw new Error('local_file: missing uid or filename');
   if (!/^[a-zA-Z0-9_-]{1,64}$/.test(filename)) throw new Error('local_file: invalid filename');
-  if (!/^-?\d{1,20}$/.test(String(uid))) throw new Error('local_file: invalid uid');
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(String(uid))) throw new Error('local_file: invalid uid');
 
   const dir = path.join(AGENT_TOKENS_DIR, String(uid));
   fs.mkdirSync(dir, { recursive: true });
@@ -141,10 +141,22 @@ async function saveVault(destination, fields) {
   );
 }
 
+// ── http_post ─────────────────────────────────────────────────────────────────
+// destination: { type: "http_post", url: "https://example.com/store-creds" }
+// POSTs fields as JSON to the given URL. HTTPS only.
+async function saveHttpPost(destination, fields) {
+  const { url } = destination;
+  if (!url) throw new Error('http_post: missing url');
+  const parsed = new URL(url);
+  if (parsed.protocol !== 'https:') throw new Error('http_post: url must use https');
+  await httpPost(url, fields);
+}
+
 // ── dispatcher ────────────────────────────────────────────────────────────────
 async function saveToDestination(destination, fields) {
   switch (destination.type) {
     case 'local_file':          return saveLocalFile(destination, fields);
+    case 'http_post':           return saveHttpPost(destination, fields);
     case 'gcp_secret_manager':  return saveGcpSecret(destination, fields);
     case 'aws_secrets_manager': return saveAwsSecret(destination, fields);
     case 'vault':               return saveVault(destination, fields);

@@ -269,7 +269,7 @@ const server = http.createServer(async (req, res) => {
         if (!pending) return json(res, 403, { error: 'invalid or expired token' });
         if (pending.expires < Date.now()) { deletePending(t); return json(res, 403, { error: 'link expired' }); }
         if (pending.service !== 'nalog') return json(res, 403, { error: 'service mismatch' });
-        if (!/^-?\d{1,20}$/.test(pending.uid)) return json(res, 403, { error: 'invalid uid' });
+        if (!/^[a-zA-Z0-9_-]{1,64}$/.test(String(pending.uid))) return json(res, 403, { error: 'invalid uid' });
 
         deletePending(t);
 
@@ -324,7 +324,7 @@ const server = http.createServer(async (req, res) => {
       if (!pending) return json(res, 403, { error: 'invalid or expired token' });
       if (pending.expires < Date.now()) { deletePending(t); return json(res, 403, { error: 'link expired' }); }
       if (pending.service !== service) return json(res, 403, { error: 'service mismatch' });
-      if (!/^-?\d{1,20}$/.test(pending.uid)) return json(res, 403, { error: 'invalid uid' });
+      if (!/^[a-zA-Z0-9_-]{1,64}$/.test(String(pending.uid))) return json(res, 403, { error: 'invalid uid' });
 
       const tokensDir = path.join(AGENT_TOKENS_DIR, pending.uid);
       fs.mkdirSync(tokensDir, { recursive: true });
