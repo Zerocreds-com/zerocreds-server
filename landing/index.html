@@ -430,12 +430,24 @@
         <!-- Step 2: token display -->
         <div id="token-modal-body" style="display:none">
           <div style="font-size:22px;font-weight:700;margin-bottom:6px">Your API token</div>
-          <div style="color:#666;font-size:14px;margin-bottom:20px">Save it now — it won't be shown again.</div>
+          <div style="color:#e65c00;font-size:13px;font-weight:500;margin-bottom:16px">⚠ Save it now — won't be shown again</div>
           <div style="background:#f5f5f7;border-radius:10px;padding:14px 16px;font-family:monospace;font-size:13px;word-break:break-all" id="token-display"></div>
-          <button onclick="copyToken()" style="margin-top:12px;width:100%;background:#007aff;color:#fff;border:none;border-radius:10px;padding:12px;font-size:15px;font-weight:600;cursor:pointer" id="copy-btn">Copy token</button>
-          <div style="margin-top:16px;font-size:13px;color:#666;line-height:1.6">
-            Use as <code style="background:#f0f0f0;padding:1px 5px;border-radius:4px">Authorization: Bearer &lt;token&gt;</code><br>
-            Endpoint: <code style="background:#f0f0f0;padding:1px 5px;border-radius:4px">https://zerocreds.ru/api/session/create</code>
+          <button onclick="copyToken()" style="margin-top:10px;width:100%;background:#007aff;color:#fff;border:none;border-radius:10px;padding:12px;font-size:15px;font-weight:600;cursor:pointer" id="copy-btn">Copy token</button>
+
+          <div style="margin-top:24px;border-top:1px solid #f0f0f0;padding-top:20px">
+            <div style="font-size:13px;font-weight:600;color:#333;margin-bottom:10px">Quick start — create your first form session:</div>
+            <div style="background:#1a1a2e;border-radius:10px;padding:14px 16px;font-family:monospace;font-size:12px;color:#e0e0e0;line-height:1.7;overflow-x:auto;position:relative">
+              <button onclick="copyCurl()" style="position:absolute;top:8px;right:8px;background:#333;color:#aaa;border:none;border-radius:6px;padding:3px 8px;font-size:11px;cursor:pointer" id="curl-copy-btn">copy</button>
+              <div><span style="color:#7ec8e3">curl</span> -X POST https://zerocreds.ru/api/session/create \</div>
+              <div>&nbsp;&nbsp;-H <span style="color:#a8d8a8">"Authorization: Bearer <span id="curl-token-display" style="color:#ffd700">YOUR_TOKEN</span>"</span> \</div>
+              <div>&nbsp;&nbsp;-H <span style="color:#a8d8a8">"Content-Type: application/json"</span> \</div>
+              <div>&nbsp;&nbsp;-d <span style="color:#a8d8a8">'{</span></div>
+              <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a8d8a8">"title": "Connect GitHub",</span></div>
+              <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a8d8a8">"fields": [{"name":"token","label":"GitHub Token","type":"password"}],</span></div>
+              <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a8d8a8">"destination": {"type":"local_file","uid":"me","filename":"github"}</span></div>
+              <div>&nbsp;&nbsp;<span style="color:#a8d8a8">}'</span></div>
+            </div>
+            <div style="margin-top:8px;font-size:12px;color:#999">Returns <code style="background:#f0f0f0;padding:1px 4px;border-radius:3px">{"url":"https://zerocreds.ru/f/…"}</code> — send that link to your user</div>
           </div>
         </div>
       </div>
@@ -672,18 +684,19 @@
         A security specialist can check the exact git commit running on your server via <code>/version</code>, match it to the public source code, and verify line by line what happens to user input.
       </p>
       <p>
-        No SaaS. No telemetry. No vendor lock-in. Deploy on any Linux server in 5 minutes.
+        Use <strong>zerocreds.ru</strong> for free — get a token in 30 seconds, no setup.
+        Or self-host for full control: deploy on any Linux server, no vendor lock-in, no telemetry.
       </p>
       <div class="license-box">
         <div class="l-label">MIT License</div>
         <div class="l-item"><span class="l-check">→</span> Free for any use, commercial or personal</div>
         <div class="l-item"><span class="l-check">→</span> Modify and distribute freely</div>
-        <div class="l-item"><span class="l-check">→</span> No warranty — self-hosted, you're in control</div>
+        <div class="l-item"><span class="l-check">→</span> Self-host for full control — deploy in 5 minutes</div>
         <div class="l-item"><span class="l-check">→</span> Contributions welcome</div>
       </div>
       <div class="oss-links">
-        <a class="btn-primary" href="https://github.com/Zerocreds-com/zerocreds-server">GitHub →</a>
-        <a class="btn-outline" href="https://github.com/Zerocreds-com/zerocreds-server/blob/main/CONTRIBUTING.md">Contributing</a>
+        <button class="btn-primary" onclick="getToken()">Get API token →</button>
+        <a class="btn-outline" href="https://github.com/Zerocreds-com/zerocreds-server">GitHub (self-host)</a>
       </div>
     </div>
   </div>
@@ -776,6 +789,7 @@ async function submitReg() {
     if (!r.ok) throw new Error(data.error || r.statusText);
     _token = data.token;
     document.getElementById('token-display').textContent = data.token;
+    document.getElementById('curl-token-display').textContent = data.token;
     document.getElementById('reg-form').style.display = 'none';
     document.getElementById('token-modal-body').style.display = '';
   } catch (e) {
@@ -792,6 +806,14 @@ function copyToken() {
     const b = document.getElementById('copy-btn');
     b.textContent = 'Copied!';
     setTimeout(() => b.textContent = 'Copy token', 2000);
+  });
+}
+function copyCurl() {
+  const curl = `curl -X POST https://zerocreds.ru/api/session/create \\\n  -H "Authorization: Bearer ${_token}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"title":"Connect GitHub","fields":[{"name":"token","label":"GitHub Token","type":"password"}],"destination":{"type":"local_file","uid":"me","filename":"github"}}'`;
+  navigator.clipboard.writeText(curl).then(() => {
+    const b = document.getElementById('curl-copy-btn');
+    b.textContent = 'copied!';
+    setTimeout(() => b.textContent = 'copy', 2000);
   });
 }
 </script>
