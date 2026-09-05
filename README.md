@@ -1,6 +1,6 @@
 # ZeroCreds
 
-**Self-hosted credential collection server for AI agents. Credentials never reach the LLM — the agent only sees `{ status: "ok" }`.**
+**Open-Source credential collection server for AI agents. Credentials never reach the LLM — the agent only sees `{ status: "ok" }`.**
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-green.svg)](https://nodejs.org)
