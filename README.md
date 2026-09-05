@@ -9,7 +9,9 @@
 
 ## The problem
 
-AI agents need to connect to services on the user's behalf — but that means handling credentials. Passing login/password through the LLM context is a security risk: it can be logged, cached, or leaked through prompt injection.
+AI agents need to connect to services on the user's behalf — but passing login/password through the LLM context is a security risk: credentials can be logged, cached, or leaked through prompt injection.
+
+ZeroCreds puts a form between the agent and the user. The user enters their credentials directly into a web form. The form saves them to a secret store. The agent only learns whether it succeeded.
 
 ## How it works
 
@@ -20,22 +22,20 @@ Agent                    ZeroCreds Server             User
   │  { fields, destination }   │                        │
   │◄─{ url, expires_at }───────┤                        │
   │                            │                        │
-  ├─sends URL via Telegram ────────────────────────────►│
-  │                            │                        │
+  ├─sends URL to user ─────────────────────────────────►│
+  │  (Telegram, email, etc.)   │                        │
   │                            │◄──GET /f/{token}───────┤
   │                            │────form HTML──────────►│
   │                            │◄──POST /f/{token}──────┤
   │                            │   { fields }           │
-  │                            ├─writes to─────────────►│ Secret Store
+  │                            ├─writes to secret store►│
   │                            │◄─{ ok }────────────────┤
   │                            │                        │
-  ├─GET /session/{t}/status───►│                        │
+  ├─GET /api/session/{t}/status►│                        │
   │◄─{ status: "done" }────────┤                        │
   │                            │                        │
   │ (never saw credentials)    │                        │
 ```
-
-The agent learns credentials are saved — but never sees the values.
 
 ---
 
@@ -47,29 +47,31 @@ cd zerocreds-server/server
 npm install
 npx playwright install chromium --with-deps   # only needed for nalog.ru
 
-# Optional: protect session creation with a token
 export ZEROCREDS_ADMIN_TOKEN=your-secret-token
-
 PORT=3456 npm start
 ```
 
 ---
 
-## API
+## Agent Integration
 
-### Create a form session
+Three steps from the agent's side:
 
-```
+### 1. Create a form session
+
+```http
 POST /api/session/create
 Authorization: Bearer {ZEROCREDS_ADMIN_TOKEN}
+Content-Type: application/json
 
 {
   "title": "Connect GitHub",
   "description": "Paste your GitHub token with repo scope",
   "fields": [
-    { "name": "token", "label": "GitHub Token", "type": "password", "required": true }
+    { "name": "username", "label": "GitHub Username", "type": "text",     "required": true },
+    { "name": "token",    "label": "Personal Access Token", "type": "password", "required": true }
   ],
-  "destination": "prod-gcp",          // named destination (recommended)
+  "destination": "prod-gcp",           // named (recommended) — OR inline object (see below)
   "ttl_minutes": 30,
   "notify": {
     "tg_bot_token": "...",
@@ -87,24 +89,72 @@ Response:
 }
 ```
 
-### Poll for completion
+### 2. Send the URL to the user
 
-```
+Send `url` via Telegram, email, or any channel. The user opens it, fills in the form, and clicks Submit. The form POSTs directly to ZeroCreds — the agent never sees the values.
+
+If you pass `notify.tg_bot_token` + `notify.tg_chat_id`, the server sends the link automatically.
+
+### 3. Poll for completion
+
+```http
 GET /api/session/{token}/status
 Authorization: Bearer {ZEROCREDS_ADMIN_TOKEN}
-
-← { "status": "pending" | "done" | "expired" }
 ```
 
-### Field types
+```json
+{ "status": "pending" }   ← still waiting
+{ "status": "done" }      ← credentials saved to destination
+{ "status": "expired" }   ← user didn't submit in time
+```
 
-`text` · `password` · `email` · `tel` · `number` · `textarea`
+Poll every 5–10 seconds. When `done`, credentials are in the secret store — read them from there however your stack requires.
+
+---
+
+## API Reference
+
+### POST /api/session/create
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `title` | string | yes | Form heading shown to the user |
+| `description` | string | no | Subtext on the form |
+| `fields` | array | yes | Form fields (see below) |
+| `destination` | string or object | yes | Where to save credentials |
+| `ttl_minutes` | number | no | Link expiry (default: 30, max: 1440) |
+| `notify` | object | no | `{ tg_bot_token, tg_chat_id }` — sends the link via Telegram |
+| `allow_save` | boolean | no | Allow browser to remember non-password fields (default: `true`). Set `false` for ephemeral sessions like OTPs. |
+
+### Field definition
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | Key in the saved JSON (`[a-zA-Z0-9_]`, max 64) |
+| `label` | string | yes | Label shown on the form |
+| `type` | string | no | `text` · `password` · `email` · `tel` · `number` · `textarea` · `url` (default: `text`) |
+| `placeholder` | string | no | Input placeholder |
+| `required` | boolean | no | Default: `true` |
+
+### GET /api/session/{token}/status
+
+Returns `{ "status": "pending" | "done" | "expired" }`.
+
+### GET /version
+
+Returns the running git commit hash. Compare it to this repo for security audits.
 
 ---
 
 ## Destinations
 
-Configure once in `~/zerocreds-destinations.json` (or `ZEROCREDS_DESTINATIONS_FILE`):
+Two ways to pass `destination` in the API:
+
+**Named (recommended)** — configure once in `~/zerocreds-destinations.json` (or `ZEROCREDS_DESTINATIONS_FILE`), reference by name. SA keys never travel through API requests.
+
+**Inline object** — pass the destination config directly in the API call. Simpler for local/dev setups, but means credentials are in the request body.
+
+**Named destinations file** (`~/zerocreds-destinations.json`):
 
 ```json
 {
@@ -134,40 +184,46 @@ Configure once in `~/zerocreds-destinations.json` (or `ZEROCREDS_DESTINATIONS_FI
 }
 ```
 
-Agents reference destinations by name — credentials never travel in API requests.
+**Inline destination** (pass directly in API call — simpler for dev/local, but config travels in the request):
+
+```json
+{
+  "destination": {
+    "type": "local_file",
+    "uid": "123456",
+    "filename": "github"
+  }
+}
+```
 
 ### Write-only by design
 
 | Destination | Mechanism | Guarantee |
 |-------------|-----------|-----------|
-| GCP Secret Manager | `roles/secretmanager.secretVersionAdder` | IAM: ZeroCreds can add but physically cannot read versions |
+| GCP Secret Manager | `roles/secretmanager.secretVersionAdder` | IAM: ZeroCreds can add but cannot read versions |
 | AWS Secrets Manager | `secretsmanager:PutSecretValue` only | IAM policy: `GetSecretValue` not granted |
 | HashiCorp Vault | `capabilities = ["create", "update"]` | Policy: `read` not listed = denied |
 | Local file | `~/agent-tokens/{uid}/{name}` (0600) | Filesystem permissions |
 
 ---
 
-## Built-in services (legacy)
+## Form UX
 
-The original API for pre-defined services is still supported:
+The form the user sees has a few conveniences:
 
-| Service | Endpoint | Method |
-|---------|----------|--------|
-| nalog.ru (FNS) | `/connect/nalog` | Playwright login via Gosuslugi |
-| GitHub | `/connect/github` | API token paste |
-| Weeek CRM | `/connect/weeek` | API token paste |
-| Tilda | `/connect/tilda` | Session cookie paste |
-
-These use `~/connect-pending/{token}.json` files written by the agent.
+- **Password fields** — show/hide toggle (👁) and a **Paste** button that reads the clipboard, since most passwords are copy-pasted
+- **Remember me** — a "Save for next time" checkbox. When checked, non-password fields (email, username, etc.) are stored server-side, keyed to a browser cookie (`zc_uid`). On the next visit from the same browser, those fields are pre-filled. Passwords are never saved. Set `allow_save: false` in the session to disable this entirely.
 
 ---
 
 ## Security model
 
-- **Credentials bypass LLM context** — the form posts directly to this server
+- **Credentials bypass LLM context** — the form posts directly to ZeroCreds, never through the agent
 - **One-time links** — tokens expire (default 30 min) and are deleted after use
-- **Auditable** — `GET /version` returns the running git commit hash; match it to this repo
-- **Self-hosted** — you control the server, the network, the storage
+- **Write-only destinations** — ZeroCreds can write to secret stores but not read from them (IAM/policy enforced)
+- **Input escaping** — all user-supplied session metadata (title, field labels) is HTML-escaped before rendering
+- **Auditable** — `GET /version` returns the running git commit hash; compare to this repo to verify no modifications
+- **Self-hosted** — you control the server, the network, and the storage
 - **No telemetry** — nothing leaves your machine except to the configured secret store
 
 ---
@@ -196,7 +252,22 @@ WantedBy=multi-user.target
 systemctl enable --now zerocreds-server
 ```
 
-nginx proxy: route `/connect/*` and `/f/*` and `/api/*` to `:3456`.
+nginx proxy: route `/connect/*`, `/f/*`, and `/api/*` to `:3456`.
+
+---
+
+## Built-in services (legacy)
+
+The original hardcoded service endpoints are still supported:
+
+| Service | Endpoint | Method |
+|---------|----------|--------|
+| nalog.ru (FNS) | `/connect/nalog` | Playwright login via Gosuslugi |
+| GitHub | `/connect/github` | API token paste |
+| Weeek CRM | `/connect/weeek` | API token paste |
+| Tilda | `/connect/tilda` | Session cookie paste |
+
+These predate the dynamic form API and use `~/connect-pending/{token}.json` files. Prefer the dynamic API for new integrations.
 
 ---
 
@@ -204,7 +275,7 @@ nginx proxy: route `/connect/*` and `/f/*` and `/api/*` to `:3456`.
 
 Pull requests and issues are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-This project is MIT licensed — use it commercially, fork it, build on it.
+MIT licensed — use it commercially, fork it, build on it.
 
 ---
 
@@ -217,8 +288,9 @@ nginx (443/80)
   └── /connect/* /f/* /api/* → zerocreds-server :3456
   └── /                      → /home/vova/zerocreds-landing/ (static)
 
-~/connect-pending/   ← agent writes (legacy) or server creates (dynamic API)
-~/agent-tokens/      ← server writes (local_file destination)
+~/connect-pending/          ← agent writes (legacy) or server creates (dynamic API)
+~/agent-tokens/             ← server writes (local_file destination)
+~/zerocreds-saved/          ← server writes non-password field values per browser uid
 ~/zerocreds-destinations.json ← named destination configs (server reads at startup)
 ```
 
