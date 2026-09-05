@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const https = require('https');
+const http = require('http');
 
 const AGENT_TOKENS_DIR = path.join(os.homedir(), 'agent-tokens');
 
@@ -141,6 +142,37 @@ async function saveVault(destination, fields) {
   );
 }
 
+// ── http_post ─────────────────────────────────────────────────────────────────
+// destination: { type: "http_post", url: "https://agent/tokens",
+//                headers: { "Authorization": "Bearer {SECRET}" },
+//                body: { "userId": "{uid}", "label": "{label}", "value": "{fields_json}" } }
+// If body is omitted, posts fields as-is. Placeholders {key} in body strings are
+// replaced with field values; {fields_json} is replaced with the full JSON of fields.
+// Supports both http:// and https://.
+async function saveHttpPost(destination, fields) {
+  const { url, headers: customHeaders = {}, body: bodyTemplate } = destination;
+  if (!url) throw new Error('http_post: missing url');
+  try { new URL(url); } catch { throw new Error('http_post: invalid url'); }
+  const bodyObj = bodyTemplate ? applyTemplate(bodyTemplate, fields) : fields;
+  await httpPost(url, bodyObj, null, customHeaders);
+}
+
+function applyTemplate(template, fields) {
+  if (typeof template === 'string') {
+    return template.replace(/\{([a-zA-Z0-9_]+)\}/g, (_, k) => {
+      if (k === 'fields_json') return JSON.stringify(fields);
+      return fields[k] !== undefined ? fields[k] : `{${k}}`;
+    });
+  }
+  if (Array.isArray(template)) return template.map(v => applyTemplate(v, fields));
+  if (template && typeof template === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(template)) out[k] = applyTemplate(v, fields);
+    return out;
+  }
+  return template;
+}
+
 // ── dispatcher ────────────────────────────────────────────────────────────────
 async function saveToDestination(destination, fields) {
   switch (destination.type) {
@@ -148,6 +180,7 @@ async function saveToDestination(destination, fields) {
     case 'gcp_secret_manager':  return saveGcpSecret(destination, fields);
     case 'aws_secrets_manager': return saveAwsSecret(destination, fields);
     case 'vault':               return saveVault(destination, fields);
+    case 'http_post':           return saveHttpPost(destination, fields);
     default: throw new Error(`Unknown destination type: ${destination.type}`);
   }
 }
@@ -157,6 +190,8 @@ function httpPost(url, bodyObj, bearerToken, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(bodyObj);
     const parsed = new URL(url);
+    const isHttps = parsed.protocol === 'https:';
+    const lib = isHttps ? https : http;
     const headers = {
       'Content-Type': 'application/json',
       'Content-Length': Buffer.byteLength(body),
@@ -164,9 +199,9 @@ function httpPost(url, bodyObj, bearerToken, extraHeaders = {}) {
     };
     if (bearerToken) headers['Authorization'] = `Bearer ${bearerToken}`;
 
-    const req = https.request({
+    const req = lib.request({
       hostname: parsed.hostname,
-      port: parsed.port || 443,
+      port: parsed.port || (isHttps ? 443 : 80),
       path: parsed.pathname + parsed.search,
       method: 'POST',
       headers,

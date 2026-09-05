@@ -74,6 +74,26 @@ function resolveAuth(authHeader) {
   return { isAdmin: false, integrator: null };
 }
 
+// Scan pending sessions for an active (not expired, not done) match by integrator+service+user_hash.
+// Used for idempotent session creation with deterministic URLs.
+function findActiveSession(integrator_id, service_slug, user_hash) {
+  let files;
+  try { files = fs.readdirSync(CONNECT_PENDING_DIR).filter(f => f.endsWith('.json')); }
+  catch { return null; }
+  for (const file of files) {
+    const token = file.slice(0, -5);
+    if (fs.existsSync(path.join(CONNECT_PENDING_DIR, `${token}.done`))) continue;
+    try {
+      const s = JSON.parse(fs.readFileSync(path.join(CONNECT_PENDING_DIR, file), 'utf8'));
+      if (s.integrator_id === integrator_id &&
+          s.service_slug === service_slug &&
+          s.user_hash === user_hash &&
+          s.expires > Date.now()) return s;
+    } catch {}
+  }
+  return null;
+}
+
 // Resolve destination: name → config, checking integrator's destinations first
 function resolveDestination(destination, integrator) {
   if (typeof destination !== 'string') return destination; // inline object, use as-is
@@ -418,7 +438,7 @@ const server = http.createServer(async (req, res) => {
     let payload;
     try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
 
-    let { title, description, fields, destination, ttl_minutes = 30, notify, allow_save } = payload;
+    let { title, description, fields, destination, ttl_minutes = 30, notify, allow_save, uid, service } = payload;
     if (!title || !Array.isArray(fields) || fields.length === 0 || !destination) {
       return json(res, 400, { error: 'missing title, fields, or destination' });
     }
@@ -441,19 +461,51 @@ const server = http.createServer(async (req, res) => {
       if (f.type && !VALID_TYPES.includes(f.type)) return json(res, 400, { error: `invalid field type: ${f.type}` });
     }
 
+    const baseUrl = process.env.ZEROCREDS_BASE_URL || 'https://zerocreds.ru';
+    const integrator_id = integrator?.id || 'admin';
+
+    // Deterministic URL: requires uid + service from an integrator (not admin)
+    const useDeterministic = integrator && uid && service;
+    if (useDeterministic && !/^[a-zA-Z0-9_-]{1,64}$/.test(service)) {
+      return json(res, 400, { error: 'invalid service: must match [a-zA-Z0-9_-]{1,64}' });
+    }
+
+    let user_hash, service_slug;
+    if (useDeterministic) {
+      service_slug = service;
+      // HMAC keyed on integrator token — not reversible without the key
+      user_hash = crypto.createHmac('sha256', integrator.token).update(String(uid)).digest('hex').slice(0, 10);
+
+      // Idempotency: return existing active session if one exists for this integrator+service+user
+      const existing = findActiveSession(integrator_id, service_slug, user_hash);
+      if (existing) {
+        const prettyUrl = `${baseUrl}/${integrator_id}/${service_slug}/${user_hash}?gen=${existing.token}`;
+        return json(res, 200, {
+          token: existing.token,
+          url: prettyUrl,
+          expires_at: new Date(existing.expires).toISOString(),
+          reused: true,
+        });
+      }
+    }
+
     const token = crypto.randomBytes(16).toString('hex');
     const expires = Date.now() + Math.min(Math.max(ttl_minutes, 1), 1440) * 60 * 1000;
 
     const pending = { token, title, description, fields, destination, expires, notify,
-      integrator_id: integrator?.id || 'admin',
-      allowSave: allow_save !== false };
+      integrator_id,
+      allowSave: allow_save !== false,
+      ...(useDeterministic ? { service_slug, user_hash, integrator_slug: integrator_id } : {}),
+    };
     fs.mkdirSync(CONNECT_PENDING_DIR, { recursive: true });
     fs.writeFileSync(path.join(CONNECT_PENDING_DIR, `${token}.json`), JSON.stringify(pending), { mode: 0o600 });
 
-    const baseUrl = process.env.ZEROCREDS_BASE_URL || 'https://zerocreds.ru';
+    const url_out = useDeterministic
+      ? `${baseUrl}/${integrator_id}/${service_slug}/${user_hash}?gen=${token}`
+      : `${baseUrl}/f/${token}`;
     return json(res, 200, {
       token,
-      url: `${baseUrl}/f/${token}`,
+      url: url_out,
       expires_at: new Date(expires).toISOString(),
     });
   }
@@ -560,6 +612,49 @@ const server = http.createServer(async (req, res) => {
     }
 
     res.writeHead(405).end(); return;
+  }
+
+  // ── /{integrator_slug}/{service_slug}/{user_hash} — pretty deterministic URL ──
+  // Only GET is needed here; form submissions always go to POST /f/{token}.
+  const prettyMatch = url.pathname.match(/^\/([a-zA-Z0-9_-]{1,64})\/([a-zA-Z0-9_-]{1,64})\/([a-f0-9]{10})$/);
+  if (prettyMatch && req.method === 'GET') {
+    const [, slug, svc, hash] = prettyMatch;
+    const gen = url.searchParams.get('gen');
+
+    let pending;
+    if (gen && /^[a-f0-9]{32}$/.test(gen)) {
+      // gen provided — look up that specific session and verify it matches slug/svc/hash
+      pending = readPending(gen);
+      if (!pending || pending.integrator_slug !== slug || pending.service_slug !== svc || pending.user_hash !== hash) {
+        res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
+        return;
+      }
+    } else {
+      // no gen — scan for current active session for this slug/svc/hash
+      pending = findActiveSession(slug, svc, hash);
+      if (pending) {
+        const baseUrl = process.env.ZEROCREDS_BASE_URL || 'https://zerocreds.ru';
+        res.writeHead(302, { Location: `${baseUrl}/${slug}/${svc}/${hash}?gen=${pending.token}` }).end();
+        return;
+      }
+    }
+
+    if (!pending || !pending.fields) {
+      res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
+      return;
+    }
+    if (pending.expires < Date.now()) {
+      res.writeHead(410, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
+      return;
+    }
+
+    const { uid } = getOrCreateUid(req);
+    const savedValues = readSaved(uid);
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Set-Cookie': cookieSetHeader(uid, req),
+    }).end(dynamicFormHtml(pending.token, pending, savedValues));
+    return;
   }
 
   json(res, 404, { error: 'not found' });
@@ -830,7 +925,7 @@ async function submit() {
   const btn = document.getElementById('btn');
   btn.disabled = true; btn.textContent = 'Сохраняю…';
   try {
-    const r = await fetch(location.pathname, {
+    const r = await fetch('/f/' + T, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ t: T, fields, save }),

@@ -20,6 +20,10 @@
 
 - [реализовано] Remember me — cookie `zc_uid` (UUID, HttpOnly, 365 дней) идентифицирует браузер; не-пароли сохраняются в `~/zerocreds-saved/{uid}.json` и предзаполняются при следующем визите; checkbox "Запомнить для следующего раза" на форме (предвыбран если данные уже есть); show/hide toggle (👁) и кнопка Paste для полей type=password
 
+- [реализовано] `http_post` destination type — после сабмита формы zerocreds делает POST на указанный URL агента; поддержка http:// и https://; опциональный body template с подстановкой `{field_name}` и `{fields_json}`; разблокирует cross-server сетап (Issue #14)
+- [реализовано] Детерминированные URL + идемпотентное создание сессий — при передаче `uid` + `service` в /api/session/create URL становится `/{integrator_id}/{service}/{user_hash}?gen={token}`; повторный вызов с теми же uid/service возвращает ту же ссылку пока сессия активна; HMAC-SHA256 user_hash (Issue #14)
+- [реализовано] Pretty URL route `/{slug}/{service}/{hash}` — GET отдаёт форму; без `gen` делает redirect на полный URL с gen; форма всегда постит на `/f/{token}` (Issue #14)
+
 ## Планируется
 
 - [планируется] Landing page zerocreds.ru — на русском, с объяснением концепции
