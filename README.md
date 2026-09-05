@@ -223,7 +223,6 @@ The form the user sees has a few conveniences:
 - **Write-only destinations** — ZeroCreds can write to secret stores but not read from them (IAM/policy enforced)
 - **Input escaping** — all user-supplied session metadata (title, field labels) is HTML-escaped before rendering
 - **Auditable** — `GET /version` returns the running git commit hash; compare to this repo to verify no modifications
-- **Self-hosted** — you control the server, the network, and the storage
 - **No telemetry** — nothing leaves your machine except to the configured secret store
 
 ---
