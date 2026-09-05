@@ -201,6 +201,47 @@
   }
   .step-code .sc-key { color: var(--muted); }
 
+  /* ── QUICKSTART ── */
+  .quickstart {
+    max-width: 1200px; margin: 0 auto; padding: 80px 40px;
+  }
+  .qs-header {
+    margin-bottom: 48px;
+    border-bottom: 1px solid var(--border); padding-bottom: 20px;
+    display: flex; align-items: baseline; justify-content: space-between;
+  }
+  .qs-steps { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); }
+  .qs-step { background: var(--bg); padding: 36px 32px; }
+  .qs-num {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.2em;
+    color: var(--dim); margin-bottom: 18px; text-transform: uppercase;
+  }
+  .qs-step h3 {
+    font-family: var(--display); font-size: 18px; font-weight: 800;
+    letter-spacing: -0.01em; margin-bottom: 12px;
+  }
+  .qs-step p { color: var(--muted); font-size: 14px; line-height: 1.7; margin-bottom: 16px; }
+  .qs-code {
+    background: var(--term-bg); border: 1px solid var(--term-border);
+    font-family: var(--mono); font-size: 11.5px; line-height: 1.75;
+    padding: 16px; color: #888; overflow-x: auto; white-space: pre;
+  }
+  .qs-code .qk { color: #555; }
+  .qs-code .qv { color: #aaa; }
+  .qs-code .qc { color: #3a5a3a; }
+  .qs-code .qg { color: #5a8a5a; }
+  .qs-btn {
+    font-family: var(--mono); font-size: 12px; font-weight: 500;
+    letter-spacing: 0.1em; text-transform: uppercase;
+    background: var(--text); color: var(--bg);
+    border: none; padding: 13px 28px; cursor: pointer; transition: opacity .15s;
+    display: inline-block;
+  }
+  .qs-btn:hover { opacity: .85; }
+  @media (max-width: 900px) {
+    .qs-steps { grid-template-columns: 1fr; }
+  }
+
   /* ── INTEGRATION ── */
   .integration-section {
     background: var(--term-bg);
@@ -471,7 +512,7 @@
         <div class="t-dim">{</div>
         <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">title:</span> <span class="t-str">"Connect GitHub"</span><span class="t-dim">,</span></div>
         <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">fields:</span> <span class="t-str">[{name:"token", type:"password"}]</span><span class="t-dim">,</span></div>
-        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">destination:</span> <span class="t-str">"prod-gcp"</span> <span class="t-comment">// named, pre-configured</span></div>
+        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">destination:</span> <span class="t-str">{type:"local_file",uid:"me",filename:"github"}</span></div>
         <div class="t-dim">}</div>
         <div>&nbsp;</div>
         <div><span class="t-prompt">← </span><span class="t-val">{</span></div>
@@ -516,11 +557,55 @@
 <!-- TRUST STRIP -->
 <div class="trust-strip">
   <div class="trust-inner">
-    <div class="trust-item"><span class="trust-dot"></span>MIT License</div>
-    <div class="trust-item"><span class="trust-dot"></span>Self-hosted — your machine, your data</div>
-    <div class="trust-item"><span class="trust-dot"></span>No cloud dependency</div>
+    <div class="trust-item"><span class="trust-dot"></span>Zero LLM access to credentials</div>
+    <div class="trust-item"><span class="trust-dot"></span>One-time links, expire after use</div>
+    <div class="trust-item"><span class="trust-dot"></span>Write-only to your secret store</div>
     <div class="trust-item"><span class="trust-dot"></span>Auditable by commit hash</div>
-    <div class="trust-item"><span class="trust-dot"></span>Zero LLM access to secrets</div>
+    <div class="trust-item"><span class="trust-dot"></span>MIT License</div>
+  </div>
+</div>
+
+<!-- QUICKSTART -->
+<div id="quickstart">
+  <div class="quickstart">
+    <div class="qs-header">
+      <span class="section-label">Quickstart</span>
+      <span class="section-title">Start in 3 steps</span>
+    </div>
+    <div class="qs-steps">
+      <div class="qs-step">
+        <div class="qs-num">step 01</div>
+        <h3>Get your token</h3>
+        <p>Click below — fill in your email and what you're building. Takes 30 seconds, no credit card.</p>
+        <button class="qs-btn" onclick="getToken()">Get API token →</button>
+      </div>
+      <div class="qs-step">
+        <div class="qs-num">step 02</div>
+        <h3>Create a form session</h3>
+        <p>Your agent calls the API and gets back a one-time link. Send it to the user via Telegram, email, or any channel.</p>
+        <div class="qs-code"><span class="qk">POST</span> <span class="qv">https://zerocreds.ru/api/session/create</span>
+<span class="qk">Authorization:</span> <span class="qv">Bearer YOUR_TOKEN</span>
+
+<span class="qk">{</span>
+  <span class="qk">"title":</span> <span class="qv">"Connect GitHub"</span>,
+  <span class="qk">"fields":</span> <span class="qv">[{name:"token", type:"password"}]</span>,
+  <span class="qk">"destination":</span> <span class="qv">{type:"local_file", uid:"me", filename:"github"}</span>
+<span class="qk">}</span>
+
+<span class="qc">← </span><span class="qv">{ "url": "https://zerocreds.ru/f/8a3f…" }</span></div>
+      </div>
+      <div class="qs-step">
+        <div class="qs-num">step 03</div>
+        <h3>Poll until done</h3>
+        <p>User fills the form. Your agent polls for status. When <code style="font-family:var(--mono);font-size:12px">done</code> — credentials are saved. Agent never saw them.</p>
+        <div class="qs-code"><span class="qk">GET</span> <span class="qv">/api/session/{token}/status</span>
+<span class="qk">Authorization:</span> <span class="qv">Bearer YOUR_TOKEN</span>
+
+<span class="qc">← </span><span class="qv">{ "status": "pending" }</span>
+<span class="qc">← </span><span class="qv">{ "status": "pending" }</span>
+<span class="qc">← </span><span class="qg">{ "status": "done" }</span>  <span class="qc">✓</span></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -684,8 +769,8 @@
         A security specialist can check the exact git commit running on your server via <code>/version</code>, match it to the public source code, and verify line by line what happens to user input.
       </p>
       <p>
-        Use <strong>zerocreds.ru</strong> for free — get a token in 30 seconds, no setup.
-        Or self-host for full control: deploy on any Linux server, no vendor lock-in, no telemetry.
+        Get a token in 30 seconds on zerocreds.ru, or deploy on your own server for full control.
+        MIT licensed — audit the code, fork it, run it anywhere.
       </p>
       <div class="license-box">
         <div class="l-label">MIT License</div>
@@ -696,7 +781,7 @@
       </div>
       <div class="oss-links">
         <button class="btn-primary" onclick="getToken()">Get API token →</button>
-        <a class="btn-outline" href="https://github.com/Zerocreds-com/zerocreds-server">GitHub (self-host)</a>
+        <a class="btn-outline" href="https://github.com/Zerocreds-com/zerocreds-server">View source</a>
       </div>
     </div>
   </div>
