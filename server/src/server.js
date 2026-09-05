@@ -191,6 +191,15 @@ function writeSaved(uid, submittedFields, fieldDefs) {
   catch (e) { console.error('[saved] write failed:', e.message); }
 }
 
+function writeSavedRef(uid, pending, secretId) {
+  if (!uid || !secretId) return;
+  const existing = readSaved(uid);
+  const fp = `__ref__${pending.title}`;
+  existing[fp] = secretId;
+  try { fs.writeFileSync(path.join(SAVED_DIR, `${uid}.json`), JSON.stringify(existing), { mode: 0o600 }); }
+  catch (e) { console.error('[saved-ref] write failed:', e.message); }
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
@@ -418,33 +427,64 @@ const server = http.createServer(async (req, res) => {
     let payload;
     try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
 
-    let { title, description, fields, destination, ttl_minutes = 30, notify, allow_save } = payload;
-    if (!title || !Array.isArray(fields) || fields.length === 0 || !destination) {
-      return json(res, 400, { error: 'missing title, fields, or destination' });
+    let { title, description, fields, destination, destinations_by_level, ttl_minutes = 30, notify, allow_save } = payload;
+    if (!title || !Array.isArray(fields) || fields.length === 0) {
+      return json(res, 400, { error: 'missing title or fields' });
     }
-    // Resolve named destination
-    const resolved = resolveDestination(destination, integrator);
-    if (resolved === null) {
-      return json(res, 400, { error: typeof destination === 'string'
-        ? `unknown named destination: ${destination}`
-        : 'destination.type is required' });
+    if (!destination && !destinations_by_level) {
+      return json(res, 400, { error: 'missing destination or destinations_by_level' });
     }
-    destination = resolved;
-    if (!destination?.type) {
-      return json(res, 400, { error: 'destination.type is required' });
+
+    // Resolve destinations_by_level if provided
+    let resolvedByLevel = null;
+    if (destinations_by_level) {
+      if (typeof destinations_by_level !== 'object' || Array.isArray(destinations_by_level)) {
+        return json(res, 400, { error: 'destinations_by_level must be an object' });
+      }
+      resolvedByLevel = {};
+      for (const [level, dest] of Object.entries(destinations_by_level)) {
+        const r = resolveDestination(dest, integrator);
+        if (r === null) {
+          return json(res, 400, { error: typeof dest === 'string'
+            ? `unknown named destination for level "${level}": ${dest}`
+            : `destination.type required for level "${level}"` });
+        }
+        if (!r?.type) return json(res, 400, { error: `destination.type required for level "${level}"` });
+        resolvedByLevel[level] = r;
+      }
     }
+
+    // Resolve single destination if provided
+    if (destination) {
+      const resolved = resolveDestination(destination, integrator);
+      if (resolved === null) {
+        return json(res, 400, { error: typeof destination === 'string'
+          ? `unknown named destination: ${destination}`
+          : 'destination.type is required' });
+      }
+      destination = resolved;
+      if (!destination?.type) {
+        return json(res, 400, { error: 'destination.type is required' });
+      }
+    }
+
     // Validate fields
     const VALID_TYPES = ['text', 'password', 'email', 'number', 'tel', 'textarea', 'url'];
+    const VALID_LEVELS = ['secret', 'pii', 'attribute', 'credential'];
     for (const f of fields) {
       if (!f.name || !f.label) return json(res, 400, { error: `field missing name or label: ${JSON.stringify(f)}` });
       if (!/^[a-zA-Z0-9_]{1,64}$/.test(f.name)) return json(res, 400, { error: `invalid field name: ${f.name}` });
       if (f.type && !VALID_TYPES.includes(f.type)) return json(res, 400, { error: `invalid field type: ${f.type}` });
+      if (f.level && !VALID_LEVELS.includes(f.level)) return json(res, 400, { error: `invalid field level: ${f.level}` });
     }
 
     const token = crypto.randomBytes(16).toString('hex');
     const expires = Date.now() + Math.min(Math.max(ttl_minutes, 1), 1440) * 60 * 1000;
 
-    const pending = { token, title, description, fields, destination, expires, notify,
+    const pending = { token, title, description, fields,
+      destination: destination || null,
+      destinations_by_level: resolvedByLevel || null,
+      expires, notify,
       integrator_id: integrator?.id || 'admin',
       allowSave: allow_save !== false };
     fs.mkdirSync(CONNECT_PENDING_DIR, { recursive: true });
@@ -467,7 +507,11 @@ const server = http.createServer(async (req, res) => {
     const pendingFile = path.join(CONNECT_PENDING_DIR, `${token}.json`);
     const doneFile = path.join(CONNECT_PENDING_DIR, `${token}.done`);
 
-    if (fs.existsSync(doneFile)) return json(res, 200, { status: 'done' });
+    if (fs.existsSync(doneFile)) {
+      let doneData = {};
+      try { doneData = JSON.parse(fs.readFileSync(doneFile, 'utf8')); } catch {}
+      return json(res, 200, { status: 'done', ...doneData });
+    }
     if (!fs.existsSync(pendingFile)) return json(res, 200, { status: 'expired' });
     try {
       const p = JSON.parse(fs.readFileSync(pendingFile, 'utf8'));
@@ -535,19 +579,56 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
+      let saveResult;
       try {
-        await saveToDestination(pending.destination, clean);
+        if (pending.destinations_by_level) {
+          // Group fields by level, route each group to its destination
+          const groups = {};
+          for (const f of pending.fields) {
+            const level = f.level || 'default';
+            if (!groups[level]) groups[level] = {};
+            if (clean[f.name] !== undefined) groups[level][f.name] = clean[f.name];
+          }
+          const secretIds = {};
+          for (const [level, groupFields] of Object.entries(groups)) {
+            if (Object.keys(groupFields).length === 0) continue;
+            const dest = pending.destinations_by_level[level]
+              || pending.destinations_by_level['default']
+              || pending.destination;
+            if (!dest) {
+              console.warn(`[dynamic] no destination for level "${level}", skipping:`, Object.keys(groupFields));
+              continue;
+            }
+            const r = await saveToDestination(dest, groupFields);
+            if (r?.secret_id) secretIds[level] = r.secret_id;
+          }
+          saveResult = { secret_ids: secretIds };
+        } else {
+          saveResult = await saveToDestination(pending.destination, clean);
+        }
       } catch (e) {
         console.error('[dynamic] save failed:', e.message);
         return json(res, 500, { error: 'failed to save credentials' });
       }
 
       deletePending(token);
-      // Leave a .done marker so status endpoint knows it completed
-      try { fs.writeFileSync(path.join(CONNECT_PENDING_DIR, `${token}.done`), '', { mode: 0o600 }); } catch {}
+      // .done file stores destination references — never the credentials themselves
+      try {
+        fs.writeFileSync(
+          path.join(CONNECT_PENDING_DIR, `${token}.done`),
+          JSON.stringify(saveResult || {}),
+          { mode: 0o600 },
+        );
+      } catch {}
 
       const { uid, hadCookie } = getOrCreateUid(req);
-      if (save && pending.allowSave) writeSaved(uid, clean, pending.fields);
+      const primarySecretId = saveResult?.secret_id
+        || (saveResult?.secret_ids ? Object.values(saveResult.secret_ids)[0] : undefined);
+      if (save && pending.allowSave && primarySecretId) {
+        writeSavedRef(uid, pending, primarySecretId);
+      } else if (save && pending.allowSave) {
+        writeSaved(uid, clean, pending.fields);
+      }
 
       const respHeaders = (save || hadCookie) ? { 'Set-Cookie': cookieSetHeader(uid, req) } : {};
       json(res, 200, { ok: true }, respHeaders);
@@ -713,6 +794,13 @@ function expiredHtml() {
 </head><body><div class="card"><div class="icon">⏰</div><h1>Ссылка недействительна</h1><p class="sub">Эта ссылка истекла или уже была использована. Запросите новую у бота.</p></div></body></html>`;
 }
 
+const LEVEL_META = {
+  secret:     { icon: '🔒', color: '#dc2626', bg: '#fef2f2', label: 'Защищённое хранилище', aiSees: '❌ никогда', logs: '❌ не попадает', desc: 'Данные уходят напрямую в защищённое хранилище. ИИ-ассистент никогда их не видит.' },
+  pii:        { icon: '👤', color: '#d97706', bg: '#fffbeb', label: 'Персональные данные',   aiSees: '✅ для задач', logs: '🔒 анонимно',   desc: 'ИИ может использовать для выполнения задач. В логи в открытом виде не попадает.' },
+  attribute:  { icon: '📋', color: '#2563eb', bg: '#eff6ff', label: 'Настройка',             aiSees: '✅ открыто',   logs: '✅ да',          desc: 'Открытая конфигурация. ИИ использует в каждом запросе.' },
+  credential: { icon: '⏱', color: '#7c3aed', bg: '#f5f3ff', label: 'Временный токен',       aiSees: '✅ сессия',    logs: '❌ не попадает', desc: 'Используется только в текущей сессии. В логи не сохраняется.' },
+};
+
 function dynamicFormHtml(token, pending, savedValues = {}) {
   const fields = pending.fields || [];
   const title = pending.title || 'Введите данные';
@@ -728,19 +816,41 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
   const hasNonPasswordFields = fields.some(f => f.type !== 'password');
   const hasSavedData = hasNonPasswordFields && fields.some(f => f.type !== 'password' && savedValues[f.name] !== undefined && savedValues[f.name] !== '');
 
+  function levelBadge(f) {
+    const lm = LEVEL_META[f.level];
+    if (!lm) return '';
+    return `<button type="button" class="level-btn" style="color:${lm.color}" onclick="toggleInfo('${f.name}')" title="Что происходит с этими данными">${lm.icon}</button>`;
+  }
+
+  function levelInfoCard(f) {
+    const lm = LEVEL_META[f.level];
+    if (!lm) return '';
+    return `<div id="info_${f.name}" class="level-info" style="display:none;border-left:3px solid ${lm.color};background:${lm.bg}">
+  <div class="level-info-title" style="color:${lm.color}">${lm.icon} ${lm.label}</div>
+  <table class="level-table">
+    <tr><td>ZeroCreds сервер</td><td>✅ получает</td></tr>
+    <tr><td>ИИ-ассистент</td><td>${lm.aiSees}</td></tr>
+    <tr><td>Логи</td><td>${lm.logs}</td></tr>
+  </table>
+  <div class="level-desc">${lm.desc}</div>
+  <a href="https://zerocreds.ru/security" target="_blank" class="level-link">→ zerocreds.ru/security</a>
+</div>`;
+  }
+
   const fieldHtml = fields.map(f => {
     const type = f.type || 'text';
     const ph = escAttr(f.placeholder || '');
     const req = f.required !== false ? 'required' : '';
+    const labelHtml = `<label for="f_${f.name}" class="field-label">${escHtml(f.label)}${levelBadge(f)}</label>${levelInfoCard(f)}`;
     if (type === 'textarea') {
       const val = escAttr(savedValues[f.name] || '');
-      return `<label for="f_${f.name}">${escHtml(f.label)}</label><textarea id="f_${f.name}" name="${f.name}" placeholder="${ph}" ${req} rows="4">${val}</textarea>`;
+      return `${labelHtml}<textarea id="f_${f.name}" name="${f.name}" placeholder="${ph}" ${req} rows="4">${val}</textarea>`;
     }
     if (type === 'password') {
-      return `<label for="f_${f.name}">${escHtml(f.label)}</label><div class="pw-wrap"><input id="f_${f.name}" name="${f.name}" type="password" placeholder="${ph}" autocomplete="current-password" spellcheck="false" ${req}><button type="button" class="pw-btn eye" onclick="togglePw('f_${f.name}')" title="Показать/скрыть">👁</button><button type="button" class="pw-btn paste" onclick="pastePw('f_${f.name}')">Paste</button></div>`;
+      return `${labelHtml}<div class="pw-wrap"><input id="f_${f.name}" name="${f.name}" type="password" placeholder="${ph}" autocomplete="current-password" spellcheck="false" ${req}><button type="button" class="pw-btn eye" onclick="togglePw('f_${f.name}')" title="Показать/скрыть">👁</button><button type="button" class="pw-btn paste" onclick="pastePw('f_${f.name}')">Paste</button></div>`;
     }
     const val = savedValues[f.name] ? ` value="${escAttr(savedValues[f.name])}"` : '';
-    return `<label for="f_${f.name}">${escHtml(f.label)}</label><input id="f_${f.name}" name="${f.name}" type="${type}" placeholder="${ph}" autocomplete="off" spellcheck="false" ${req}${val}>`;
+    return `${labelHtml}<input id="f_${f.name}" name="${f.name}" type="${type}" placeholder="${ph}" autocomplete="off" spellcheck="false" ${req}${val}>`;
   }).join('\n  ');
 
   const rememberHtml = hasNonPasswordFields
@@ -781,6 +891,19 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
   .lock{font-size:13px;color:#999;margin-top:20px;text-align:center}
   #done{display:none;text-align:center}
   #done .icon{font-size:48px;margin-bottom:12px}
+  .field-label{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:500;color:#333;margin-bottom:6px;margin-top:16px}
+  .field-label:first-of-type{margin-top:0}
+  .level-btn{background:none;border:none;cursor:pointer;padding:0;margin:0;width:auto;font-size:14px;line-height:1;opacity:.7;transition:opacity .15s}
+  .level-btn:hover{opacity:1}
+  .level-info{margin-bottom:8px;padding:10px 12px;border-radius:8px;font-size:12px;line-height:1.5}
+  .level-info-title{font-weight:600;margin-bottom:6px;font-size:13px}
+  .level-table{border-collapse:collapse;width:100%;margin-bottom:6px}
+  .level-table td{padding:2px 0}
+  .level-table td:first-child{color:#666;width:55%}
+  .level-table td:last-child{font-weight:500}
+  .level-desc{color:#555;margin-bottom:6px}
+  .level-link{color:inherit;opacity:.7;font-size:11px;text-decoration:none}
+  .level-link:hover{opacity:1;text-decoration:underline}
 </style>
 </head>
 <body>
@@ -806,6 +929,10 @@ const FIELD_NAMES = ${fieldNames};
 function togglePw(id) {
   const el = document.getElementById(id);
   el.type = el.type === 'password' ? 'text' : 'password';
+}
+function toggleInfo(name) {
+  const el = document.getElementById('info_' + name);
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 async function pastePw(id) {
   try {
