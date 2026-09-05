@@ -53,6 +53,18 @@ function saveIntegrators() {
   fs.writeFileSync(INTEGRATORS_FILE, JSON.stringify(INTEGRATORS, null, 2), { mode: 0o600 });
 }
 
+// Rate limit for self-serve registration: max 3 tokens per IP per hour
+const registerRateLimit = new Map(); // ip → [timestamp, ...]
+function checkRegisterLimit(ip) {
+  const now = Date.now();
+  const window = 60 * 60 * 1000;
+  const hits = (registerRateLimit.get(ip) || []).filter(t => now - t < window);
+  if (hits.length >= 3) return false;
+  hits.push(now);
+  registerRateLimit.set(ip, hits);
+  return true;
+}
+
 // Resolve auth: returns { isAdmin, integrator|null }
 function resolveAuth(authHeader) {
   if (!authHeader || !authHeader.startsWith('Bearer ')) return { isAdmin: false, integrator: null };
@@ -331,6 +343,19 @@ const server = http.createServer(async (req, res) => {
     }
 
     res.writeHead(405).end(); return;
+  }
+
+  // ── POST /api/register ────────────────────────────────────────────────────
+  // Self-serve: anyone can get a token. Rate-limited to 3 per IP per hour.
+  if (req.method === 'POST' && url.pathname === '/api/register') {
+    const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
+    if (!checkRegisterLimit(ip)) return json(res, 429, { error: 'too many registrations, try again later' });
+    const token = 'tok_' + crypto.randomBytes(20).toString('hex');
+    const id = 'u_' + crypto.randomBytes(6).toString('hex');
+    INTEGRATORS[token] = { id, name: id, destinations: {}, created: new Date().toISOString() };
+    saveIntegrators();
+    console.log(`[register] new integrator: ${id} from ${ip}`);
+    return json(res, 200, { token, base_url: process.env.ZEROCREDS_BASE_URL || 'https://zerocreds.ru' });
   }
 
   // ── POST /admin/integrators/create ────────────────────────────────────────
