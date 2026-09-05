@@ -573,6 +573,25 @@ function createApp(config = {}) {
     try { fs.unlinkSync(path.join(CONNECT_PENDING_DIR, `${token}.json`)); } catch {}
   }
 
+  // Scan for an active (not expired, not done) session matching integrator+service+user_hash.
+  function findActiveSession(integrator_id, service_slug, user_hash) {
+    let files;
+    try { files = fs.readdirSync(CONNECT_PENDING_DIR).filter(f => f.endsWith('.json')); }
+    catch { return null; }
+    for (const file of files) {
+      const token = file.slice(0, -5);
+      if (fs.existsSync(path.join(CONNECT_PENDING_DIR, `${token}.done`))) continue;
+      try {
+        const s = JSON.parse(fs.readFileSync(path.join(CONNECT_PENDING_DIR, file), 'utf8'));
+        if (s.integrator_id === integrator_id &&
+            s.service_slug === service_slug &&
+            s.user_hash === user_hash &&
+            s.expires > Date.now()) return s;
+      } catch {}
+    }
+    return null;
+  }
+
   function readSaved(uid) {
     if (!uid) return {};
     try { return JSON.parse(fs.readFileSync(path.join(SAVED_DIR, `${uid}.json`), 'utf8')); }
@@ -819,7 +838,7 @@ function createApp(config = {}) {
       let payload;
       try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
 
-      let { title, description, fields, destination, destinations_by_level, ttl_minutes = 30, notify, allow_save } = payload;
+      let { title, description, fields, destination, destinations_by_level, ttl_minutes = 30, notify, allow_save, uid, service } = payload;
       if (!title || !Array.isArray(fields) || fields.length === 0) {
         return json(res, 400, { error: 'missing title or fields' });
       }
@@ -870,6 +889,32 @@ function createApp(config = {}) {
         if (f.level && !VALID_LEVELS.includes(f.level)) return json(res, 400, { error: `invalid field level: ${f.level}` });
       }
 
+      const integrator_id = integrator?.id || 'admin';
+
+      // Deterministic URL: integrators may pass uid + service for idempotent sessions
+      const useDeterministic = integrator && uid && service;
+      if (useDeterministic && !/^[a-zA-Z0-9_-]{1,64}$/.test(service)) {
+        return json(res, 400, { error: 'invalid service: must match [a-zA-Z0-9_-]{1,64}' });
+      }
+
+      let user_hash, service_slug;
+      if (useDeterministic) {
+        service_slug = service;
+        // HMAC keyed on integrator token — not reversible without the key
+        user_hash = crypto.createHmac('sha256', integrator.token).update(String(uid)).digest('hex').slice(0, 10);
+
+        // Idempotency: return existing active session for same integrator+service+user
+        const existing = findActiveSession(integrator_id, service_slug, user_hash);
+        if (existing) {
+          return json(res, 200, {
+            token: existing.token,
+            url: `${BASE_URL}/${integrator_id}/${service_slug}/${user_hash}?gen=${existing.token}`,
+            expires_at: new Date(existing.expires).toISOString(),
+            reused: true,
+          });
+        }
+      }
+
       const token = crypto.randomBytes(16).toString('hex');
       const expires = Date.now() + Math.min(Math.max(ttl_minutes, 1), 1440) * 60 * 1000;
 
@@ -877,14 +922,19 @@ function createApp(config = {}) {
         destination: destination || null,
         destinations_by_level: resolvedByLevel || null,
         expires, notify,
-        integrator_id: integrator?.id || 'admin',
-        allowSave: allow_save !== false };
+        integrator_id,
+        allowSave: allow_save !== false,
+        ...(useDeterministic ? { service_slug, user_hash, integrator_slug: integrator_id } : {}),
+      };
       fs.mkdirSync(CONNECT_PENDING_DIR, { recursive: true });
       fs.writeFileSync(path.join(CONNECT_PENDING_DIR, `${token}.json`), JSON.stringify(pending), { mode: 0o600 });
 
+      const url_out = useDeterministic
+        ? `${BASE_URL}/${integrator_id}/${service_slug}/${user_hash}?gen=${token}`
+        : `${BASE_URL}/f/${token}`;
       return json(res, 200, {
         token,
-        url: `${BASE_URL}/f/${token}`,
+        url: url_out,
         expires_at: new Date(expires).toISOString(),
       });
     }
@@ -1032,6 +1082,46 @@ function createApp(config = {}) {
       }
 
       res.writeHead(405).end(); return;
+    }
+
+    // ── /{integrator_slug}/{service_slug}/{user_hash} — pretty deterministic URL ──
+    // Only GET is needed here; form submissions always go to POST /f/{token}.
+    const prettyMatch = url.pathname.match(/^\/([a-zA-Z0-9_-]{1,64})\/([a-zA-Z0-9_-]{1,64})\/([a-f0-9]{10})$/);
+    if (prettyMatch && req.method === 'GET') {
+      const [, slug, svc, hash] = prettyMatch;
+      const gen = url.searchParams.get('gen');
+
+      let pending;
+      if (gen && /^[a-f0-9]{32}$/.test(gen)) {
+        pending = readPending(gen);
+        if (!pending || pending.integrator_slug !== slug || pending.service_slug !== svc || pending.user_hash !== hash) {
+          res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
+          return;
+        }
+      } else {
+        pending = findActiveSession(slug, svc, hash);
+        if (pending) {
+          res.writeHead(302, { Location: `${BASE_URL}/${slug}/${svc}/${hash}?gen=${pending.token}` }).end();
+          return;
+        }
+      }
+
+      if (!pending || !pending.fields) {
+        res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
+        return;
+      }
+      if (pending.expires < Date.now()) {
+        res.writeHead(410, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
+        return;
+      }
+
+      const { uid: cookieUid } = getOrCreateUid(req);
+      const savedValues = readSaved(cookieUid);
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Set-Cookie': cookieSetHeader(cookieUid, req),
+      }).end(dynamicFormHtml(pending.token, pending, savedValues));
+      return;
     }
 
     json(res, 404, { error: 'not found' });

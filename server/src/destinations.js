@@ -145,13 +145,36 @@ async function saveVault(destination, fields) {
 }
 
 // ── http_post ─────────────────────────────────────────────────────────────────
-// destination: { type: "http_post", url: "https://...", headers: {} }
-// POSTs the collected fields as JSON to the given URL.
+// destination: { type: "http_post", url: "https://agent/tokens?label={label}",
+//                headers: { "Authorization": "Bearer {api_key}" },
+//                body: { "userId": "{uid}", "value": "{fields_json}" } }
+// url, header values, and body strings all support {field_name} placeholders;
+// {fields_json} is replaced with the full JSON of submitted fields.
+// If body is omitted, posts fields as-is. Times out after 10 seconds.
 async function saveHttpPost(destination, fields) {
-  const { url, headers = {} } = destination;
-  if (!url) throw new Error('http_post: missing url');
+  const { url: urlTemplate, headers: headersTemplate = {}, body: bodyTemplate } = destination;
+  if (!urlTemplate) throw new Error('http_post: missing url');
+  const url = applyTemplate(urlTemplate, fields);
   try { new URL(url); } catch { throw new Error('http_post: invalid url'); }
-  await httpPost(url, fields, null, headers);
+  const resolvedHeaders = applyTemplate(headersTemplate, fields);
+  const bodyObj = bodyTemplate ? applyTemplate(bodyTemplate, fields) : fields;
+  await httpPost(url, bodyObj, null, resolvedHeaders);
+}
+
+function applyTemplate(template, fields) {
+  if (typeof template === 'string') {
+    return template.replace(/\{([a-zA-Z0-9_]+)\}/g, (_, k) => {
+      if (k === 'fields_json') return JSON.stringify(fields);
+      return fields[k] !== undefined ? fields[k] : `{${k}}`;
+    });
+  }
+  if (Array.isArray(template)) return template.map(v => applyTemplate(v, fields));
+  if (template && typeof template === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(template)) out[k] = applyTemplate(v, fields);
+    return out;
+  }
+  return template;
 }
 
 // ── dispatcher ────────────────────────────────────────────────────────────────
@@ -196,6 +219,7 @@ function httpPost(url, bodyObj, bearerToken, extraHeaders = {}) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(10_000, () => { req.destroy(new Error('http_post: request timeout')); });
     req.end(body);
   });
 }
