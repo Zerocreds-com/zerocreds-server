@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const http = require('http');
 const https = require('https');
 
 const AGENT_TOKENS_DIR = path.join(os.homedir(), 'agent-tokens');
@@ -10,18 +11,20 @@ const AGENT_TOKENS_DIR = path.join(os.homedir(), 'agent-tokens');
 // ── local_file ────────────────────────────────────────────────────────────────
 // destination: { type: "local_file", uid: "123", filename: "github" }
 // Writes JSON to ~/agent-tokens/{uid}/{filename}
-async function saveLocalFile(destination, fields) {
+async function saveLocalFile(destination, fields, opts = {}) {
   const { uid, filename } = destination;
   if (!uid || !filename) throw new Error('local_file: missing uid or filename');
   if (!/^[a-zA-Z0-9_-]{1,64}$/.test(filename)) throw new Error('local_file: invalid filename');
   if (!/^-?\d{1,20}$/.test(String(uid))) throw new Error('local_file: invalid uid');
 
-  const dir = path.join(AGENT_TOKENS_DIR, String(uid));
+  const baseDir = opts.tokensDir || AGENT_TOKENS_DIR;
+  const dir = path.join(baseDir, String(uid));
   fs.mkdirSync(dir, { recursive: true });
   const data = Object.keys(fields).length === 1 && fields[Object.keys(fields)[0]] !== undefined
     ? { value: fields[Object.keys(fields)[0]], ...fields }
     : fields;
   fs.writeFileSync(path.join(dir, filename), JSON.stringify(data, null, 2), { mode: 0o600 });
+  return { secret_id: `${uid}/${filename}` };
 }
 
 // ── gcp_secret_manager ────────────────────────────────────────────────────────
@@ -141,13 +144,24 @@ async function saveVault(destination, fields) {
   );
 }
 
+// ── http_post ─────────────────────────────────────────────────────────────────
+// destination: { type: "http_post", url: "https://...", headers: {} }
+// POSTs the collected fields as JSON to the given URL.
+async function saveHttpPost(destination, fields) {
+  const { url, headers = {} } = destination;
+  if (!url) throw new Error('http_post: missing url');
+  try { new URL(url); } catch { throw new Error('http_post: invalid url'); }
+  await httpPost(url, fields, null, headers);
+}
+
 // ── dispatcher ────────────────────────────────────────────────────────────────
-async function saveToDestination(destination, fields) {
+async function saveToDestination(destination, fields, opts = {}) {
   switch (destination.type) {
-    case 'local_file':          return saveLocalFile(destination, fields);
+    case 'local_file':          return saveLocalFile(destination, fields, opts);
     case 'gcp_secret_manager':  return saveGcpSecret(destination, fields);
     case 'aws_secrets_manager': return saveAwsSecret(destination, fields);
     case 'vault':               return saveVault(destination, fields);
+    case 'http_post':           return saveHttpPost(destination, fields);
     default: throw new Error(`Unknown destination type: ${destination.type}`);
   }
 }
@@ -157,6 +171,9 @@ function httpPost(url, bodyObj, bearerToken, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(bodyObj);
     const parsed = new URL(url);
+    const isHttps = parsed.protocol === 'https:';
+    const transport = isHttps ? https : http;
+    const defaultPort = isHttps ? 443 : 80;
     const headers = {
       'Content-Type': 'application/json',
       'Content-Length': Buffer.byteLength(body),
@@ -164,9 +181,9 @@ function httpPost(url, bodyObj, bearerToken, extraHeaders = {}) {
     };
     if (bearerToken) headers['Authorization'] = `Bearer ${bearerToken}`;
 
-    const req = https.request({
+    const req = transport.request({
       hostname: parsed.hostname,
-      port: parsed.port || 443,
+      port: parsed.port || defaultPort,
       path: parsed.pathname + parsed.search,
       method: 'POST',
       headers,
