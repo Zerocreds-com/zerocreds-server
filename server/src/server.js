@@ -367,7 +367,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 400, { error: 'destination.type is required' });
     }
     // Validate fields
-    const VALID_TYPES = ['text', 'password', 'email', 'number', 'tel', 'textarea'];
+    const VALID_TYPES = ['text', 'password', 'email', 'number', 'tel', 'textarea', 'url'];
     for (const f of fields) {
       if (!f.name || !f.label) return json(res, 400, { error: `field missing name or label: ${JSON.stringify(f)}` });
       if (!/^[a-zA-Z0-9_]{1,64}$/.test(f.name)) return json(res, 400, { error: `invalid field name: ${f.name}` });
