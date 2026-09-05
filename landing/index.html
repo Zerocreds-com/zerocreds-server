@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ZeroCreds — Credentials never reach the LLM</title>
+<meta name="description" content="Open-source self-hosted server that collects credentials from users and writes them directly to your secret store — the AI agent only sees {status: ok}.">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23141414' rx='6'/%3E%3Ctext x='16' y='22' font-family='monospace' font-size='14' font-weight='700' fill='%23f0f0f0' text-anchor='middle'%3EZC%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;1,400&family=Manrope:wght@600;700;800&display=swap">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:      #f7f7f5;
+    --surface: #efefed;
+    --border:  #d8d8d4;
+    --text:    #141414;
+    --muted:   #888882;
+    --dim:     #c8c8c4;
+    --accent:  #141414;
+    --mono: 'IBM Plex Mono', monospace;
+    --display: 'Manrope', sans-serif;
+    --sans: 'IBM Plex Sans', sans-serif;
+    --term-bg: #111111;
+    --term-border: #2a2a2a;
+    --term-surface: #181818;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── NAV ── */
+  nav {
+    position: sticky; top: 0; z-index: 100;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    padding: 0 40px;
+    height: 56px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .nav-brand {
+    font-family: var(--mono); font-size: 13px; font-weight: 500;
+    letter-spacing: 0.12em; color: var(--text); text-decoration: none;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .nav-badge {
+    font-size: 9px; letter-spacing: 0.1em; padding: 2px 6px;
+    border: 1px solid var(--border); color: var(--muted); text-transform: uppercase;
+  }
+  .nav-links { display: flex; gap: 32px; align-items: center; }
+  .nav-links a {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+    color: var(--muted); text-decoration: none; text-transform: uppercase;
+    transition: color .15s;
+  }
+  .nav-links a:hover { color: var(--text); }
+  .nav-gh {
+    display: flex; align-items: center; gap: 6px;
+    border: 1px solid var(--border); padding: 6px 14px;
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+    color: var(--text) !important; text-transform: uppercase !important;
+    transition: background .15s !important;
+  }
+  .nav-gh:hover { background: var(--surface) !important; }
+
+  /* ── HERO ── */
+  .hero {
+    max-width: 1200px; margin: 0 auto;
+    padding: 96px 40px 80px;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 72px; align-items: start;
+  }
+  .eyebrow {
+    font-family: var(--mono); font-size: 11px;
+    color: var(--muted); letter-spacing: 0.2em;
+    text-transform: uppercase; margin-bottom: 28px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .eyebrow::before { content: ''; width: 24px; height: 1px; background: var(--muted); }
+  h1 {
+    font-family: var(--display); font-weight: 800;
+    font-size: clamp(32px, 4vw, 54px);
+    line-height: 1.06; letter-spacing: -0.02em; text-wrap: balance;
+    margin-bottom: 28px;
+  }
+  h1 em { color: var(--muted); font-style: normal; }
+  .hero-sub {
+    font-size: 17px; color: var(--muted); line-height: 1.7;
+    max-width: 420px; margin-bottom: 36px;
+  }
+  .cta-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .btn-primary {
+    font-family: var(--mono); font-size: 12px; font-weight: 500;
+    letter-spacing: 0.1em; text-transform: uppercase; text-decoration: none;
+    background: var(--text); color: var(--bg);
+    padding: 13px 28px; display: inline-block; transition: opacity .15s;
+  }
+  .btn-primary:hover { opacity: .85; }
+  .btn-outline {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.1em;
+    text-transform: uppercase; text-decoration: none; color: var(--muted);
+    border: 1px solid var(--border); padding: 13px 28px; display: inline-block;
+    transition: border-color .15s, color .15s;
+  }
+  .btn-outline:hover { border-color: var(--muted); color: var(--text); }
+
+  /* ── TERMINAL ── */
+  .hero-right { padding-top: 8px; }
+  .terminal-wrap {
+    border: 1px solid var(--term-border);
+    background: var(--term-bg);
+  }
+  .terminal-bar {
+    border-bottom: 1px solid var(--term-border); padding: 10px 16px;
+    display: flex; align-items: center; gap: 8px;
+    background: var(--term-surface);
+  }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #333; }
+  .terminal-title {
+    font-family: var(--mono); font-size: 11px; color: #555;
+    letter-spacing: 0.05em; margin-left: 8px;
+  }
+  .service-tabs { margin-left: auto; display: flex; gap: 2px; }
+  .stab {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em;
+    padding: 4px 10px; border: 1px solid var(--term-border);
+    background: transparent; color: #555; cursor: pointer; transition: all .15s;
+  }
+  .stab:hover { color: #ccc; border-color: #555; }
+  .stab.active { background: #2a2a2a; color: #f0f0f0; border-color: #444; }
+  .terminal-body { padding: 22px 20px; font-family: var(--mono); font-size: 13px; line-height: 2; min-height: 220px; }
+  .t-prompt { color: #444; }
+  .t-dim { color: #3a3a3a; }
+  .t-out { color: #555; }
+  .t-key { color: #888; }
+  .t-val { color: #b0b0b0; }
+  .t-ok { color: #7a7a7a; }
+  .t-green { color: #5a8a5a; }
+  .t-comment { color: #3a5a3a; }
+  .cursor {
+    display: inline-block; width: 8px; height: 14px;
+    background: #555; vertical-align: middle;
+    animation: blink 1.1s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ── TRUST STRIP ── */
+  .trust-strip {
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .trust-inner {
+    max-width: 1200px; margin: 0 auto; padding: 18px 40px;
+    display: flex; align-items: center; gap: 40px; flex-wrap: wrap;
+  }
+  .trust-item {
+    display: flex; align-items: center; gap: 10px;
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em;
+    color: var(--muted); text-transform: uppercase;
+  }
+  .trust-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); flex-shrink: 0; }
+
+  /* ── HOW IT WORKS ── */
+  .how-section { max-width: 1200px; margin: 0 auto; padding: 96px 40px; }
+  .section-header {
+    display: flex; align-items: baseline; justify-content: space-between;
+    margin-bottom: 56px; border-bottom: 1px solid var(--border); padding-bottom: 20px;
+  }
+  .section-label {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.2em;
+    color: var(--muted); text-transform: uppercase;
+  }
+  .section-title {
+    font-family: var(--display); font-size: 30px; font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+  .steps {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    border: 1px solid var(--border); gap: 0; background: var(--border);
+  }
+  .step { background: var(--bg); padding: 40px 32px; }
+  .step-num {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.2em;
+    color: var(--dim); margin-bottom: 20px; text-transform: uppercase;
+  }
+  .step h3 {
+    font-family: var(--display); font-size: 20px; font-weight: 800;
+    letter-spacing: -0.01em; margin-bottom: 14px;
+  }
+  .step p { color: var(--muted); font-size: 14px; line-height: 1.75; }
+  .step-code {
+    font-family: var(--mono); font-size: 12px; color: var(--dim);
+    margin-top: 20px; line-height: 1.8;
+    border-left: 2px solid var(--border); padding-left: 14px;
+  }
+  .step-code .sc-key { color: var(--muted); }
+
+  /* ── INTEGRATION ── */
+  .integration-section {
+    background: var(--term-bg);
+    border-top: 1px solid var(--term-border);
+    border-bottom: 1px solid var(--term-border);
+  }
+  .integration-inner {
+    max-width: 1200px; margin: 0 auto; padding: 96px 40px;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 80px; align-items: start;
+  }
+  .integration-left {}
+  .integration-left .eyebrow { color: #555; }
+  .integration-left .eyebrow::before { background: #555; }
+  .integration-left h2 {
+    font-family: var(--display); font-size: clamp(26px, 3vw, 40px);
+    font-weight: 800; letter-spacing: -0.02em; line-height: 1.1;
+    color: #f0f0f0; margin-bottom: 24px;
+  }
+  .integration-left p { color: #666; font-size: 15px; line-height: 1.7; margin-bottom: 16px; }
+  .integration-left p strong { color: #999; font-weight: 500; }
+  .api-block {
+    border: 1px solid var(--term-border); background: var(--term-surface);
+    font-family: var(--mono); font-size: 12px; line-height: 1.9;
+  }
+  .api-block-header {
+    border-bottom: 1px solid var(--term-border); padding: 8px 16px;
+    display: flex; align-items: center; gap: 10px;
+    font-size: 10px; letter-spacing: 0.12em; color: #555; text-transform: uppercase;
+  }
+  .method-badge {
+    padding: 2px 8px; font-size: 10px; font-weight: 500;
+    background: #1a2a1a; color: #5a8a5a; letter-spacing: 0.05em;
+  }
+  .api-block-body { padding: 16px 20px; }
+  .api-line { display: flex; }
+  .ai-key { color: #666; min-width: 120px; }
+  .ai-val { color: #a0a0a0; }
+  .ai-str { color: #888; }
+  .ai-comment { color: #444; }
+  .integration-right .api-block + .api-block { margin-top: 16px; }
+  .flow-arrow {
+    font-family: var(--mono); font-size: 11px; color: #444;
+    text-align: center; padding: 10px 0; letter-spacing: 0.1em;
+  }
+
+  /* ── DESTINATIONS ── */
+  .dest-section { max-width: 1200px; margin: 0 auto; padding: 96px 40px; }
+  .dest-grid {
+    display: grid; grid-template-columns: repeat(2, 1fr);
+    border: 1px solid var(--border); background: var(--border); gap: 1px;
+  }
+  .dest-card { background: var(--bg); padding: 36px 32px; }
+  .dest-icon {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+    color: var(--dim); margin-bottom: 16px; text-transform: uppercase;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .dest-icon::before { content: ''; width: 16px; height: 1px; background: var(--dim); }
+  .dest-card h3 {
+    font-family: var(--display); font-size: 18px; font-weight: 800;
+    letter-spacing: -0.01em; margin-bottom: 10px;
+  }
+  .dest-card p { color: var(--muted); font-size: 14px; line-height: 1.7; margin-bottom: 16px; }
+  .dest-guarantee {
+    font-family: var(--mono); font-size: 11px; color: var(--dim);
+    border-left: 2px solid var(--border); padding-left: 12px; line-height: 1.8;
+  }
+
+  /* ── OPEN SOURCE ── */
+  .oss-section { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+  .oss-inner {
+    max-width: 1200px; margin: 0 auto; padding: 96px 40px;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 96px; align-items: center;
+  }
+  .oss-inner h2 {
+    font-family: var(--display); font-size: clamp(28px, 3.5vw, 44px);
+    font-weight: 800; line-height: 1.1; letter-spacing: -0.02em; text-wrap: balance;
+  }
+  .oss-right p { color: var(--muted); font-size: 16px; line-height: 1.7; margin-bottom: 24px; }
+  .license-box {
+    border: 1px solid var(--border); padding: 20px 24px; margin-bottom: 28px;
+    font-family: var(--mono); font-size: 12px; line-height: 1.9;
+  }
+  .l-label {
+    font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 10px;
+  }
+  .l-item { color: var(--text); }
+  .l-check { color: var(--muted); margin-right: 8px; }
+  .oss-links { display: flex; gap: 12px; flex-wrap: wrap; }
+
+  /* ── AUDIT ── */
+  .audit-section {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .audit-inner {
+    max-width: 1200px; margin: 0 auto; padding: 56px 40px;
+    display: flex; align-items: center; justify-content: space-between; gap: 40px; flex-wrap: wrap;
+  }
+  .audit-inner p {
+    font-family: var(--mono); font-size: 13px; color: var(--muted); line-height: 1.9;
+    max-width: 600px;
+  }
+  .audit-inner p code { color: var(--text); }
+  .audit-check {
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
+    border: 1px solid var(--border); padding: 16px 24px; white-space: nowrap;
+  }
+  .audit-check div { margin-bottom: 4px; }
+  .audit-check .ac-done { color: var(--text); }
+
+  /* ── FOOTER ── */
+  footer {
+    padding: 28px 40px;
+    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;
+    border-top: 1px solid var(--border);
+  }
+  .footer-brand { font-family: var(--mono); font-size: 12px; letter-spacing: 0.12em; color: var(--muted); }
+  .footer-links { display: flex; gap: 24px; }
+  .footer-links a {
+    font-family: var(--mono); font-size: 11px; color: var(--dim); text-decoration: none;
+    letter-spacing: 0.08em;
+  }
+  .footer-links a:hover { color: var(--muted); }
+  .footer-copy { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 900px) {
+    nav { padding: 0 20px; }
+    .hero { grid-template-columns: 1fr; gap: 48px; padding: 60px 20px 48px; }
+    .how-section { padding: 64px 20px; }
+    .steps { grid-template-columns: 1fr; }
+    .integration-inner { grid-template-columns: 1fr; gap: 48px; padding: 64px 20px; }
+    .dest-section { padding: 64px 20px; }
+    .dest-grid { grid-template-columns: 1fr; }
+    .oss-inner { grid-template-columns: 1fr; gap: 40px; padding: 64px 20px; }
+    .audit-inner { padding: 40px 20px; }
+    footer { padding: 24px 20px; flex-direction: column; align-items: flex-start; }
+    .trust-inner { gap: 20px; padding: 16px 20px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .cursor { animation: none; } }
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <a href="/" class="nav-brand">ZEROCREDS <span class="nav-badge">Open Source</span></a>
+  <div class="nav-links">
+    <a href="#how">How it works</a>
+    <a href="#integrate">Integrate</a>
+    <a href="https://github.com/Zerocreds-com/zerocreds-server" class="nav-gh">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+      GitHub
+    </a>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-left">
+    <div class="eyebrow">Agent Security Infrastructure</div>
+    <h1>Credentials<br>never reach<br><em>the LLM.</em></h1>
+    <p class="hero-sub">
+      Your AI agent creates a one-time link, the user fills the form, credentials are saved to your secret store. The agent only sees <code style="font-size:15px;background:var(--surface);padding:2px 6px">{&nbsp;status:&nbsp;"ok"&nbsp;}</code>.
+    </p>
+    <div class="cta-row">
+      <a class="btn-primary" href="https://github.com/Zerocreds-com/zerocreds-server">Get started →</a>
+      <a class="btn-outline" href="#integrate">API docs</a>
+    </div>
+  </div>
+
+  <div class="hero-right">
+    <div class="terminal-wrap">
+      <div class="terminal-bar">
+        <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+        <span class="terminal-title">zerocreds · agent view</span>
+        <div class="service-tabs">
+          <button class="stab active" onclick="switchSvc('create',this)">Create</button>
+          <button class="stab" onclick="switchSvc('poll',this)">Poll</button>
+          <button class="stab" onclick="switchSvc('done',this)">Done</button>
+        </div>
+      </div>
+
+      <div class="terminal-body" id="term-create">
+        <div><span class="t-prompt">POST </span><span class="t-val">/api/session/create</span></div>
+        <div class="t-dim">{</div>
+        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">title:</span> <span class="t-str">"Connect GitHub"</span><span class="t-dim">,</span></div>
+        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">fields:</span> <span class="t-str">[{name:"token", type:"password"}]</span><span class="t-dim">,</span></div>
+        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">destination:</span> <span class="t-str">"prod-gcp"</span> <span class="t-comment">// named, pre-configured</span></div>
+        <div class="t-dim">}</div>
+        <div>&nbsp;</div>
+        <div><span class="t-prompt">← </span><span class="t-val">{</span></div>
+        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">url:</span> <span class="t-str">"https://zerocreds.ru/f/8a3f…"</span></div>
+        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">expires_at:</span> <span class="t-str">"2026-09-05T13:30:00Z"</span></div>
+        <div><span class="t-val">}</span></div>
+        <div>&nbsp;</div>
+        <div><span class="t-dim">→ Send link to user via Telegram</span></div>
+      </div>
+
+      <div class="terminal-body" id="term-poll" style="display:none">
+        <div><span class="t-comment"># user opened the link and filled the form</span></div>
+        <div>&nbsp;</div>
+        <div><span class="t-prompt">GET </span><span class="t-val">/api/session/8a3f…/status</span></div>
+        <div><span class="t-prompt">← </span><span class="t-val">{ status: "pending" }</span></div>
+        <div>&nbsp;</div>
+        <div><span class="t-comment"># 12 seconds later…</span></div>
+        <div>&nbsp;</div>
+        <div><span class="t-prompt">GET </span><span class="t-val">/api/session/8a3f…/status</span></div>
+        <div><span class="t-prompt">← </span><span class="t-val">{ status: "done" }</span></div>
+        <div>&nbsp;</div>
+        <div class="t-green">✓ Credentials saved. Agent never saw them.</div>
+      </div>
+
+      <div class="terminal-body" id="term-done" style="display:none">
+        <div><span class="t-comment"># Credentials are now in GCP Secret Manager</span></div>
+        <div><span class="t-comment"># ZeroCreds held secretVersionAdder role only</span></div>
+        <div><span class="t-comment"># It CANNOT read them back — by IAM design</span></div>
+        <div>&nbsp;</div>
+        <div><span class="t-prompt">$ </span><span class="t-val">gcloud secrets versions access latest \</span></div>
+        <div><span class="t-dim">&nbsp;&nbsp;--secret="github-creds"</span></div>
+        <div><span class="t-comment"># → your runtime reads with secretAccessor role</span></div>
+        <div><span class="t-comment"># → zerocreds cannot. Two separate service accounts.</span></div>
+        <div>&nbsp;</div>
+        <div class="t-green">Zero knowledge. Verifiable. Open source.</div>
+        <div><span class="t-prompt">$ </span><span class="cursor"></span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- TRUST STRIP -->
+<div class="trust-strip">
+  <div class="trust-inner">
+    <div class="trust-item"><span class="trust-dot"></span>MIT License</div>
+    <div class="trust-item"><span class="trust-dot"></span>Self-hosted — your machine, your data</div>
+    <div class="trust-item"><span class="trust-dot"></span>No cloud dependency</div>
+    <div class="trust-item"><span class="trust-dot"></span>Auditable by commit hash</div>
+    <div class="trust-item"><span class="trust-dot"></span>Zero LLM access to secrets</div>
+  </div>
+</div>
+
+<!-- HOW IT WORKS -->
+<section class="how-section" id="how">
+  <div class="section-header">
+    <span class="section-label">Mechanism</span>
+    <span class="section-title">How it works</span>
+  </div>
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">step 01</div>
+      <h3>Agent creates session</h3>
+      <p>Your agent calls <code>/api/session/create</code> with a list of fields and a destination. Gets back a one-time URL. No credentials involved — just a form schema.</p>
+      <div class="step-code">
+        <span class="sc-key">POST</span> /api/session/create<br>
+        fields: [{name, type, label}]<br>
+        destination: "named-preset"<br>
+        <span class="sc-key">←</span> { url, expires_at }
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">step 02</div>
+      <h3>User fills the form</h3>
+      <p>Agent sends the URL to the user (Telegram, email, Slack). User opens the secure form on <em>your server</em>, types their credentials. Data goes directly to the configured destination over HTTPS.</p>
+      <div class="step-code">
+        user → opens zerocreds.ru/f/{token}<br>
+        → fills form → POST /f/{token}<br>
+        → server writes to destination<br>
+        <span class="sc-key">←</span> { ok: true }
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">step 03</div>
+      <h3>Agent gets confirmation</h3>
+      <p>Agent polls <code>/api/session/{token}/status</code> until <code>"done"</code>. It learns that credentials were saved — but never sees the values. Your runtime reads them from the secret store with a separate key.</p>
+      <div class="step-code">
+        <span class="sc-key">GET</span> /session/{token}/status<br>
+        <span class="sc-key">←</span> { status: "done" }<br>
+        <br>
+        agent: continues task ✓
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- INTEGRATION -->
+<div class="integration-section" id="integrate">
+  <div class="integration-inner">
+    <div class="integration-left">
+      <div class="eyebrow" style="color:#555;margin-bottom:24px"><span style="display:inline-block;width:24px;height:1px;background:#444;margin-right:12px;vertical-align:middle"></span>For Integrators</div>
+      <h2>Your agent. Your secret store. One API call.</h2>
+      <p>
+        Configure named destinations once on your server. Your agent references them by name — <strong>no credentials travel in API requests.</strong>
+      </p>
+      <p>
+        Works with Google Secret Manager (write-only IAM role), AWS Secrets Manager, HashiCorp Vault, or plain local files. Pick what fits your stack.
+      </p>
+      <p style="margin-bottom:0">
+        Protect the session creation endpoint with <code style="color:#888;font-size:13px">ZEROCREDS_ADMIN_TOKEN</code>. Each integration partner gets their own token.
+      </p>
+    </div>
+    <div class="integration-right">
+      <div class="api-block">
+        <div class="api-block-header">
+          <span class="method-badge">1</span> ~/zerocreds-destinations.json (server config)
+        </div>
+        <div class="api-block-body">
+          <div class="ai-comment">{</div>
+          <div><span class="ai-key">&nbsp;&nbsp;"prod-gcp":</span> <span class="ai-comment">{</span></div>
+          <div><span class="ai-key">&nbsp;&nbsp;&nbsp;&nbsp;"type":</span> <span class="ai-str">"gcp_secret_manager"</span><span class="ai-comment">,</span></div>
+          <div><span class="ai-key">&nbsp;&nbsp;&nbsp;&nbsp;"secret":</span> <span class="ai-str">"projects/P/secrets/S"</span><span class="ai-comment">,</span></div>
+          <div><span class="ai-key">&nbsp;&nbsp;&nbsp;&nbsp;"credentials":</span> <span class="ai-str">"&lt;base64 SA key&gt;"</span></div>
+          <div class="ai-comment">&nbsp;&nbsp;}</div>
+          <div class="ai-comment">}</div>
+        </div>
+      </div>
+      <div class="flow-arrow">↓ agent references by name</div>
+      <div class="api-block">
+        <div class="api-block-header">
+          <span class="method-badge">2</span> POST /api/session/create
+        </div>
+        <div class="api-block-body">
+          <div class="ai-comment">{</div>
+          <div><span class="ai-key">&nbsp;&nbsp;"title":</span> <span class="ai-str">"Connect GitHub"</span><span class="ai-comment">,</span></div>
+          <div><span class="ai-key">&nbsp;&nbsp;"fields":</span> <span class="ai-val">[{name, label, type}]</span><span class="ai-comment">,</span></div>
+          <div><span class="ai-key">&nbsp;&nbsp;"destination":</span> <span class="ai-str">"prod-gcp"</span> <span class="ai-comment">← just a name</span></div>
+          <div class="ai-comment">}</div>
+        </div>
+      </div>
+      <div class="flow-arrow">↓ returns one-time URL</div>
+      <div class="api-block">
+        <div class="api-block-header">
+          <span class="method-badge">3</span> GET /api/session/{token}/status
+        </div>
+        <div class="api-block-body">
+          <div><span class="ai-val">{ status: </span><span class="ai-str">"done"</span><span class="ai-val"> }</span></div>
+          <div class="ai-comment" style="margin-top:6px"># credentials saved · agent never saw them</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- DESTINATIONS -->
+<section class="dest-section">
+  <div class="section-header">
+    <span class="section-label">Storage</span>
+    <span class="section-title">Write-only destinations</span>
+  </div>
+  <div class="dest-grid">
+    <div class="dest-card">
+      <div class="dest-icon">GCP Secret Manager</div>
+      <h3>Google Cloud</h3>
+      <p>ZeroCreds uses <code>roles/secretmanager.secretVersionAdder</code> — it can push a new version but physically cannot read any secret back. Enforced by IAM, not code.</p>
+      <div class="dest-guarantee">
+        IAM permission: secretmanager.versions.add<br>
+        NOT granted: secretmanager.versions.access<br>
+        Granularity: per-secret, not project-wide
+      </div>
+    </div>
+    <div class="dest-card">
+      <div class="dest-icon">AWS Secrets Manager</div>
+      <h3>Amazon Web Services</h3>
+      <p>IAM policy grants only <code>secretsmanager:PutSecretValue</code> on a specific ARN. <code>GetSecretValue</code> is never in the policy — write-only by construction.</p>
+      <div class="dest-guarantee">
+        Action: secretsmanager:PutSecretValue<br>
+        NOT granted: GetSecretValue<br>
+        Resource: specific secret ARN
+      </div>
+    </div>
+    <div class="dest-card">
+      <div class="dest-icon">HashiCorp Vault</div>
+      <h3>Self-hosted Vault</h3>
+      <p>Vault policy allows <code>create</code> and <code>update</code> capabilities on the target path. <code>read</code> is simply omitted — Vault enforces it at the policy layer.</p>
+      <div class="dest-guarantee">
+        capabilities = ["create", "update"]<br>
+        "read" not listed = denied<br>
+        path: secret/data/your/path
+      </div>
+    </div>
+    <div class="dest-card">
+      <div class="dest-icon">Local File</div>
+      <h3>Filesystem</h3>
+      <p>Simplest option. Credentials are written as JSON to <code>~/agent-tokens/{uid}/{name}</code> with mode 0600. No external dependency — works offline, ideal for single-machine setups.</p>
+      <div class="dest-guarantee">
+        path: ~/agent-tokens/{uid}/{filename}<br>
+        permissions: 0600 (owner-only read)<br>
+        format: JSON object of field values
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- OPEN SOURCE -->
+<div class="oss-section">
+  <div class="oss-inner">
+    <h2>Open source.<br>Audit the code.<br>Run it yourself.</h2>
+    <div class="oss-right">
+      <p>
+        A security specialist can check the exact git commit running on your server via <code>/version</code>, match it to the public source code, and verify line by line what happens to user input.
+      </p>
+      <p>
+        No SaaS. No telemetry. No vendor lock-in. Deploy on any Linux server in 5 minutes.
+      </p>
+      <div class="license-box">
+        <div class="l-label">MIT License</div>
+        <div class="l-item"><span class="l-check">→</span> Free for any use, commercial or personal</div>
+        <div class="l-item"><span class="l-check">→</span> Modify and distribute freely</div>
+        <div class="l-item"><span class="l-check">→</span> No warranty — self-hosted, you're in control</div>
+        <div class="l-item"><span class="l-check">→</span> Contributions welcome</div>
+      </div>
+      <div class="oss-links">
+        <a class="btn-primary" href="https://github.com/Zerocreds-com/zerocreds-server">GitHub →</a>
+        <a class="btn-outline" href="https://github.com/Zerocreds-com/zerocreds-server/blob/main/CONTRIBUTING.md">Contributing</a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- AUDIT -->
+<div class="audit-section">
+  <div class="audit-inner">
+    <p>
+      Anyone can verify the running server at any time.<br>
+      <code>GET https://zerocreds.ru/version</code> returns the git commit hash.<br>
+      Match it to the source on GitHub. Line by line.
+    </p>
+    <div class="audit-check">
+      <div class="ac-done">✓ GET /version → commit hash</div>
+      <div class="ac-done">✓ Match hash on github.com</div>
+      <div class="ac-done">✓ Read the source, trust nothing</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const SVCS = ['create', 'poll', 'done'];
+let autoIdx = 0;
+let autoTimer;
+
+function switchSvc(svc, btn) {
+  clearInterval(autoTimer);
+  _show(svc);
+  autoIdx = SVCS.indexOf(svc);
+  startAuto();
+}
+function _show(svc) {
+  document.querySelectorAll('.terminal-body').forEach(el => el.style.display = 'none');
+  document.querySelectorAll('.stab').forEach(el => el.classList.remove('active'));
+  document.getElementById('term-' + svc).style.display = 'block';
+  const btn = document.querySelector(`.stab[onclick*="${svc}"]`);
+  if (btn) btn.classList.add('active');
+}
+function startAuto() {
+  autoTimer = setInterval(() => {
+    autoIdx = (autoIdx + 1) % SVCS.length;
+    _show(SVCS[autoIdx]);
+  }, 4000);
+}
+startAuto();
+</script>
+
+<!-- FOOTER -->
+<footer>
+  <span class="footer-brand">ZEROCREDS</span>
+  <div class="footer-links">
+    <a href="https://github.com/Zerocreds-com/zerocreds-server">GitHub</a>
+    <a href="https://github.com/Zerocreds-com/zerocreds-server/blob/main/LICENSE">MIT License</a>
+    <a href="https://github.com/Zerocreds-com/zerocreds-server/blob/main/CONTRIBUTING.md">Contributing</a>
+    <a href="/version">Version</a>
+  </div>
+  <span class="footer-copy">Credentials stay yours. Agents stay useful.</span>
+</footer>
+
+</body>
+</html>

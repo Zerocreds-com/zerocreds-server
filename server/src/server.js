@@ -15,6 +15,22 @@ const AGENT_TOKENS_DIR = path.join(os.homedir(), 'agent-tokens');
 // Admin token protects POST /api/session/create
 const ADMIN_TOKEN = process.env.ZEROCREDS_ADMIN_TOKEN || '';
 
+// Named destinations: loaded once from file, so SA keys never travel in API requests.
+// File path: ZEROCREDS_DESTINATIONS_FILE env or ~/zerocreds-destinations.json
+// Format: { "my-gcp": { type: "gcp_secret_manager", ... }, "local-dev": { ... } }
+let NAMED_DESTINATIONS = {};
+function loadNamedDestinations() {
+  const file = process.env.ZEROCREDS_DESTINATIONS_FILE
+    || path.join(os.homedir(), 'zerocreds-destinations.json');
+  try {
+    NAMED_DESTINATIONS = JSON.parse(fs.readFileSync(file, 'utf8'));
+    console.log(`[config] loaded ${Object.keys(NAMED_DESTINATIONS).length} named destination(s) from ${file}`);
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.warn('[config] destinations file error:', e.message);
+  }
+}
+loadNamedDestinations();
+
 // Read git commit at startup for /version endpoint
 function readCommit() {
   try {
@@ -255,9 +271,19 @@ const server = http.createServer(async (req, res) => {
     let payload;
     try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
 
-    const { title, description, fields, destination, ttl_minutes = 30, notify } = payload;
-    if (!title || !Array.isArray(fields) || fields.length === 0 || !destination?.type) {
-      return json(res, 400, { error: 'missing title, fields, or destination.type' });
+    let { title, description, fields, destination, ttl_minutes = 30, notify } = payload;
+    if (!title || !Array.isArray(fields) || fields.length === 0 || !destination) {
+      return json(res, 400, { error: 'missing title, fields, or destination' });
+    }
+    // Resolve named destination: "destination": "my-gcp" → looks up config
+    if (typeof destination === 'string') {
+      if (!NAMED_DESTINATIONS[destination]) {
+        return json(res, 400, { error: `unknown named destination: ${destination}` });
+      }
+      destination = NAMED_DESTINATIONS[destination];
+    }
+    if (!destination?.type) {
+      return json(res, 400, { error: 'destination.type is required' });
     }
     // Validate fields
     const VALID_TYPES = ['text', 'password', 'email', 'number', 'tel', 'textarea'];
