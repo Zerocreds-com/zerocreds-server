@@ -145,7 +145,7 @@ function readBody(req, maxBytes = 1_048_576) {
 }
 
 function json(res, status, data, extraHeaders = {}) {
-  res.writeHead(status, { 'Content-Type': 'application/json', ...extraHeaders });
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...extraHeaders });
   res.end(JSON.stringify(data));
 }
 

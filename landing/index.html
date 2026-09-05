@@ -499,55 +499,60 @@
     <div class="terminal-wrap">
       <div class="terminal-bar">
         <div class="dot"></div><div class="dot"></div><div class="dot"></div>
-        <span class="terminal-title">zerocreds · agent view</span>
+        <span class="terminal-title">zerocreds · quick connect</span>
         <div class="service-tabs">
-          <button class="stab active" onclick="switchSvc('create',this)">Create</button>
-          <button class="stab" onclick="switchSvc('poll',this)">Poll</button>
+          <button class="stab active" onclick="switchSvc('register',this)">Register</button>
+          <button class="stab" onclick="switchSvc('create',this)">Create form</button>
           <button class="stab" onclick="switchSvc('done',this)">Done</button>
         </div>
       </div>
 
-      <div class="terminal-body" id="term-create">
-        <div><span class="t-prompt">POST </span><span class="t-val">/api/session/create</span></div>
+      <div class="terminal-body" id="term-register">
+        <div><span class="t-comment"># One curl to get your API token:</span></div>
+        <div>&nbsp;</div>
+        <div><span class="t-prompt">POST </span><span class="t-val">https://zerocreds.ru/api/register</span></div>
         <div class="t-dim">{</div>
-        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">title:</span> <span class="t-str">"Connect GitHub"</span><span class="t-dim">,</span></div>
-        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">fields:</span> <span class="t-str">[{name:"token", type:"password"}]</span><span class="t-dim">,</span></div>
-        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">destination:</span> <span class="t-str">{type:"local_file",uid:"me",filename:"github"}</span></div>
+        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">"email":</span> <span class="t-str">"you@company.com"</span><span class="t-dim">,</span></div>
+        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">"website":</span> <span class="t-str">"https://yourapp.com"</span><span class="t-dim">,</span></div>
+        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">"category":</span> <span class="t-str">"ai_agent"</span></div>
         <div class="t-dim">}</div>
         <div>&nbsp;</div>
         <div><span class="t-prompt">← </span><span class="t-val">{</span></div>
-        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">url:</span> <span class="t-str">"https://zerocreds.ru/f/8a3f…"</span></div>
-        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">expires_at:</span> <span class="t-str">"2026-09-05T13:30:00Z"</span></div>
+        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">"token":</span> <span class="t-green">"tok_7f3a1c2d4e5b6f8a…"</span><span class="t-dim">,</span></div>
+        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">"base_url":</span> <span class="t-str">"https://zerocreds.ru"</span></div>
         <div><span class="t-val">}</span></div>
         <div>&nbsp;</div>
-        <div><span class="t-dim">→ Send link to user via Telegram</span></div>
+        <div class="t-green">✓ Token is yours. No credit card. Free.</div>
+        <div><span class="t-prompt">$ </span><span class="cursor"></span></div>
       </div>
 
-      <div class="terminal-body" id="term-poll" style="display:none">
-        <div><span class="t-comment"># user opened the link and filled the form</span></div>
+      <div class="terminal-body" id="term-create" style="display:none">
+        <div><span class="t-comment"># Use the token — create a credential form session:</span></div>
         <div>&nbsp;</div>
-        <div><span class="t-prompt">GET </span><span class="t-val">/api/session/8a3f…/status</span></div>
-        <div><span class="t-prompt">← </span><span class="t-val">{ status: "pending" }</span></div>
+        <div><span class="t-prompt">POST </span><span class="t-val">/api/session/create</span></div>
+        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">Authorization:</span> <span class="t-str">Bearer tok_7f3a…</span></div>
+        <div class="t-dim">{</div>
+        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">"title":</span> <span class="t-str">"Connect GitHub"</span><span class="t-dim">,</span></div>
+        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">"fields":</span> <span class="t-str">[{name:"token", type:"password"}]</span><span class="t-dim">,</span></div>
+        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">"destination":</span> <span class="t-str">"prod-gcp"</span></div>
+        <div class="t-dim">}</div>
         <div>&nbsp;</div>
-        <div><span class="t-comment"># 12 seconds later…</span></div>
+        <div><span class="t-prompt">← </span><span class="t-val">{ "url": "https://zerocreds.ru/f/8a3f…" }</span></div>
         <div>&nbsp;</div>
-        <div><span class="t-prompt">GET </span><span class="t-val">/api/session/8a3f…/status</span></div>
-        <div><span class="t-prompt">← </span><span class="t-val">{ status: "done" }</span></div>
-        <div>&nbsp;</div>
-        <div class="t-green">✓ Credentials saved. Agent never saw them.</div>
+        <div><span class="t-dim">→ Send this link to your user</span></div>
       </div>
 
       <div class="terminal-body" id="term-done" style="display:none">
-        <div><span class="t-comment"># Credentials are now in GCP Secret Manager</span></div>
-        <div><span class="t-comment"># ZeroCreds held secretVersionAdder role only</span></div>
-        <div><span class="t-comment"># It CANNOT read them back — by IAM design</span></div>
+        <div><span class="t-comment"># User filled the form. Poll for status:</span></div>
         <div>&nbsp;</div>
-        <div><span class="t-prompt">$ </span><span class="t-val">gcloud secrets versions access latest \</span></div>
-        <div><span class="t-dim">&nbsp;&nbsp;--secret="github-creds"</span></div>
-        <div><span class="t-comment"># → your runtime reads with secretAccessor role</span></div>
-        <div><span class="t-comment"># → zerocreds cannot. Two separate service accounts.</span></div>
+        <div><span class="t-prompt">GET </span><span class="t-val">/api/session/8a3f…/status</span></div>
+        <div><span class="t-prompt">← </span><span class="t-val">{ status: <span class="t-green">"done"</span> }</span></div>
         <div>&nbsp;</div>
-        <div class="t-green">Zero knowledge. Verifiable. Open source.</div>
+        <div><span class="t-comment"># Credentials in GCP Secret Manager.</span></div>
+        <div><span class="t-comment"># ZeroCreds used secretVersionAdder — can't read back.</span></div>
+        <div><span class="t-comment"># Your runtime reads with a separate secretAccessor role.</span></div>
+        <div>&nbsp;</div>
+        <div class="t-green">Agent never saw the credentials. Ever.</div>
         <div><span class="t-prompt">$ </span><span class="cursor"></span></div>
       </div>
     </div>
@@ -565,6 +570,75 @@
   </div>
 </div>
 
+<!-- FLOW DIAGRAM -->
+<div style="max-width:1200px;margin:0 auto;padding:80px 40px 0">
+  <div style="border-bottom:1px solid var(--border);padding-bottom:20px;margin-bottom:56px;display:flex;align-items:baseline;justify-content:space-between">
+    <span style="font-family:var(--mono);font-size:11px;letter-spacing:0.2em;color:var(--muted);text-transform:uppercase">Security model</span>
+    <span style="font-family:var(--display);font-size:30px;font-weight:800;letter-spacing:-0.02em">Credentials bypass the agent entirely</span>
+  </div>
+  <div style="overflow-x:auto">
+  <svg viewBox="0 0 900 220" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:900px;display:block;margin:0 auto;font-family:'IBM Plex Mono',monospace">
+    <defs>
+      <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#888"/>
+      </marker>
+      <marker id="arr-red" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#c8c8c4"/>
+      </marker>
+    </defs>
+
+    <!-- User -->
+    <rect x="20" y="70" width="140" height="80" rx="4" fill="#efefed" stroke="#d8d8d4"/>
+    <text x="90" y="104" text-anchor="middle" font-size="12" fill="#141414" font-weight="500">User</text>
+    <text x="90" y="122" text-anchor="middle" font-size="10" fill="#888882">fills the form</text>
+
+    <!-- Arrow 1: User → ZeroCreds -->
+    <line x1="161" y1="110" x2="224" y2="110" stroke="#888" stroke-width="1.5" marker-end="url(#arr)"/>
+    <text x="192" y="102" text-anchor="middle" font-size="9" fill="#888882">credentials</text>
+    <text x="192" y="114" text-anchor="middle" font-size="9" fill="#888882">POST /f/{token}</text>
+
+    <!-- ZeroCreds Server -->
+    <rect x="226" y="60" width="160" height="100" rx="4" fill="#141414" stroke="#2a2a2a"/>
+    <text x="306" y="100" text-anchor="middle" font-size="12" fill="#f0f0f0" font-weight="500">ZeroCreds</text>
+    <text x="306" y="118" text-anchor="middle" font-size="10" fill="#666">one-time form server</text>
+    <text x="306" y="134" text-anchor="middle" font-size="9" fill="#555">self-hosted · open source</text>
+
+    <!-- Arrow 2: ZeroCreds → Secret Manager -->
+    <line x1="387" y1="110" x2="454" y2="110" stroke="#888" stroke-width="1.5" marker-end="url(#arr)"/>
+    <text x="420" y="102" text-anchor="middle" font-size="9" fill="#888882">write-only</text>
+    <text x="420" y="114" text-anchor="middle" font-size="9" fill="#888882">secretVersionAdder</text>
+
+    <!-- Secret Store -->
+    <rect x="456" y="60" width="160" height="100" rx="4" fill="#efefed" stroke="#d8d8d4"/>
+    <text x="536" y="96" text-anchor="middle" font-size="12" fill="#141414" font-weight="500">Secret Store</text>
+    <text x="536" y="114" text-anchor="middle" font-size="10" fill="#888882">GCP / AWS / Vault</text>
+    <text x="536" y="132" text-anchor="middle" font-size="9" fill="#c8c8c4">ZeroCreds can't read</text>
+
+    <!-- Arrow 3: Secret Manager → Your Agent (reads) -->
+    <line x1="617" y1="110" x2="684" y2="110" stroke="#888" stroke-width="1.5" marker-end="url(#arr)"/>
+    <text x="650" y="102" text-anchor="middle" font-size="9" fill="#888882">secretAccessor</text>
+    <text x="650" y="114" text-anchor="middle" font-size="9" fill="#888882">separate SA key</text>
+
+    <!-- Your Agent/Service -->
+    <rect x="686" y="60" width="160" height="100" rx="4" fill="#efefed" stroke="#d8d8d4"/>
+    <text x="766" y="100" text-anchor="middle" font-size="12" fill="#141414" font-weight="500">Your Agent</text>
+    <text x="766" y="118" text-anchor="middle" font-size="10" fill="#888882">reads credentials</text>
+    <text x="766" y="134" text-anchor="middle" font-size="9" fill="#c8c8c4">from secret store only</text>
+
+    <!-- Crossed out arrow: Agent never touches credentials directly -->
+    <line x1="306" y1="60" x2="306" y2="20" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4,3"/>
+    <line x1="766" y1="60" x2="766" y2="20" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4,3"/>
+    <line x1="306" y1="20" x2="766" y2="20" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4,3"/>
+    <text x="536" y="14" text-anchor="middle" font-size="9" fill="#555">ZeroCreds and your agent never communicate about credentials</text>
+
+    <!-- Labels bottom -->
+    <text x="306" y="185" text-anchor="middle" font-size="9" fill="#555">never stores long-term</text>
+    <text x="536" y="185" text-anchor="middle" font-size="9" fill="#555">IAM-enforced isolation</text>
+    <text x="766" y="185" text-anchor="middle" font-size="9" fill="#555">only sees { status: "done" }</text>
+  </svg>
+  </div>
+</div>
+
 <!-- QUICKSTART -->
 <div id="quickstart">
   <div class="quickstart">
@@ -576,8 +650,13 @@
       <div class="qs-step">
         <div class="qs-num">step 01</div>
         <h3>Get your token</h3>
-        <p>Click below — fill in your email and what you're building. Takes 30 seconds, no credit card.</p>
-        <button class="qs-btn" onclick="getToken()">Get API token →</button>
+        <p>One curl to register. Or click the button — same API, UI wrapper. Free, no credit card.</p>
+        <div class="qs-code"><span class="qk">curl</span> -X POST <span class="qv">https://zerocreds.ru/api/register</span> \
+  -H <span class="qv">"Content-Type: application/json"</span> \
+  -d <span class="qv">'{"email":"you@co.com","category":"ai_agent"}'</span>
+
+<span class="qc">← </span><span class="qg">{ "token": "tok_7f3a1c…", "base_url": "…" }</span></div>
+        <button class="qs-btn" style="margin-top:16px" onclick="getToken()">Get token in UI →</button>
       </div>
       <div class="qs-step">
         <div class="qs-num">step 02</div>
@@ -817,7 +896,7 @@
 </div>
 
 <script>
-const SVCS = ['create', 'poll', 'done'];
+const SVCS = ['register', 'create', 'done'];
 let autoIdx = 0;
 let autoTimer;
 
