@@ -71,7 +71,7 @@ Content-Type: application/json
     { "name": "username", "label": "GitHub Username", "type": "text",     "required": true },
     { "name": "token",    "label": "Personal Access Token", "type": "password", "required": true }
   ],
-  "destination": "prod-gcp",
+  "destination": "prod-gcp",           // named (recommended) — OR inline object (see below)
   "ttl_minutes": 30,
   "notify": {
     "tg_bot_token": "...",
@@ -148,7 +148,13 @@ Returns the running git commit hash. Compare it to this repo for security audits
 
 ## Destinations
 
-Configure once in `~/zerocreds-destinations.json` (or `ZEROCREDS_DESTINATIONS_FILE`). Agents reference destinations by name — SA keys and credentials never travel through API requests.
+Two ways to pass `destination` in the API:
+
+**Named (recommended)** — configure once in `~/zerocreds-destinations.json` (or `ZEROCREDS_DESTINATIONS_FILE`), reference by name. SA keys never travel through API requests.
+
+**Inline object** — pass the destination config directly in the API call. Simpler for local/dev setups, but means credentials are in the request body.
+
+**Named destinations file** (`~/zerocreds-destinations.json`):
 
 ```json
 {
@@ -171,6 +177,18 @@ Configure once in `~/zerocreds-destinations.json` (or `ZEROCREDS_DESTINATIONS_FI
     "token": "hvs...."
   },
   "local-dev": {
+    "type": "local_file",
+    "uid": "123456",
+    "filename": "github"
+  }
+}
+```
+
+**Inline destination** (pass directly in API call — simpler for dev/local, but config travels in the request):
+
+```json
+{
+  "destination": {
     "type": "local_file",
     "uid": "123456",
     "filename": "github"
