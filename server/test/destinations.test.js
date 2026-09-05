@@ -31,7 +31,7 @@ function startMockServer(handler) {
   return new Promise((resolve) => {
     const srv = http.createServer(handler);
     srv.listen(0, '127.0.0.1', () =>
-      resolve({ port: srv.address().port, close: () => new Promise(r => srv.close(r)) }),
+      resolve({ port: srv.address().port, close: () => new Promise(r => { srv.closeAllConnections(); srv.close(r); }) }),
     );
   });
 }
