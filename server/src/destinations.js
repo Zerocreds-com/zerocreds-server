@@ -177,6 +177,29 @@ function applyTemplate(template, fields) {
   return template;
 }
 
+// ── macos_keychain ────────────────────────────────────────────────────────────
+// destination: { type: "macos_keychain", service: "zerocreds", account: "github" }
+// Stores JSON of all fields as the keychain password entry.
+// Uses `security` CLI — macOS only, no extra dependencies.
+// Read back: security find-generic-password -s zerocreds -a github -w
+async function saveMacosKeychain(destination, fields) {
+  if (process.platform !== 'darwin') throw new Error('macos_keychain: only supported on macOS');
+  const { execFile } = require('child_process');
+  const { service = 'zerocreds', account = 'default' } = destination;
+  if (!/^[a-zA-Z0-9_@.-]{1,128}$/.test(account)) throw new Error('macos_keychain: invalid account');
+  if (!/^[a-zA-Z0-9_@.-]{1,128}$/.test(service)) throw new Error('macos_keychain: invalid service');
+
+  const value = JSON.stringify(fields);
+  await new Promise((resolve, reject) => {
+    // -U = update existing entry if present
+    execFile('security', ['add-generic-password', '-U', '-s', service, '-a', account, '-w', value],
+      { timeout: 5000 },
+      (err) => err ? reject(new Error(`macos_keychain: ${err.message}`)) : resolve(undefined),
+    );
+  });
+  return { secret_id: `keychain:${service}/${account}` };
+}
+
 // ── dispatcher ────────────────────────────────────────────────────────────────
 async function saveToDestination(destination, fields, opts = {}) {
   switch (destination.type) {
@@ -185,6 +208,7 @@ async function saveToDestination(destination, fields, opts = {}) {
     case 'aws_secrets_manager': return saveAwsSecret(destination, fields);
     case 'vault':               return saveVault(destination, fields);
     case 'http_post':           return saveHttpPost(destination, fields);
+    case 'macos_keychain':      return saveMacosKeychain(destination, fields);
     default: throw new Error(`Unknown destination type: ${destination.type}`);
   }
 }
