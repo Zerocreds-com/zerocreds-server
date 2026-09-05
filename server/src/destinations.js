@@ -29,6 +29,7 @@ async function saveLocalFile(destination, fields) {
 //                credentials: "<base64 SA key JSON>" }
 // Uses secretVersionAdder role — write-only by IAM design.
 // The SA key is embedded in the destination config so the calling agent controls which key.
+// Returns { secret_id } — the canonical resource name of the new secret version.
 async function saveGcpSecret(destination, fields) {
   const { secret, credentials } = destination;
   if (!secret || !credentials) throw new Error('gcp_secret_manager: missing secret or credentials');
@@ -39,7 +40,11 @@ async function saveGcpSecret(destination, fields) {
   const payload = Buffer.from(JSON.stringify(fields)).toString('base64');
   const url = `https://secretmanager.googleapis.com/v1/${secret}:addVersion`;
 
-  await httpPost(url, { payload: { data: payload } }, token);
+  const raw = await httpPost(url, { payload: { data: payload } }, token);
+  // GCP returns { name: "projects/P/secrets/S/versions/N" }
+  let versionName;
+  try { versionName = JSON.parse(raw).name; } catch {}
+  return { secret_id: versionName || secret };
 }
 
 // Minimal JWT-based GCP token — no SDK dependency
@@ -150,16 +155,20 @@ async function saveHttpPost(destination, fields) {
   const parsed = new URL(url);
   if (parsed.protocol !== 'https:') throw new Error('http_post: url must use https');
   await httpPost(url, fields);
+  return {};
 }
 
 // ── dispatcher ────────────────────────────────────────────────────────────────
+// Returns { secret_id? } — destination-specific reference the agent can use
+// to retrieve the credentials using its own read credentials.
+// Credentials themselves never return through this interface.
 async function saveToDestination(destination, fields) {
   switch (destination.type) {
-    case 'local_file':          return saveLocalFile(destination, fields);
+    case 'local_file':          await saveLocalFile(destination, fields); return {};
     case 'http_post':           return saveHttpPost(destination, fields);
     case 'gcp_secret_manager':  return saveGcpSecret(destination, fields);
-    case 'aws_secrets_manager': return saveAwsSecret(destination, fields);
-    case 'vault':               return saveVault(destination, fields);
+    case 'aws_secrets_manager': await saveAwsSecret(destination, fields); return {};
+    case 'vault':               await saveVault(destination, fields); return {};
     default: throw new Error(`Unknown destination type: ${destination.type}`);
   }
 }

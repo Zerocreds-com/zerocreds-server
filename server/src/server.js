@@ -191,6 +191,18 @@ function writeSaved(uid, submittedFields, fieldDefs) {
   catch (e) { console.error('[saved] write failed:', e.message); }
 }
 
+// For GCP/cloud destinations: remember only the secret_id reference, not the field values.
+// On next visit the form checks if the secret still exists (agent does this via its own read creds).
+function writeSavedRef(uid, pending, secretId) {
+  if (!uid || !secretId) return;
+  const existing = readSaved(uid);
+  // Key by a fingerprint of the session (title + field names) so we match same form next time
+  const fp = `__ref__${pending.title}`;
+  existing[fp] = secretId;
+  try { fs.writeFileSync(path.join(SAVED_DIR, `${uid}.json`), JSON.stringify(existing), { mode: 0o600 }); }
+  catch (e) { console.error('[saved-ref] write failed:', e.message); }
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
@@ -467,7 +479,11 @@ const server = http.createServer(async (req, res) => {
     const pendingFile = path.join(CONNECT_PENDING_DIR, `${token}.json`);
     const doneFile = path.join(CONNECT_PENDING_DIR, `${token}.done`);
 
-    if (fs.existsSync(doneFile)) return json(res, 200, { status: 'done' });
+    if (fs.existsSync(doneFile)) {
+      let doneData = {};
+      try { doneData = JSON.parse(fs.readFileSync(doneFile, 'utf8')); } catch {}
+      return json(res, 200, { status: 'done', ...doneData });
+    }
     if (!fs.existsSync(pendingFile)) return json(res, 200, { status: 'expired' });
     try {
       const p = JSON.parse(fs.readFileSync(pendingFile, 'utf8'));
@@ -535,19 +551,31 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
+      let saveResult;
       try {
-        await saveToDestination(pending.destination, clean);
+        saveResult = await saveToDestination(pending.destination, clean);
       } catch (e) {
         console.error('[dynamic] save failed:', e.message);
         return json(res, 500, { error: 'failed to save credentials' });
       }
 
       deletePending(token);
-      // Leave a .done marker so status endpoint knows it completed
-      try { fs.writeFileSync(path.join(CONNECT_PENDING_DIR, `${token}.done`), '', { mode: 0o600 }); } catch {}
+      // .done file stores destination reference (secret_id etc.) — never the credentials
+      try {
+        fs.writeFileSync(
+          path.join(CONNECT_PENDING_DIR, `${token}.done`),
+          JSON.stringify(saveResult || {}),
+          { mode: 0o600 },
+        );
+      } catch {}
 
       const { uid, hadCookie } = getOrCreateUid(req);
-      if (save && pending.allowSave) writeSaved(uid, clean, pending.fields);
+      // Remember only the secret_id reference, never field values
+      if (save && pending.allowSave && saveResult?.secret_id) {
+        writeSavedRef(uid, pending, saveResult.secret_id);
+      } else if (save && pending.allowSave && !saveResult?.secret_id) {
+        writeSaved(uid, clean, pending.fields);
+      }
 
       const respHeaders = (save || hadCookie) ? { 'Set-Cookie': cookieSetHeader(uid, req) } : {};
       json(res, 200, { ok: true }, respHeaders);
