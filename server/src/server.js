@@ -8,81 +8,7 @@ const crypto = require('crypto');
 const { startNalogLogin, confirmNalogCode } = require('./nalog-login');
 const { saveToDestination } = require('./destinations');
 
-const PORT = process.env.PORT || 3456;
-const CONNECT_PENDING_DIR = path.join(os.homedir(), 'connect-pending');
-const AGENT_TOKENS_DIR = path.join(os.homedir(), 'agent-tokens');
-const SAVED_DIR = path.join(os.homedir(), 'zerocreds-saved');
-try { fs.mkdirSync(SAVED_DIR, { recursive: true, mode: 0o700 }); } catch {}
-
-// Admin token protects POST /api/session/create
-const ADMIN_TOKEN = process.env.ZEROCREDS_ADMIN_TOKEN || '';
-
-// Global named destinations (admin-configured, SA keys never travel in API requests)
-// File: ZEROCREDS_DESTINATIONS_FILE or ~/zerocreds-destinations.json
-let NAMED_DESTINATIONS = {};
-function loadNamedDestinations() {
-  const file = process.env.ZEROCREDS_DESTINATIONS_FILE
-    || path.join(os.homedir(), 'zerocreds-destinations.json');
-  try {
-    NAMED_DESTINATIONS = JSON.parse(fs.readFileSync(file, 'utf8'));
-    console.log(`[config] loaded ${Object.keys(NAMED_DESTINATIONS).length} named destination(s)`);
-  } catch (e) {
-    if (e.code !== 'ENOENT') console.warn('[config] destinations file error:', e.message);
-  }
-}
-loadNamedDestinations();
-
-// Integrators registry: each integrator gets a token and may have their own named destinations
-// File: ZEROCREDS_INTEGRATORS_FILE or ~/zerocreds-integrators.json
-// Format: { "tok_xxx": { id, name, destinations: { "prod": {...} } } }
-let INTEGRATORS = {};
-const INTEGRATORS_FILE = process.env.ZEROCREDS_INTEGRATORS_FILE
-  || path.join(os.homedir(), 'zerocreds-integrators.json');
-
-function loadIntegrators() {
-  try {
-    INTEGRATORS = JSON.parse(fs.readFileSync(INTEGRATORS_FILE, 'utf8'));
-    console.log(`[config] loaded ${Object.keys(INTEGRATORS).length} integrator(s)`);
-  } catch (e) {
-    if (e.code !== 'ENOENT') console.warn('[config] integrators file error:', e.message);
-  }
-}
-loadIntegrators();
-
-function saveIntegrators() {
-  fs.writeFileSync(INTEGRATORS_FILE, JSON.stringify(INTEGRATORS, null, 2), { mode: 0o600 });
-}
-
-// Rate limit for self-serve registration: max 3 tokens per IP per hour
-const registerRateLimit = new Map(); // ip → [timestamp, ...]
-function checkRegisterLimit(ip) {
-  const now = Date.now();
-  const window = 60 * 60 * 1000;
-  const hits = (registerRateLimit.get(ip) || []).filter(t => now - t < window);
-  if (hits.length >= 3) return false;
-  hits.push(now);
-  registerRateLimit.set(ip, hits);
-  return true;
-}
-
-// Resolve auth: returns { isAdmin, integrator|null }
-function resolveAuth(authHeader) {
-  if (!authHeader || !authHeader.startsWith('Bearer ')) return { isAdmin: false, integrator: null };
-  const token = authHeader.slice(7);
-  if (ADMIN_TOKEN && token === ADMIN_TOKEN) return { isAdmin: true, integrator: null };
-  if (INTEGRATORS[token]) return { isAdmin: false, integrator: { token, ...INTEGRATORS[token] } };
-  return { isAdmin: false, integrator: null };
-}
-
-// Resolve destination: name → config, checking integrator's destinations first
-function resolveDestination(destination, integrator) {
-  if (typeof destination !== 'string') return destination; // inline object, use as-is
-  // Check integrator-scoped destinations first
-  if (integrator?.destinations?.[destination]) return integrator.destinations[destination];
-  // Fall back to global named destinations
-  if (NAMED_DESTINATIONS[destination]) return NAMED_DESTINATIONS[destination];
-  return null;
-}
+// ── Module-level pure helpers ──────────────────────────────────────────────────
 
 // Read git commit at startup for /version endpoint
 function readCommit() {
@@ -149,15 +75,6 @@ function json(res, status, data, extraHeaders = {}) {
   res.end(JSON.stringify(data));
 }
 
-function readPending(token) {
-  const file = path.join(CONNECT_PENDING_DIR, `${token}.json`);
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
-}
-
-function deletePending(token) {
-  try { fs.unlinkSync(path.join(CONNECT_PENDING_DIR, `${token}.json`)); } catch {}
-}
-
 function parseCookieUid(req) {
   const m = (req.headers.cookie || '').match(/(?:^|;\s*)zc_uid=([0-9a-f-]{36})/);
   return m ? m[1] : null;
@@ -173,490 +90,7 @@ function cookieSetHeader(uid, req) {
   return `zc_uid=${uid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000${secure}`;
 }
 
-function readSaved(uid) {
-  if (!uid) return {};
-  try { return JSON.parse(fs.readFileSync(path.join(SAVED_DIR, `${uid}.json`), 'utf8')); }
-  catch { return {}; }
-}
-
-function writeSaved(uid, submittedFields, fieldDefs) {
-  if (!uid) return;
-  const existing = readSaved(uid);
-  for (const f of fieldDefs) {
-    if (f.type !== 'password' && submittedFields[f.name] !== undefined && submittedFields[f.name] !== '') {
-      existing[f.name] = submittedFields[f.name];
-    }
-  }
-  try { fs.writeFileSync(path.join(SAVED_DIR, `${uid}.json`), JSON.stringify(existing), { mode: 0o600 }); }
-  catch (e) { console.error('[saved] write failed:', e.message); }
-}
-
-function writeSavedRef(uid, pending, secretId) {
-  if (!uid || !secretId) return;
-  const existing = readSaved(uid);
-  const fp = `__ref__${pending.title}`;
-  existing[fp] = secretId;
-  try { fs.writeFileSync(path.join(SAVED_DIR, `${uid}.json`), JSON.stringify(existing), { mode: 0o600 }); }
-  catch (e) { console.error('[saved-ref] write failed:', e.message); }
-}
-
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://localhost:${PORT}`);
-
-  // CORS preflight for API
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type,Authorization', 'Access-Control-Allow-Methods': 'GET,POST' }).end();
-    return;
-  }
-
-  // GET / — redirect to landing
-  if (req.method === 'GET' && url.pathname === '/') {
-    res.writeHead(301, { Location: 'https://zerocreds.ru' }).end();
-    return;
-  }
-
-  // GET /health
-  if (req.method === 'GET' && url.pathname === '/health') {
-    return json(res, 200, { ok: true, version: { commit: COMMIT, version: VERSION } });
-  }
-
-  // GET /version — for security audits
-  if (req.method === 'GET' && url.pathname === '/version') {
-    return json(res, 200, {
-      commit: COMMIT,
-      version: VERSION,
-      source: 'https://github.com/Zerocreds-com/zerocreds-server',
-    });
-  }
-
-  // POST /connect/nalog/code — confirm 2FA (must be before connectMatch)
-  if (req.method === 'POST' && url.pathname === '/connect/nalog/code') {
-    const body = await readBody(req);
-    let payload;
-    try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
-    const { session, code } = payload;
-    if (!session || !code) return json(res, 400, { error: 'missing session or code' });
-    if (!/^[a-f0-9]{32}$/.test(session)) return json(res, 400, { error: 'invalid session' });
-    if (!/^\d{4,8}$/.test(code.trim())) return json(res, 400, { error: 'invalid code format' });
-
-    const result = await confirmNalogCode(session, code.trim());
-    if (result.error) return json(res, 400, { error: result.error });
-
-    json(res, 200, { ok: true, expires: result.expires });
-    if (result.userId && result.tgBotToken) {
-      const expiresStr = result.expires
-        ? new Date(result.expires).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })
-        : '~1 час';
-      tgNotify(result.tgBotToken, result.userId,
-        `✅ Налог.ру подключён! Токен действует до ${expiresStr} (МСК).`);
-    }
-    return;
-  }
-
-  // /connect/:service
-  const connectMatch = url.pathname.match(/^\/connect\/([a-z0-9_-]+)$/);
-  if (connectMatch) {
-    const service = connectMatch[1];
-
-    // ── nalog ──────────────────────────────────────────────────────────────────
-    if (service === 'nalog') {
-      if (req.method === 'GET') {
-        const t = url.searchParams.get('t') || '';
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(nalogFormHtml(t));
-        return;
-      }
-
-      if (req.method === 'POST') {
-        const body = await readBody(req);
-        let payload;
-        try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
-        const { t, login, password } = payload;
-        if (!t || !login || !password) return json(res, 400, { error: 'missing fields' });
-        if (!/^[a-f0-9]{32}$/.test(t)) return json(res, 400, { error: 'invalid token' });
-
-        const pending = readPending(t);
-        if (!pending) return json(res, 403, { error: 'invalid or expired token' });
-        if (pending.expires < Date.now()) { deletePending(t); return json(res, 403, { error: 'link expired' }); }
-        if (pending.service !== 'nalog') return json(res, 403, { error: 'service mismatch' });
-        if (!/^-?\d{1,20}$/.test(pending.uid)) return json(res, 403, { error: 'invalid uid' });
-
-        deletePending(t);
-
-        const result = await startNalogLogin(pending.uid, login, password, {
-          tgBotToken: pending.tg_bot_token,
-          tgChatId: pending.tg_chat_id,
-        });
-
-        if (result.error) return json(res, 400, { error: result.error });
-
-        if (result.status === 'ok') {
-          json(res, 200, { status: 'ok', expires: result.expires });
-          if (pending.tg_bot_token) {
-            const expiresStr = result.expires
-              ? new Date(result.expires).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })
-              : '~1 час';
-            tgNotify(pending.tg_bot_token, pending.tg_chat_id || pending.uid,
-              `✅ Налог.ру подключён! Токен действует до ${expiresStr} (МСК).`);
-          }
-          return;
-        }
-
-        if (result.status === 'need_code') {
-          return json(res, 200, { status: 'need_code', sessionId: result.sessionId });
-        }
-
-        return json(res, 500, { error: 'unexpected result' });
-      }
-
-      res.writeHead(405).end(); return;
-    }
-
-    // ── generic token services ─────────────────────────────────────────────────
-    const meta = SERVICE_META[service];
-    if (!meta) { res.writeHead(404).end('Unknown service'); return; }
-
-    if (req.method === 'GET') {
-      const t = url.searchParams.get('t') || '';
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(connectFormHtml(service, meta, t));
-      return;
-    }
-
-    if (req.method === 'POST') {
-      const body = await readBody(req);
-      let payload;
-      try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
-      const { t, value } = payload;
-      if (!t || !value) return json(res, 400, { error: 'missing t or value' });
-      if (!/^[a-f0-9]{32}$/.test(t)) return json(res, 400, { error: 'invalid token' });
-
-      const pending = readPending(t);
-      if (!pending) return json(res, 403, { error: 'invalid or expired token' });
-      if (pending.expires < Date.now()) { deletePending(t); return json(res, 403, { error: 'link expired' }); }
-      if (pending.service !== service) return json(res, 403, { error: 'service mismatch' });
-      if (!/^-?\d{1,20}$/.test(pending.uid)) return json(res, 403, { error: 'invalid uid' });
-
-      const tokensDir = path.join(AGENT_TOKENS_DIR, pending.uid);
-      fs.mkdirSync(tokensDir, { recursive: true });
-      fs.writeFileSync(path.join(tokensDir, service), String(value).trim(), { mode: 0o600 });
-      deletePending(t);
-
-      console.log(`[connect] saved ${service} token for uid=${pending.uid}`);
-      json(res, 200, { ok: true });
-
-      if (pending.tg_bot_token) {
-        const name = meta.name;
-        tgNotify(pending.tg_bot_token, pending.tg_chat_id || pending.uid,
-          `✅ ${name} подключён! Токен сохранён.`);
-      }
-      return;
-    }
-
-    res.writeHead(405).end(); return;
-  }
-
-  // ── POST /api/register ────────────────────────────────────────────────────
-  // Self-serve: anyone can get a token. Rate-limited to 3 per IP per hour.
-  if (req.method === 'POST' && url.pathname === '/api/register') {
-    const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
-    if (!checkRegisterLimit(ip)) return json(res, 429, { error: 'Too many registrations from this IP. Try again in an hour.' });
-    const body = await readBody(req);
-    let payload = {};
-    try { payload = JSON.parse(body); } catch {}
-    const { email, website, category } = payload;
-    if (!email || !email.includes('@')) return json(res, 400, { error: 'Valid email is required' });
-    const VALID_CATEGORIES = ['ai_agent', 'saas', 'internal', 'personal', 'other'];
-    if (!category || !VALID_CATEGORIES.includes(category)) return json(res, 400, { error: 'Category is required' });
-    const token = 'tok_' + crypto.randomBytes(20).toString('hex');
-    const id = 'u_' + crypto.randomBytes(6).toString('hex');
-    INTEGRATORS[token] = { id, name: id, email, website: website || '', category, destinations: {}, created: new Date().toISOString() };
-    saveIntegrators();
-    console.log(`[register] new integrator: ${id} email=${email} category=${category} from ${ip}`);
-    return json(res, 200, { token, base_url: process.env.ZEROCREDS_BASE_URL || 'https://zerocreds.ru' });
-  }
-
-  // ── POST /admin/integrators/create ────────────────────────────────────────
-  // Admin only. Creates a new integrator token.
-  if (req.method === 'POST' && url.pathname === '/admin/integrators/create') {
-    const { isAdmin } = resolveAuth(req.headers['authorization']);
-    if (!isAdmin) return json(res, 401, { error: 'admin token required' });
-    const body = await readBody(req);
-    let payload;
-    try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
-    const { id, name } = payload;
-    if (!id || !name) return json(res, 400, { error: 'missing id or name' });
-    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id)) return json(res, 400, { error: 'invalid id' });
-    const token = 'tok_' + crypto.randomBytes(20).toString('hex');
-    INTEGRATORS[token] = { id, name, destinations: {}, created: new Date().toISOString() };
-    saveIntegrators();
-    console.log(`[admin] created integrator: ${id} (${name})`);
-    return json(res, 200, { token, id, name });
-  }
-
-  // ── POST /api/destinations ─────────────────────────────────────────────────
-  // Integrator registers a named destination (so SA keys don't travel per-call).
-  if (req.method === 'POST' && url.pathname === '/api/destinations') {
-    const { isAdmin, integrator } = resolveAuth(req.headers['authorization']);
-    if (!isAdmin && !integrator) return json(res, 401, { error: 'unauthorized' });
-    const body = await readBody(req);
-    let payload;
-    try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
-    const { name, destination } = payload;
-    if (!name || !destination?.type) return json(res, 400, { error: 'missing name or destination.type' });
-    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) return json(res, 400, { error: 'invalid name' });
-
-    if (isAdmin) {
-      // Admin registers global destination
-      NAMED_DESTINATIONS[name] = destination;
-      const globalFile = process.env.ZEROCREDS_DESTINATIONS_FILE
-        || path.join(os.homedir(), 'zerocreds-destinations.json');
-      fs.writeFileSync(globalFile, JSON.stringify(NAMED_DESTINATIONS, null, 2), { mode: 0o600 });
-    } else {
-      // Integrator registers their own scoped destination
-      INTEGRATORS[integrator.token].destinations[name] = destination;
-      saveIntegrators();
-    }
-    return json(res, 200, { ok: true, name });
-  }
-
-  // ── POST /api/session/create ───────────────────────────────────────────────
-  // Creates a dynamic form session. Requires either ADMIN_TOKEN or integrator token.
-  if (req.method === 'POST' && url.pathname === '/api/session/create') {
-    const { isAdmin, integrator } = resolveAuth(req.headers['authorization']);
-    if (ADMIN_TOKEN && !isAdmin && !integrator) return json(res, 401, { error: 'unauthorized' });
-    const body = await readBody(req);
-    let payload;
-    try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
-
-    let { title, description, fields, destination, destinations_by_level, ttl_minutes = 30, notify, allow_save } = payload;
-    if (!title || !Array.isArray(fields) || fields.length === 0) {
-      return json(res, 400, { error: 'missing title or fields' });
-    }
-    if (!destination && !destinations_by_level) {
-      return json(res, 400, { error: 'missing destination or destinations_by_level' });
-    }
-
-    // Resolve destinations_by_level if provided
-    let resolvedByLevel = null;
-    if (destinations_by_level) {
-      if (typeof destinations_by_level !== 'object' || Array.isArray(destinations_by_level)) {
-        return json(res, 400, { error: 'destinations_by_level must be an object' });
-      }
-      resolvedByLevel = {};
-      for (const [level, dest] of Object.entries(destinations_by_level)) {
-        const r = resolveDestination(dest, integrator);
-        if (r === null) {
-          return json(res, 400, { error: typeof dest === 'string'
-            ? `unknown named destination for level "${level}": ${dest}`
-            : `destination.type required for level "${level}"` });
-        }
-        if (!r?.type) return json(res, 400, { error: `destination.type required for level "${level}"` });
-        resolvedByLevel[level] = r;
-      }
-    }
-
-    // Resolve single destination if provided
-    if (destination) {
-      const resolved = resolveDestination(destination, integrator);
-      if (resolved === null) {
-        return json(res, 400, { error: typeof destination === 'string'
-          ? `unknown named destination: ${destination}`
-          : 'destination.type is required' });
-      }
-      destination = resolved;
-      if (!destination?.type) {
-        return json(res, 400, { error: 'destination.type is required' });
-      }
-    }
-
-    // Validate fields
-    const VALID_TYPES = ['text', 'password', 'email', 'number', 'tel', 'textarea', 'url'];
-    const VALID_LEVELS = ['secret', 'pii', 'attribute', 'credential'];
-    for (const f of fields) {
-      if (!f.name || !f.label) return json(res, 400, { error: `field missing name or label: ${JSON.stringify(f)}` });
-      if (!/^[a-zA-Z0-9_]{1,64}$/.test(f.name)) return json(res, 400, { error: `invalid field name: ${f.name}` });
-      if (f.type && !VALID_TYPES.includes(f.type)) return json(res, 400, { error: `invalid field type: ${f.type}` });
-      if (f.level && !VALID_LEVELS.includes(f.level)) return json(res, 400, { error: `invalid field level: ${f.level}` });
-    }
-
-    const token = crypto.randomBytes(16).toString('hex');
-    const expires = Date.now() + Math.min(Math.max(ttl_minutes, 1), 1440) * 60 * 1000;
-
-    const pending = { token, title, description, fields,
-      destination: destination || null,
-      destinations_by_level: resolvedByLevel || null,
-      expires, notify,
-      integrator_id: integrator?.id || 'admin',
-      allowSave: allow_save !== false };
-    fs.mkdirSync(CONNECT_PENDING_DIR, { recursive: true });
-    fs.writeFileSync(path.join(CONNECT_PENDING_DIR, `${token}.json`), JSON.stringify(pending), { mode: 0o600 });
-
-    const baseUrl = process.env.ZEROCREDS_BASE_URL || 'https://zerocreds.ru';
-    return json(res, 200, {
-      token,
-      url: `${baseUrl}/f/${token}`,
-      expires_at: new Date(expires).toISOString(),
-    });
-  }
-
-  // ── GET /api/session/:token/status ─────────────────────────────────────────
-  const statusMatch = url.pathname.match(/^\/api\/session\/([a-f0-9]{32})\/status$/);
-  if (statusMatch && req.method === 'GET') {
-    const { isAdmin, integrator } = resolveAuth(req.headers['authorization']);
-    if (ADMIN_TOKEN && !isAdmin && !integrator) return json(res, 401, { error: 'unauthorized' });
-    const token = statusMatch[1];
-    const pendingFile = path.join(CONNECT_PENDING_DIR, `${token}.json`);
-    const doneFile = path.join(CONNECT_PENDING_DIR, `${token}.done`);
-
-    if (fs.existsSync(doneFile)) {
-      let doneData = {};
-      try { doneData = JSON.parse(fs.readFileSync(doneFile, 'utf8')); } catch {}
-      return json(res, 200, { status: 'done', ...doneData });
-    }
-    if (!fs.existsSync(pendingFile)) return json(res, 200, { status: 'expired' });
-    try {
-      const p = JSON.parse(fs.readFileSync(pendingFile, 'utf8'));
-      if (p.expires < Date.now()) return json(res, 200, { status: 'expired' });
-    } catch {}
-    return json(res, 200, { status: 'pending' });
-  }
-
-  // ── /f/:token — dynamic form ───────────────────────────────────────────────
-  const dynMatch = url.pathname.match(/^\/f\/([a-f0-9]{32})$/);
-  if (dynMatch) {
-    const token = dynMatch[1];
-
-    if (req.method === 'GET') {
-      const pending = readPending(token);
-      if (!pending || !pending.fields) {
-        res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
-        return;
-      }
-      if (pending.expires < Date.now()) {
-        res.writeHead(410, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
-        return;
-      }
-      const { uid } = getOrCreateUid(req);
-      const savedValues = readSaved(uid);
-      res.writeHead(200, {
-        'Content-Type': 'text/html; charset=utf-8',
-        'Set-Cookie': cookieSetHeader(uid, req),
-      }).end(dynamicFormHtml(token, pending, savedValues));
-      return;
-    }
-
-    if (req.method === 'POST') {
-      const body = await readBody(req);
-      let payload;
-      try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
-      const { t, fields: submitted, save } = payload;
-      if (!t || !submitted || typeof submitted !== 'object') return json(res, 400, { error: 'missing t or fields' });
-      if (t !== token) return json(res, 400, { error: 'token mismatch' });
-
-      const pending = readPending(token);
-      if (!pending || !pending.fields) return json(res, 403, { error: 'invalid or expired token' });
-      if (pending.expires < Date.now()) { deletePending(token); return json(res, 403, { error: 'link expired' }); }
-
-      // Validate all required fields are present
-      for (const f of pending.fields) {
-        if (f.required !== false && !submitted[f.name]) {
-          return json(res, 400, { error: `missing required field: ${f.name}` });
-        }
-      }
-
-      // Only keep declared field names — strip anything extra
-      const clean = {};
-      for (const f of pending.fields) {
-        if (submitted[f.name] !== undefined) clean[f.name] = String(submitted[f.name]);
-      }
-
-      // Validate url fields
-      for (const f of pending.fields) {
-        if (f.type === 'url' && clean[f.name]) {
-          try {
-            const u = new URL(clean[f.name]);
-            if (!['http:', 'https:'].includes(u.protocol)) throw new Error();
-          } catch { return json(res, 400, { error: `invalid URL for field: ${f.name}` }); }
-        }
-      }
-
-      let saveResult;
-      try {
-        if (pending.destinations_by_level) {
-          // Group fields by level, route each group to its destination
-          const groups = {};
-          for (const f of pending.fields) {
-            const level = f.level || 'default';
-            if (!groups[level]) groups[level] = {};
-            if (clean[f.name] !== undefined) groups[level][f.name] = clean[f.name];
-          }
-          const secretIds = {};
-          for (const [level, groupFields] of Object.entries(groups)) {
-            if (Object.keys(groupFields).length === 0) continue;
-            const dest = pending.destinations_by_level[level]
-              || pending.destinations_by_level['default']
-              || pending.destination;
-            if (!dest) {
-              console.warn(`[dynamic] no destination for level "${level}", skipping:`, Object.keys(groupFields));
-              continue;
-            }
-            const r = await saveToDestination(dest, groupFields);
-            if (r?.secret_id) secretIds[level] = r.secret_id;
-          }
-          saveResult = { secret_ids: secretIds };
-        } else {
-          saveResult = await saveToDestination(pending.destination, clean);
-        }
-      } catch (e) {
-        console.error('[dynamic] save failed:', e.message);
-        return json(res, 500, { error: 'failed to save credentials' });
-      }
-
-      deletePending(token);
-      // .done file stores destination references — never the credentials themselves
-      try {
-        fs.writeFileSync(
-          path.join(CONNECT_PENDING_DIR, `${token}.done`),
-          JSON.stringify(saveResult || {}),
-          { mode: 0o600 },
-        );
-      } catch {}
-
-      const { uid, hadCookie } = getOrCreateUid(req);
-      const primarySecretId = saveResult?.secret_id
-        || (saveResult?.secret_ids ? Object.values(saveResult.secret_ids)[0] : undefined);
-      if (save && pending.allowSave && primarySecretId) {
-        writeSavedRef(uid, pending, primarySecretId);
-      } else if (save && pending.allowSave) {
-        writeSaved(uid, clean, pending.fields);
-      }
-
-      const respHeaders = (save || hadCookie) ? { 'Set-Cookie': cookieSetHeader(uid, req) } : {};
-      json(res, 200, { ok: true }, respHeaders);
-
-      if (pending.notify?.tg_bot_token) {
-        tgNotify(pending.notify.tg_bot_token, pending.notify.tg_chat_id,
-          `✅ ${pending.title}: данные получены и сохранены.`);
-      }
-      return;
-    }
-
-    res.writeHead(405).end(); return;
-  }
-
-  json(res, 404, { error: 'not found' });
-});
-
-server.listen(PORT, () => console.log(`zerocreds-server v${VERSION} (${COMMIT}) listening on :${PORT}`));
-
-const shutdown = () => {
-  server.close(() => process.exit(0));
-  try { require('./nalog-login').closeAll(); } catch {}
-  setTimeout(() => process.exit(0), 10_000).unref();
-};
-process.once('SIGTERM', shutdown);
-process.once('SIGINT', shutdown);
-
-// ── HTML forms ────────────────────────────────────────────────────────────────
+// ── HTML templates (pure) ─────────────────────────────────────────────────────
 
 function nalogFormHtml(token) {
   return `<!DOCTYPE html>
@@ -909,7 +343,7 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
 <body>
 <div class="card">
   <div id="form-view">
-    <h1>${title}</h1>
+    <h1>${escHtml(title)}</h1>
     <p class="sub">${description}</p>
     ${fieldHtml}
     ${rememberHtml}
@@ -1059,3 +493,569 @@ document.getElementById('tok').addEventListener('keydown', e => { if (e.key === 
 </body>
 </html>`;
 }
+
+// ── App factory ───────────────────────────────────────────────────────────────
+
+function createApp(config = {}) {
+  const ADMIN_TOKEN = config.adminToken ?? process.env.ZEROCREDS_ADMIN_TOKEN ?? '';
+  const CONNECT_PENDING_DIR = config.pendingDir ?? process.env.ZEROCREDS_PENDING_DIR ?? path.join(os.homedir(), 'connect-pending');
+  const AGENT_TOKENS_DIR = config.tokensDir ?? process.env.ZEROCREDS_TOKENS_DIR ?? path.join(os.homedir(), 'agent-tokens');
+  const SAVED_DIR = config.savedDir ?? process.env.ZEROCREDS_SAVED_DIR ?? path.join(os.homedir(), 'zerocreds-saved');
+  const DESTINATIONS_FILE = config.destinationsFile ?? process.env.ZEROCREDS_DESTINATIONS_FILE ?? path.join(os.homedir(), 'zerocreds-destinations.json');
+  const INTEGRATORS_FILE = config.integratorsFile ?? process.env.ZEROCREDS_INTEGRATORS_FILE ?? path.join(os.homedir(), 'zerocreds-integrators.json');
+  const BASE_URL = config.baseUrl ?? process.env.ZEROCREDS_BASE_URL ?? 'https://zerocreds.ru';
+
+  try { fs.mkdirSync(SAVED_DIR, { recursive: true, mode: 0o700 }); } catch {}
+
+  // Named destinations (admin-configured, SA keys never travel in API requests)
+  let NAMED_DESTINATIONS = {};
+  function loadNamedDestinations() {
+    try {
+      NAMED_DESTINATIONS = JSON.parse(fs.readFileSync(DESTINATIONS_FILE, 'utf8'));
+      console.log(`[config] loaded ${Object.keys(NAMED_DESTINATIONS).length} named destination(s)`);
+    } catch (e) {
+      if (e.code !== 'ENOENT') console.warn('[config] destinations file error:', e.message);
+    }
+  }
+  loadNamedDestinations();
+
+  // Integrators registry
+  let INTEGRATORS = {};
+  function loadIntegrators() {
+    try {
+      INTEGRATORS = JSON.parse(fs.readFileSync(INTEGRATORS_FILE, 'utf8'));
+      console.log(`[config] loaded ${Object.keys(INTEGRATORS).length} integrator(s)`);
+    } catch (e) {
+      if (e.code !== 'ENOENT') console.warn('[config] integrators file error:', e.message);
+    }
+  }
+  loadIntegrators();
+
+  function saveIntegrators() {
+    fs.writeFileSync(INTEGRATORS_FILE, JSON.stringify(INTEGRATORS, null, 2), { mode: 0o600 });
+  }
+
+  // Rate limit for self-serve registration: max 3 tokens per IP per hour
+  const registerRateLimit = new Map();
+  function checkRegisterLimit(ip) {
+    const now = Date.now();
+    const window = 60 * 60 * 1000;
+    const hits = (registerRateLimit.get(ip) || []).filter(t => now - t < window);
+    if (hits.length >= 3) return false;
+    hits.push(now);
+    registerRateLimit.set(ip, hits);
+    return true;
+  }
+
+  // Resolve auth: returns { isAdmin, integrator|null }
+  function resolveAuth(authHeader) {
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return { isAdmin: false, integrator: null };
+    const token = authHeader.slice(7);
+    if (ADMIN_TOKEN && token === ADMIN_TOKEN) return { isAdmin: true, integrator: null };
+    if (INTEGRATORS[token]) return { isAdmin: false, integrator: { token, ...INTEGRATORS[token] } };
+    return { isAdmin: false, integrator: null };
+  }
+
+  // Resolve destination: name → config, checking integrator's destinations first
+  function resolveDestination(destination, integrator) {
+    if (typeof destination !== 'string') return destination; // inline object, use as-is
+    if (integrator?.destinations?.[destination]) return integrator.destinations[destination];
+    if (NAMED_DESTINATIONS[destination]) return NAMED_DESTINATIONS[destination];
+    return null;
+  }
+
+  function readPending(token) {
+    const file = path.join(CONNECT_PENDING_DIR, `${token}.json`);
+    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+  }
+
+  function deletePending(token) {
+    try { fs.unlinkSync(path.join(CONNECT_PENDING_DIR, `${token}.json`)); } catch {}
+  }
+
+  function readSaved(uid) {
+    if (!uid) return {};
+    try { return JSON.parse(fs.readFileSync(path.join(SAVED_DIR, `${uid}.json`), 'utf8')); }
+    catch { return {}; }
+  }
+
+  function writeSaved(uid, submittedFields, fieldDefs) {
+    if (!uid) return;
+    const existing = readSaved(uid);
+    for (const f of fieldDefs) {
+      if (f.type !== 'password' && submittedFields[f.name] !== undefined && submittedFields[f.name] !== '') {
+        existing[f.name] = submittedFields[f.name];
+      }
+    }
+    try { fs.writeFileSync(path.join(SAVED_DIR, `${uid}.json`), JSON.stringify(existing), { mode: 0o600 }); }
+    catch (e) { console.error('[saved] write failed:', e.message); }
+  }
+
+  function writeSavedRef(uid, pending, secretId) {
+    if (!uid || !secretId) return;
+    const existing = readSaved(uid);
+    const fp = `__ref__${pending.title}`;
+    existing[fp] = secretId;
+    try { fs.writeFileSync(path.join(SAVED_DIR, `${uid}.json`), JSON.stringify(existing), { mode: 0o600 }); }
+    catch (e) { console.error('[saved-ref] write failed:', e.message); }
+  }
+
+  const server = http.createServer(async (req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+
+    // CORS preflight for API
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type,Authorization', 'Access-Control-Allow-Methods': 'GET,POST' }).end();
+      return;
+    }
+
+    // GET / — redirect to landing
+    if (req.method === 'GET' && url.pathname === '/') {
+      res.writeHead(301, { Location: 'https://zerocreds.ru' }).end();
+      return;
+    }
+
+    // GET /health
+    if (req.method === 'GET' && url.pathname === '/health') {
+      return json(res, 200, { ok: true, version: { commit: COMMIT, version: VERSION } });
+    }
+
+    // GET /version — for security audits
+    if (req.method === 'GET' && url.pathname === '/version') {
+      return json(res, 200, {
+        commit: COMMIT,
+        version: VERSION,
+        source: 'https://github.com/Zerocreds-com/zerocreds-server',
+      });
+    }
+
+    // POST /connect/nalog/code — confirm 2FA (must be before connectMatch)
+    if (req.method === 'POST' && url.pathname === '/connect/nalog/code') {
+      const body = await readBody(req);
+      let payload;
+      try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
+      const { session, code } = payload;
+      if (!session || !code) return json(res, 400, { error: 'missing session or code' });
+      if (!/^[a-f0-9]{32}$/.test(session)) return json(res, 400, { error: 'invalid session' });
+      if (!/^\d{4,8}$/.test(code.trim())) return json(res, 400, { error: 'invalid code format' });
+
+      const result = await confirmNalogCode(session, code.trim());
+      if (result.error) return json(res, 400, { error: result.error });
+
+      json(res, 200, { ok: true, expires: result.expires });
+      if (result.userId && result.tgBotToken) {
+        const expiresStr = result.expires
+          ? new Date(result.expires).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })
+          : '~1 час';
+        tgNotify(result.tgBotToken, result.userId,
+          `✅ Налог.ру подключён! Токен действует до ${expiresStr} (МСК).`);
+      }
+      return;
+    }
+
+    // /connect/:service
+    const connectMatch = url.pathname.match(/^\/connect\/([a-z0-9_-]+)$/);
+    if (connectMatch) {
+      const service = connectMatch[1];
+
+      // ── nalog ──────────────────────────────────────────────────────────────────
+      if (service === 'nalog') {
+        if (req.method === 'GET') {
+          const t = url.searchParams.get('t') || '';
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(nalogFormHtml(t));
+          return;
+        }
+
+        if (req.method === 'POST') {
+          const body = await readBody(req);
+          let payload;
+          try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
+          const { t, login, password } = payload;
+          if (!t || !login || !password) return json(res, 400, { error: 'missing fields' });
+          if (!/^[a-f0-9]{32}$/.test(t)) return json(res, 400, { error: 'invalid token' });
+
+          const pending = readPending(t);
+          if (!pending) return json(res, 403, { error: 'invalid or expired token' });
+          if (pending.expires < Date.now()) { deletePending(t); return json(res, 403, { error: 'link expired' }); }
+          if (pending.service !== 'nalog') return json(res, 403, { error: 'service mismatch' });
+          if (!/^-?\d{1,20}$/.test(pending.uid)) return json(res, 403, { error: 'invalid uid' });
+
+          deletePending(t);
+
+          const result = await startNalogLogin(pending.uid, login, password, {
+            tgBotToken: pending.tg_bot_token,
+            tgChatId: pending.tg_chat_id,
+          });
+
+          if (result.error) return json(res, 400, { error: result.error });
+
+          if (result.status === 'ok') {
+            json(res, 200, { status: 'ok', expires: result.expires });
+            if (pending.tg_bot_token) {
+              const expiresStr = result.expires
+                ? new Date(result.expires).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })
+                : '~1 час';
+              tgNotify(pending.tg_bot_token, pending.tg_chat_id || pending.uid,
+                `✅ Налог.ру подключён! Токен действует до ${expiresStr} (МСК).`);
+            }
+            return;
+          }
+
+          if (result.status === 'need_code') {
+            return json(res, 200, { status: 'need_code', sessionId: result.sessionId });
+          }
+
+          return json(res, 500, { error: 'unexpected result' });
+        }
+
+        res.writeHead(405).end(); return;
+      }
+
+      // ── generic token services ─────────────────────────────────────────────────
+      const meta = SERVICE_META[service];
+      if (!meta) { res.writeHead(404).end('Unknown service'); return; }
+
+      if (req.method === 'GET') {
+        const t = url.searchParams.get('t') || '';
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(connectFormHtml(service, meta, t));
+        return;
+      }
+
+      if (req.method === 'POST') {
+        const body = await readBody(req);
+        let payload;
+        try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
+        const { t, value } = payload;
+        if (!t || !value) return json(res, 400, { error: 'missing t or value' });
+        if (!/^[a-f0-9]{32}$/.test(t)) return json(res, 400, { error: 'invalid token' });
+
+        const pending = readPending(t);
+        if (!pending) return json(res, 403, { error: 'invalid or expired token' });
+        if (pending.expires < Date.now()) { deletePending(t); return json(res, 403, { error: 'link expired' }); }
+        if (pending.service !== service) return json(res, 403, { error: 'service mismatch' });
+        if (!/^-?\d{1,20}$/.test(pending.uid)) return json(res, 403, { error: 'invalid uid' });
+
+        const tokensDir = path.join(AGENT_TOKENS_DIR, pending.uid);
+        fs.mkdirSync(tokensDir, { recursive: true });
+        fs.writeFileSync(path.join(tokensDir, service), String(value).trim(), { mode: 0o600 });
+        deletePending(t);
+
+        console.log(`[connect] saved ${service} token for uid=${pending.uid}`);
+        json(res, 200, { ok: true });
+
+        if (pending.tg_bot_token) {
+          const name = meta.name;
+          tgNotify(pending.tg_bot_token, pending.tg_chat_id || pending.uid,
+            `✅ ${name} подключён! Токен сохранён.`);
+        }
+        return;
+      }
+
+      res.writeHead(405).end(); return;
+    }
+
+    // ── POST /api/register ────────────────────────────────────────────────────
+    if (req.method === 'POST' && url.pathname === '/api/register') {
+      const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
+      if (!checkRegisterLimit(ip)) return json(res, 429, { error: 'Too many registrations from this IP. Try again in an hour.' });
+      const body = await readBody(req);
+      let payload = {};
+      try { payload = JSON.parse(body); } catch {}
+      const { email, website, category } = payload;
+      if (!email || !email.includes('@')) return json(res, 400, { error: 'Valid email is required' });
+      const VALID_CATEGORIES = ['ai_agent', 'saas', 'internal', 'personal', 'other'];
+      if (!category || !VALID_CATEGORIES.includes(category)) return json(res, 400, { error: 'Category is required' });
+      const token = 'tok_' + crypto.randomBytes(20).toString('hex');
+      const id = 'u_' + crypto.randomBytes(6).toString('hex');
+      INTEGRATORS[token] = { id, name: id, email, website: website || '', category, destinations: {}, created: new Date().toISOString() };
+      saveIntegrators();
+      console.log(`[register] new integrator: ${id} email=${email} category=${category} from ${ip}`);
+      return json(res, 200, { token, base_url: BASE_URL });
+    }
+
+    // ── POST /admin/integrators/create ────────────────────────────────────────
+    if (req.method === 'POST' && url.pathname === '/admin/integrators/create') {
+      const { isAdmin } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin) return json(res, 401, { error: 'admin token required' });
+      const body = await readBody(req);
+      let payload;
+      try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
+      const { id, name } = payload;
+      if (!id || !name) return json(res, 400, { error: 'missing id or name' });
+      if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id)) return json(res, 400, { error: 'invalid id' });
+      const token = 'tok_' + crypto.randomBytes(20).toString('hex');
+      INTEGRATORS[token] = { id, name, destinations: {}, created: new Date().toISOString() };
+      saveIntegrators();
+      console.log(`[admin] created integrator: ${id} (${name})`);
+      return json(res, 200, { token, id, name });
+    }
+
+    // ── POST /api/destinations ─────────────────────────────────────────────────
+    if (req.method === 'POST' && url.pathname === '/api/destinations') {
+      const { isAdmin, integrator } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin && !integrator) return json(res, 401, { error: 'unauthorized' });
+      const body = await readBody(req);
+      let payload;
+      try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
+      const { name, destination } = payload;
+      if (!name || !destination?.type) return json(res, 400, { error: 'missing name or destination.type' });
+      if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) return json(res, 400, { error: 'invalid name' });
+
+      if (isAdmin) {
+        NAMED_DESTINATIONS[name] = destination;
+        fs.writeFileSync(DESTINATIONS_FILE, JSON.stringify(NAMED_DESTINATIONS, null, 2), { mode: 0o600 });
+      } else {
+        INTEGRATORS[integrator.token].destinations[name] = destination;
+        saveIntegrators();
+      }
+      return json(res, 200, { ok: true, name });
+    }
+
+    // ── POST /api/session/create ───────────────────────────────────────────────
+    if (req.method === 'POST' && url.pathname === '/api/session/create') {
+      const { isAdmin, integrator } = resolveAuth(req.headers['authorization']);
+      if (ADMIN_TOKEN && !isAdmin && !integrator) return json(res, 401, { error: 'unauthorized' });
+      const body = await readBody(req);
+      let payload;
+      try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
+
+      let { title, description, fields, destination, destinations_by_level, ttl_minutes = 30, notify, allow_save } = payload;
+      if (!title || !Array.isArray(fields) || fields.length === 0) {
+        return json(res, 400, { error: 'missing title or fields' });
+      }
+      if (!destination && !destinations_by_level) {
+        return json(res, 400, { error: 'missing destination or destinations_by_level' });
+      }
+
+      // Resolve destinations_by_level if provided
+      let resolvedByLevel = null;
+      if (destinations_by_level) {
+        if (typeof destinations_by_level !== 'object' || Array.isArray(destinations_by_level)) {
+          return json(res, 400, { error: 'destinations_by_level must be an object' });
+        }
+        resolvedByLevel = {};
+        for (const [level, dest] of Object.entries(destinations_by_level)) {
+          const r = resolveDestination(dest, integrator);
+          if (r === null) {
+            return json(res, 400, { error: typeof dest === 'string'
+              ? `unknown named destination for level "${level}": ${dest}`
+              : `destination.type required for level "${level}"` });
+          }
+          if (!r?.type) return json(res, 400, { error: `destination.type required for level "${level}"` });
+          resolvedByLevel[level] = r;
+        }
+      }
+
+      // Resolve single destination if provided
+      if (destination) {
+        const resolved = resolveDestination(destination, integrator);
+        if (resolved === null) {
+          return json(res, 400, { error: typeof destination === 'string'
+            ? `unknown named destination: ${destination}`
+            : 'destination.type is required' });
+        }
+        destination = resolved;
+        if (!destination?.type) {
+          return json(res, 400, { error: 'destination.type is required' });
+        }
+      }
+
+      // Validate fields
+      const VALID_TYPES = ['text', 'password', 'email', 'number', 'tel', 'textarea', 'url'];
+      const VALID_LEVELS = ['secret', 'pii', 'attribute', 'credential'];
+      for (const f of fields) {
+        if (!f.name || !f.label) return json(res, 400, { error: `field missing name or label: ${JSON.stringify(f)}` });
+        if (!/^[a-zA-Z0-9_]{1,64}$/.test(f.name)) return json(res, 400, { error: `invalid field name: ${f.name}` });
+        if (f.type && !VALID_TYPES.includes(f.type)) return json(res, 400, { error: `invalid field type: ${f.type}` });
+        if (f.level && !VALID_LEVELS.includes(f.level)) return json(res, 400, { error: `invalid field level: ${f.level}` });
+      }
+
+      const token = crypto.randomBytes(16).toString('hex');
+      const expires = Date.now() + Math.min(Math.max(ttl_minutes, 1), 1440) * 60 * 1000;
+
+      const pending = { token, title, description, fields,
+        destination: destination || null,
+        destinations_by_level: resolvedByLevel || null,
+        expires, notify,
+        integrator_id: integrator?.id || 'admin',
+        allowSave: allow_save !== false };
+      fs.mkdirSync(CONNECT_PENDING_DIR, { recursive: true });
+      fs.writeFileSync(path.join(CONNECT_PENDING_DIR, `${token}.json`), JSON.stringify(pending), { mode: 0o600 });
+
+      return json(res, 200, {
+        token,
+        url: `${BASE_URL}/f/${token}`,
+        expires_at: new Date(expires).toISOString(),
+      });
+    }
+
+    // ── GET /api/session/:token/status ─────────────────────────────────────────
+    const statusMatch = url.pathname.match(/^\/api\/session\/([a-f0-9]{32})\/status$/);
+    if (statusMatch && req.method === 'GET') {
+      const { isAdmin, integrator } = resolveAuth(req.headers['authorization']);
+      if (ADMIN_TOKEN && !isAdmin && !integrator) return json(res, 401, { error: 'unauthorized' });
+      const token = statusMatch[1];
+      const pendingFile = path.join(CONNECT_PENDING_DIR, `${token}.json`);
+      const doneFile = path.join(CONNECT_PENDING_DIR, `${token}.done`);
+
+      if (fs.existsSync(doneFile)) {
+        let doneData = {};
+        try { doneData = JSON.parse(fs.readFileSync(doneFile, 'utf8')); } catch {}
+        return json(res, 200, { status: 'done', ...doneData });
+      }
+      if (!fs.existsSync(pendingFile)) return json(res, 200, { status: 'expired' });
+      try {
+        const p = JSON.parse(fs.readFileSync(pendingFile, 'utf8'));
+        if (p.expires < Date.now()) return json(res, 200, { status: 'expired' });
+      } catch {}
+      return json(res, 200, { status: 'pending' });
+    }
+
+    // ── /f/:token — dynamic form ───────────────────────────────────────────────
+    const dynMatch = url.pathname.match(/^\/f\/([a-f0-9]{32})$/);
+    if (dynMatch) {
+      const token = dynMatch[1];
+
+      if (req.method === 'GET') {
+        const pending = readPending(token);
+        if (!pending || !pending.fields) {
+          res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
+          return;
+        }
+        if (pending.expires < Date.now()) {
+          res.writeHead(410, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
+          return;
+        }
+        const { uid } = getOrCreateUid(req);
+        const savedValues = readSaved(uid);
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Set-Cookie': cookieSetHeader(uid, req),
+        }).end(dynamicFormHtml(token, pending, savedValues));
+        return;
+      }
+
+      if (req.method === 'POST') {
+        const body = await readBody(req);
+        let payload;
+        try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
+        const { t, fields: submitted, save } = payload;
+        if (!t || !submitted || typeof submitted !== 'object') return json(res, 400, { error: 'missing t or fields' });
+        if (t !== token) return json(res, 400, { error: 'token mismatch' });
+
+        const pending = readPending(token);
+        if (!pending || !pending.fields) return json(res, 403, { error: 'invalid or expired token' });
+        if (pending.expires < Date.now()) { deletePending(token); return json(res, 403, { error: 'link expired' }); }
+
+        // Validate all required fields are present
+        for (const f of pending.fields) {
+          if (f.required !== false && !submitted[f.name]) {
+            return json(res, 400, { error: `missing required field: ${f.name}` });
+          }
+        }
+
+        // Only keep declared field names — strip anything extra
+        const clean = {};
+        for (const f of pending.fields) {
+          if (submitted[f.name] !== undefined) clean[f.name] = String(submitted[f.name]);
+        }
+
+        // Validate url fields
+        for (const f of pending.fields) {
+          if (f.type === 'url' && clean[f.name]) {
+            try {
+              const u = new URL(clean[f.name]);
+              if (!['http:', 'https:'].includes(u.protocol)) throw new Error();
+            } catch { return json(res, 400, { error: `invalid URL for field: ${f.name}` }); }
+          }
+        }
+
+        let saveResult;
+        try {
+          if (pending.destinations_by_level) {
+            // Group fields by level, route each group to its destination
+            const groups = {};
+            for (const f of pending.fields) {
+              const level = f.level || 'default';
+              if (!groups[level]) groups[level] = {};
+              if (clean[f.name] !== undefined) groups[level][f.name] = clean[f.name];
+            }
+            const secretIds = {};
+            for (const [level, groupFields] of Object.entries(groups)) {
+              if (Object.keys(groupFields).length === 0) continue;
+              const dest = pending.destinations_by_level[level]
+                || pending.destinations_by_level['default']
+                || pending.destination;
+              if (!dest) {
+                console.warn(`[dynamic] no destination for level "${level}", skipping:`, Object.keys(groupFields));
+                continue;
+              }
+              const r = await saveToDestination(dest, groupFields, { tokensDir: AGENT_TOKENS_DIR });
+              if (r?.secret_id) secretIds[level] = r.secret_id;
+            }
+            saveResult = { secret_ids: secretIds };
+          } else {
+            saveResult = await saveToDestination(pending.destination, clean, { tokensDir: AGENT_TOKENS_DIR });
+          }
+        } catch (e) {
+          console.error('[dynamic] save failed:', e.message);
+          return json(res, 500, { error: 'failed to save credentials' });
+        }
+
+        deletePending(token);
+        // .done file stores destination references — never the credentials themselves
+        try {
+          fs.writeFileSync(
+            path.join(CONNECT_PENDING_DIR, `${token}.done`),
+            JSON.stringify(saveResult || {}),
+            { mode: 0o600 },
+          );
+        } catch {}
+
+        const { uid, hadCookie } = getOrCreateUid(req);
+        const primarySecretId = saveResult?.secret_id
+          || (saveResult?.secret_ids ? Object.values(saveResult.secret_ids)[0] : undefined);
+        if (save && pending.allowSave && primarySecretId) {
+          writeSavedRef(uid, pending, primarySecretId);
+        } else if (save && pending.allowSave) {
+          writeSaved(uid, clean, pending.fields);
+        }
+
+        const respHeaders = (save || hadCookie) ? { 'Set-Cookie': cookieSetHeader(uid, req) } : {};
+        json(res, 200, { ok: true }, respHeaders);
+
+        if (pending.notify?.tg_bot_token) {
+          tgNotify(pending.notify.tg_bot_token, pending.notify.tg_chat_id,
+            `✅ ${pending.title}: данные получены и сохранены.`);
+        }
+        return;
+      }
+
+      res.writeHead(405).end(); return;
+    }
+
+    json(res, 404, { error: 'not found' });
+  });
+
+  return server;
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
+
+if (require.main === module) {
+  const PORT = process.env.PORT || 3456;
+  const server = createApp();
+  server.listen(PORT, () => {
+    const addr = server.address();
+    console.log(`zerocreds-server v${VERSION} (${COMMIT}) listening on :${addr.port}`);
+  });
+  const shutdown = () => {
+    server.close(() => process.exit(0));
+    try { require('./nalog-login').closeAll(); } catch {}
+    setTimeout(() => process.exit(0), 10_000).unref();
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
+}
+
+module.exports = { createApp };
