@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Безопасность и обработка данных — ZeroCreds</title>
+<style>
+  :root {
+    --bg: #f5f5f7;
+    --card: #fff;
+    --text: #1d1d1f;
+    --muted: #6e6e73;
+    --border: #e5e5e7;
+    --blue: #007aff;
+    --red: #dc2626;
+    --amber: #d97706;
+    --green: #16a34a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+
+  header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; gap: 16px; }
+  header a { color: var(--blue); text-decoration: none; font-size: 14px; }
+  header .logo { font-weight: 700; font-size: 18px; color: var(--text); text-decoration: none; }
+
+  .container { max-width: 720px; margin: 0 auto; padding: 48px 24px 80px; }
+
+  h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+  .subtitle { color: var(--muted); font-size: 16px; margin-bottom: 48px; }
+
+  section { margin-bottom: 48px; }
+  h2 { font-size: 18px; font-weight: 600; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  p { color: var(--muted); margin-bottom: 12px; }
+  p:last-child { margin-bottom: 0; }
+
+  /* Flow diagram */
+  .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+  .flow-step { display: flex; align-items: flex-start; gap: 16px; }
+  .flow-step + .flow-step { margin-top: 0; }
+  .flow-line { display: flex; flex-direction: column; align-items: center; }
+  .flow-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--blue); flex-shrink: 0; margin-top: 5px; }
+  .flow-connector { width: 2px; height: 32px; background: var(--border); }
+  .flow-body { padding-bottom: 24px; }
+  .flow-body strong { display: block; font-size: 15px; }
+  .flow-body span { font-size: 13px; color: var(--muted); }
+
+  /* Guarantee cards */
+  .guarantees { display: grid; gap: 12px; }
+  .guarantee { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; display: flex; gap: 14px; align-items: flex-start; }
+  .guarantee .icon { font-size: 20px; flex-shrink: 0; margin-top: 1px; }
+  .guarantee strong { display: block; font-size: 14px; margin-bottom: 2px; }
+  .guarantee p { font-size: 13px; margin: 0; }
+
+  /* Risk table */
+  .risks { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .risks th { text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); padding: 8px 12px; border-bottom: 2px solid var(--border); }
+  .risks td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .risks td:first-child { font-weight: 500; }
+  .risk-low { color: var(--green); font-size: 12px; font-weight: 600; }
+  .risk-med { color: var(--amber); font-size: 12px; font-weight: 600; }
+
+  /* Terms box */
+  .terms-box { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; }
+  .terms-box h3 { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+  .terms-box ul { padding-left: 20px; color: var(--muted); font-size: 14px; }
+  .terms-box ul li { margin-bottom: 8px; }
+  .terms-box .note { margin-top: 16px; font-size: 13px; color: var(--muted); padding-top: 16px; border-top: 1px solid var(--border); }
+
+  /* Contact */
+  .contact { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: gap; gap: 12px; }
+  .contact p { margin: 0; font-size: 14px; }
+  .contact a { color: var(--blue); text-decoration: none; font-weight: 500; }
+
+  footer { text-align: center; padding: 32px 24px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--border); }
+  footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <a class="logo" href="/">ZeroCreds</a>
+  <span style="color:var(--border)">|</span>
+  <span style="font-size:14px;color:var(--muted)">Безопасность и обработка данных</span>
+</header>
+
+<div class="container">
+  <h1>Как обрабатываются ваши данные</h1>
+  <p class="subtitle">Прозрачно о том, что происходит с каждым значением которое вы вводите в форму.</p>
+
+  <!-- HOW IT WORKS -->
+  <section>
+    <h2>Как работает форма</h2>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="flow-line"><div class="flow-dot"></div><div class="flow-connector"></div></div>
+        <div class="flow-body"><strong>Вы вводите данные в форму</strong><span>Браузер отправляет значения по HTTPS напрямую на ZeroCreds сервер.</span></div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-line"><div class="flow-dot"></div><div class="flow-connector"></div></div>
+        <div class="flow-body"><strong>ZeroCreds записывает в защищённое хранилище</strong><span>Пароли и токены уходят в Google Secret Manager или Vault. ZeroCreds использует права только на запись — прочитать обратно он не может.</span></div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-line"><div class="flow-dot"></div><div class="flow-connector"></div></div>
+        <div class="flow-body"><strong>Агент получает только подтверждение</strong><span>ИИ-ассистент видит только <code>{ status: "done", secret_id: "..." }</code> — идентификатор, но не сами данные.</span></div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-line"><div class="flow-dot"></div></div>
+        <div class="flow-body"><strong>Агент читает из хранилища своими ключами</strong><span>Если агенту нужны данные — он обращается в GCP/Vault напрямую, минуя ZeroCreds. Ваши данные так и не проходят через LLM-контекст.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- GUARANTEES -->
+  <section>
+    <h2>Гарантии</h2>
+    <div class="guarantees">
+      <div class="guarantee">
+        <div class="icon">🔗</div>
+        <div>
+          <strong>Ссылка одноразовая</strong>
+          <p>Форма доступна один раз и истекает через указанное время (по умолчанию 30 минут). После заполнения ссылка перестаёт работать.</p>
+        </div>
+      </div>
+      <div class="guarantee">
+        <div class="icon">🔒</div>
+        <div>
+          <strong>Write-only доступ к хранилищу</strong>
+          <p>ZeroCreds записывает данные в Google Secret Manager с ролью <code>secretVersionAdder</code>. Прочитать или удалить их ZeroCreds не может — это гарантирует IAM.</p>
+        </div>
+      </div>
+      <div class="guarantee">
+        <div class="icon">🧠</div>
+        <div>
+          <strong>Данные не попадают в LLM</strong>
+          <p>ИИ-ассистент не получает ваши пароли, токены и персональные данные. Агент видит только факт успешного сохранения.</p>
+        </div>
+      </div>
+      <div class="guarantee">
+        <div class="icon">📖</div>
+        <div>
+          <strong>Open source — можно проверить</strong>
+          <p>Весь код сервера опубликован на GitHub. Эндпоинт <a href="/version">/version</a> возвращает текущий git-коммит для сверки.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- RISKS -->
+  <section>
+    <h2>Где теоретически может произойти утечка</h2>
+    <p>Мы считаем важным говорить об этом честно.</p>
+    <table class="risks">
+      <thead>
+        <tr>
+          <th>Сценарий</th>
+          <th>Вероятность</th>
+          <th>Снижение риска</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Компрометация ZeroCreds сервера</td>
+          <td><span class="risk-low">НИЗКАЯ</span></td>
+          <td>Self-hosted вариант, open source, минимальные зависимости</td>
+        </tr>
+        <tr>
+          <td>Компрометация GCP/Vault хранилища</td>
+          <td><span class="risk-low">НИЗКАЯ</span></td>
+          <td>IAM-разделение ролей, write-only для ZeroCreds</td>
+        </tr>
+        <tr>
+          <td>MITM при передаче</td>
+          <td><span class="risk-low">КРАЙНЕ НИЗКАЯ</span></td>
+          <td>HTTPS/TLS, сертификаты Let's Encrypt</td>
+        </tr>
+        <tr>
+          <td>Вредоносное расширение браузера</td>
+          <td><span class="risk-med">СРЕДНЯЯ</span></td>
+          <td>Вне контроля ZeroCreds — используйте чистый браузер</td>
+        </tr>
+        <tr>
+          <td>Malware на устройстве пользователя</td>
+          <td><span class="risk-med">СРЕДНЯЯ</span></td>
+          <td>Вне контроля любого веб-сервиса</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- TERMS FOR SERVICES -->
+  <section>
+    <h2>Условия для сервисов, использующих ZeroCreds</h2>
+    <div class="terms-box">
+      <h3>Если вы подключили сервис через ZeroCreds — он обязан:</h3>
+      <ul>
+        <li>Хранить ваши данные только в целях, указанных при подключении.</li>
+        <li><strong>Удалить персональные данные (PII) и пароли по вашему запросу</strong> в течение 30 дней. Для запроса обратитесь напрямую к сервису, который попросил вас заполнить форму.</li>
+        <li>Не передавать ваши данные третьим лицам без явного согласия.</li>
+        <li>Уведомить вас в течение 72 часов в случае инцидента безопасности, затронувшего ваши данные.</li>
+      </ul>
+      <p class="note">
+        ZeroCreds предоставляет техническую инфраструктуру. Ответственность за соблюдение этих условий лежит на сервисе, выдавшем вам ссылку на форму. Подробнее о самостоятельном развёртывании: <a href="https://github.com/Zerocreds-com/zerocreds-server">github.com/Zerocreds-com/zerocreds-server</a>.
+      </p>
+    </div>
+  </section>
+
+  <!-- CONTACT -->
+  <section>
+    <h2>Вопросы и запросы на удаление</h2>
+    <div class="contact">
+      <p>Вопросы по безопасности или запрос на удаление данных:</p>
+      <a href="mailto:security@zerocreds.ru">security@zerocreds.ru</a>
+    </div>
+  </section>
+</div>
+
+<footer>
+  <a href="/">zerocreds.ru</a> · <a href="https://github.com/Zerocreds-com/zerocreds-server">GitHub</a> · <a href="/version">версия сервера</a>
+</footer>
+
+</body>
+</html>
