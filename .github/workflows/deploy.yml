@@ -22,8 +22,8 @@ jobs:
           script: |
             set -e
             cd ~/zerocreds-server
-            git stash || true
-            git pull origin main
+            git fetch origin main
+            git reset --hard origin/main
             EXPECTED=$(git rev-parse HEAD | cut -c1-12)
             cd server && npm install --omit=dev
             sudo /usr/bin/systemctl restart zerocreds-server
