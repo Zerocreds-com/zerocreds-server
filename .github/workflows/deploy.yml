@@ -18,8 +18,14 @@ jobs:
             set -e
             cd ~/zerocreds-server
             git pull origin main
+            EXPECTED=$(git rev-parse --short HEAD)
             cd server && npm install --production
             systemctl restart zerocreds-server
             sleep 2
-            COMMIT=$(curl -s http://localhost:3456/version | python3 -c "import sys,json; print(json.load(sys.stdin)['commit'])")
-            echo "✓ Deployed commit: $COMMIT"
+            LIVE=$(curl -s http://localhost:3456/version | python3 -c "import sys,json; print(json.load(sys.stdin)['commit'])")
+            if [ "$LIVE" != "$EXPECTED" ]; then
+              echo "❌ Hash mismatch: expected $EXPECTED, server reports $LIVE"
+              exit 1
+            fi
+            echo "✓ Deployed and verified: $LIVE"
+            echo "   https://github.com/Zerocreds-com/zerocreds-server/commit/$LIVE"
