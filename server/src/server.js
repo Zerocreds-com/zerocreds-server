@@ -15,21 +15,60 @@ const AGENT_TOKENS_DIR = path.join(os.homedir(), 'agent-tokens');
 // Admin token protects POST /api/session/create
 const ADMIN_TOKEN = process.env.ZEROCREDS_ADMIN_TOKEN || '';
 
-// Named destinations: loaded once from file, so SA keys never travel in API requests.
-// File path: ZEROCREDS_DESTINATIONS_FILE env or ~/zerocreds-destinations.json
-// Format: { "my-gcp": { type: "gcp_secret_manager", ... }, "local-dev": { ... } }
+// Global named destinations (admin-configured, SA keys never travel in API requests)
+// File: ZEROCREDS_DESTINATIONS_FILE or ~/zerocreds-destinations.json
 let NAMED_DESTINATIONS = {};
 function loadNamedDestinations() {
   const file = process.env.ZEROCREDS_DESTINATIONS_FILE
     || path.join(os.homedir(), 'zerocreds-destinations.json');
   try {
     NAMED_DESTINATIONS = JSON.parse(fs.readFileSync(file, 'utf8'));
-    console.log(`[config] loaded ${Object.keys(NAMED_DESTINATIONS).length} named destination(s) from ${file}`);
+    console.log(`[config] loaded ${Object.keys(NAMED_DESTINATIONS).length} named destination(s)`);
   } catch (e) {
     if (e.code !== 'ENOENT') console.warn('[config] destinations file error:', e.message);
   }
 }
 loadNamedDestinations();
+
+// Integrators registry: each integrator gets a token and may have their own named destinations
+// File: ZEROCREDS_INTEGRATORS_FILE or ~/zerocreds-integrators.json
+// Format: { "tok_xxx": { id, name, destinations: { "prod": {...} } } }
+let INTEGRATORS = {};
+const INTEGRATORS_FILE = process.env.ZEROCREDS_INTEGRATORS_FILE
+  || path.join(os.homedir(), 'zerocreds-integrators.json');
+
+function loadIntegrators() {
+  try {
+    INTEGRATORS = JSON.parse(fs.readFileSync(INTEGRATORS_FILE, 'utf8'));
+    console.log(`[config] loaded ${Object.keys(INTEGRATORS).length} integrator(s)`);
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.warn('[config] integrators file error:', e.message);
+  }
+}
+loadIntegrators();
+
+function saveIntegrators() {
+  fs.writeFileSync(INTEGRATORS_FILE, JSON.stringify(INTEGRATORS, null, 2), { mode: 0o600 });
+}
+
+// Resolve auth: returns { isAdmin, integrator|null }
+function resolveAuth(authHeader) {
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return { isAdmin: false, integrator: null };
+  const token = authHeader.slice(7);
+  if (ADMIN_TOKEN && token === ADMIN_TOKEN) return { isAdmin: true, integrator: null };
+  if (INTEGRATORS[token]) return { isAdmin: false, integrator: { token, ...INTEGRATORS[token] } };
+  return { isAdmin: false, integrator: null };
+}
+
+// Resolve destination: name → config, checking integrator's destinations first
+function resolveDestination(destination, integrator) {
+  if (typeof destination !== 'string') return destination; // inline object, use as-is
+  // Check integrator-scoped destinations first
+  if (integrator?.destinations?.[destination]) return integrator.destinations[destination];
+  // Fall back to global named destinations
+  if (NAMED_DESTINATIONS[destination]) return NAMED_DESTINATIONS[destination];
+  return null;
+}
 
 // Read git commit at startup for /version endpoint
 function readCommit() {
@@ -259,14 +298,55 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(405).end(); return;
   }
 
-  // ── POST /api/session/create ───────────────────────────────────────────────
-  // Creates a dynamic form session. Requires Authorization: Bearer {ADMIN_TOKEN}.
-  // Body: { title, description?, fields: [{name, label, type, placeholder?, required?}],
-  //         destination: {type, ...}, ttl_minutes?, notify?: {tg_bot_token, tg_chat_id} }
-  if (req.method === 'POST' && url.pathname === '/api/session/create') {
-    if (ADMIN_TOKEN && req.headers['authorization'] !== `Bearer ${ADMIN_TOKEN}`) {
-      return json(res, 401, { error: 'unauthorized' });
+  // ── POST /admin/integrators/create ────────────────────────────────────────
+  // Admin only. Creates a new integrator token.
+  if (req.method === 'POST' && url.pathname === '/admin/integrators/create') {
+    const { isAdmin } = resolveAuth(req.headers['authorization']);
+    if (!isAdmin) return json(res, 401, { error: 'admin token required' });
+    const body = await readBody(req);
+    let payload;
+    try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
+    const { id, name } = payload;
+    if (!id || !name) return json(res, 400, { error: 'missing id or name' });
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id)) return json(res, 400, { error: 'invalid id' });
+    const token = 'tok_' + crypto.randomBytes(20).toString('hex');
+    INTEGRATORS[token] = { id, name, destinations: {}, created: new Date().toISOString() };
+    saveIntegrators();
+    console.log(`[admin] created integrator: ${id} (${name})`);
+    return json(res, 200, { token, id, name });
+  }
+
+  // ── POST /api/destinations ─────────────────────────────────────────────────
+  // Integrator registers a named destination (so SA keys don't travel per-call).
+  if (req.method === 'POST' && url.pathname === '/api/destinations') {
+    const { isAdmin, integrator } = resolveAuth(req.headers['authorization']);
+    if (!isAdmin && !integrator) return json(res, 401, { error: 'unauthorized' });
+    const body = await readBody(req);
+    let payload;
+    try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
+    const { name, destination } = payload;
+    if (!name || !destination?.type) return json(res, 400, { error: 'missing name or destination.type' });
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) return json(res, 400, { error: 'invalid name' });
+
+    if (isAdmin) {
+      // Admin registers global destination
+      NAMED_DESTINATIONS[name] = destination;
+      const globalFile = process.env.ZEROCREDS_DESTINATIONS_FILE
+        || path.join(os.homedir(), 'zerocreds-destinations.json');
+      fs.writeFileSync(globalFile, JSON.stringify(NAMED_DESTINATIONS, null, 2), { mode: 0o600 });
+    } else {
+      // Integrator registers their own scoped destination
+      INTEGRATORS[integrator.token].destinations[name] = destination;
+      saveIntegrators();
     }
+    return json(res, 200, { ok: true, name });
+  }
+
+  // ── POST /api/session/create ───────────────────────────────────────────────
+  // Creates a dynamic form session. Requires either ADMIN_TOKEN or integrator token.
+  if (req.method === 'POST' && url.pathname === '/api/session/create') {
+    const { isAdmin, integrator } = resolveAuth(req.headers['authorization']);
+    if (ADMIN_TOKEN && !isAdmin && !integrator) return json(res, 401, { error: 'unauthorized' });
     const body = await readBody(req);
     let payload;
     try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
@@ -275,13 +355,14 @@ const server = http.createServer(async (req, res) => {
     if (!title || !Array.isArray(fields) || fields.length === 0 || !destination) {
       return json(res, 400, { error: 'missing title, fields, or destination' });
     }
-    // Resolve named destination: "destination": "my-gcp" → looks up config
-    if (typeof destination === 'string') {
-      if (!NAMED_DESTINATIONS[destination]) {
-        return json(res, 400, { error: `unknown named destination: ${destination}` });
-      }
-      destination = NAMED_DESTINATIONS[destination];
+    // Resolve named destination
+    const resolved = resolveDestination(destination, integrator);
+    if (resolved === null) {
+      return json(res, 400, { error: typeof destination === 'string'
+        ? `unknown named destination: ${destination}`
+        : 'destination.type is required' });
     }
+    destination = resolved;
     if (!destination?.type) {
       return json(res, 400, { error: 'destination.type is required' });
     }
@@ -296,7 +377,8 @@ const server = http.createServer(async (req, res) => {
     const token = crypto.randomBytes(16).toString('hex');
     const expires = Date.now() + Math.min(Math.max(ttl_minutes, 1), 1440) * 60 * 1000;
 
-    const pending = { token, title, description, fields, destination, expires, notify };
+    const pending = { token, title, description, fields, destination, expires, notify,
+      integrator_id: integrator?.id || 'admin' };
     fs.mkdirSync(CONNECT_PENDING_DIR, { recursive: true });
     fs.writeFileSync(path.join(CONNECT_PENDING_DIR, `${token}.json`), JSON.stringify(pending), { mode: 0o600 });
 
@@ -311,9 +393,8 @@ const server = http.createServer(async (req, res) => {
   // ── GET /api/session/:token/status ─────────────────────────────────────────
   const statusMatch = url.pathname.match(/^\/api\/session\/([a-f0-9]{32})\/status$/);
   if (statusMatch && req.method === 'GET') {
-    if (ADMIN_TOKEN && req.headers['authorization'] !== `Bearer ${ADMIN_TOKEN}`) {
-      return json(res, 401, { error: 'unauthorized' });
-    }
+    const { isAdmin, integrator } = resolveAuth(req.headers['authorization']);
+    if (ADMIN_TOKEN && !isAdmin && !integrator) return json(res, 401, { error: 'unauthorized' });
     const token = statusMatch[1];
     const pendingFile = path.join(CONNECT_PENDING_DIR, `${token}.json`);
     const doneFile = path.join(CONNECT_PENDING_DIR, `${token}.done`);

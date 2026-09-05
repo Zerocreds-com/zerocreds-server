@@ -1,0 +1,25 @@
+name: Deploy to production
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to zerocreds.ru
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            set -e
+            cd ~/zerocreds-server
+            git pull origin main
+            cd server && npm install --production
+            systemctl restart zerocreds-server
+            sleep 2
+            COMMIT=$(curl -s http://localhost:3456/version | python3 -c "import sys,json; print(json.load(sys.stdin)['commit'])")
+            echo "✓ Deployed commit: $COMMIT"
