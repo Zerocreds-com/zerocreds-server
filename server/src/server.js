@@ -11,6 +11,8 @@ const { saveToDestination } = require('./destinations');
 const PORT = process.env.PORT || 3456;
 const CONNECT_PENDING_DIR = path.join(os.homedir(), 'connect-pending');
 const AGENT_TOKENS_DIR = path.join(os.homedir(), 'agent-tokens');
+const SAVED_DIR = path.join(os.homedir(), 'zerocreds-saved');
+try { fs.mkdirSync(SAVED_DIR, { recursive: true, mode: 0o700 }); } catch {}
 
 // Admin token protects POST /api/session/create
 const ADMIN_TOKEN = process.env.ZEROCREDS_ADMIN_TOKEN || '';
@@ -130,8 +132,8 @@ function readBody(req, maxBytes = 1_048_576) {
   });
 }
 
-function json(res, status, data) {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
+function json(res, status, data, extraHeaders = {}) {
+  res.writeHead(status, { 'Content-Type': 'application/json', ...extraHeaders });
   res.end(JSON.stringify(data));
 }
 
@@ -142,6 +144,34 @@ function readPending(token) {
 
 function deletePending(token) {
   try { fs.unlinkSync(path.join(CONNECT_PENDING_DIR, `${token}.json`)); } catch {}
+}
+
+function parseCookieUid(req) {
+  const m = (req.headers.cookie || '').match(/(?:^|;\s*)zc_uid=([0-9a-f-]{36})/);
+  return m ? m[1] : null;
+}
+
+function cookieSetHeader(uid, req) {
+  const secure = req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '';
+  return `zc_uid=${uid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000${secure}`;
+}
+
+function readSaved(uid) {
+  if (!uid) return {};
+  try { return JSON.parse(fs.readFileSync(path.join(SAVED_DIR, `${uid}.json`), 'utf8')); }
+  catch { return {}; }
+}
+
+function writeSaved(uid, submittedFields, fieldDefs) {
+  if (!uid) return;
+  const existing = readSaved(uid);
+  for (const f of fieldDefs) {
+    if (f.type !== 'password' && submittedFields[f.name] !== undefined) {
+      existing[f.name] = submittedFields[f.name];
+    }
+  }
+  try { fs.writeFileSync(path.join(SAVED_DIR, `${uid}.json`), JSON.stringify(existing), { mode: 0o600 }); }
+  catch (e) { console.error('[saved] write failed:', e.message); }
 }
 
 const server = http.createServer(async (req, res) => {
@@ -423,7 +453,13 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(410, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
         return;
       }
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(dynamicFormHtml(token, pending));
+      let uid = parseCookieUid(req);
+      if (!uid) uid = crypto.randomUUID();
+      const savedValues = readSaved(uid);
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Set-Cookie': cookieSetHeader(uid, req),
+      }).end(dynamicFormHtml(token, pending, savedValues));
       return;
     }
 
@@ -431,7 +467,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       let payload;
       try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
-      const { t, fields: submitted } = payload;
+      const { t, fields: submitted, save } = payload;
       if (!t || !submitted || typeof submitted !== 'object') return json(res, 400, { error: 'missing t or fields' });
       if (t !== token) return json(res, 400, { error: 'token mismatch' });
 
@@ -463,7 +499,11 @@ const server = http.createServer(async (req, res) => {
       // Leave a .done marker so status endpoint knows it completed
       try { fs.writeFileSync(path.join(CONNECT_PENDING_DIR, `${token}.done`), '', { mode: 0o600 }); } catch {}
 
-      json(res, 200, { ok: true });
+      let uid = parseCookieUid(req);
+      if (!uid) uid = crypto.randomUUID();
+      if (save) writeSaved(uid, clean, pending.fields);
+
+      json(res, 200, { ok: true }, { 'Set-Cookie': cookieSetHeader(uid, req) });
 
       if (pending.notify?.tg_bot_token) {
         tgNotify(pending.notify.tg_bot_token, pending.notify.tg_chat_id,
@@ -626,20 +666,36 @@ function expiredHtml() {
 </head><body><div class="card"><div class="icon">⏰</div><h1>Ссылка недействительна</h1><p class="sub">Эта ссылка истекла или уже была использована. Запросите новую у бота.</p></div></body></html>`;
 }
 
-function dynamicFormHtml(token, pending) {
+function dynamicFormHtml(token, pending, savedValues = {}) {
   const fields = pending.fields || [];
   const title = pending.title || 'Введите данные';
   const description = pending.description || 'Данные поступают напрямую на сервер — в чат с ботом <b>не попадают</b>.';
 
+  function escAttr(s) {
+    return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  }
+
+  const hasNonPasswordFields = fields.some(f => f.type !== 'password');
+  const hasSavedData = hasNonPasswordFields && fields.some(f => f.type !== 'password' && savedValues[f.name]);
+
   const fieldHtml = fields.map(f => {
     const type = f.type || 'text';
-    const placeholder = f.placeholder || '';
-    const required = f.required !== false ? 'required' : '';
+    const ph = escAttr(f.placeholder || '');
+    const req = f.required !== false ? 'required' : '';
     if (type === 'textarea') {
-      return `<label for="f_${f.name}">${f.label}</label><textarea id="f_${f.name}" name="${f.name}" placeholder="${placeholder}" ${required} rows="4"></textarea>`;
+      const val = escAttr(savedValues[f.name] || '');
+      return `<label for="f_${f.name}">${f.label}</label><textarea id="f_${f.name}" name="${f.name}" placeholder="${ph}" ${req} rows="4">${val}</textarea>`;
     }
-    return `<label for="f_${f.name}">${f.label}</label><input id="f_${f.name}" name="${f.name}" type="${type}" placeholder="${placeholder}" autocomplete="off" spellcheck="false" ${required}>`;
+    if (type === 'password') {
+      return `<label for="f_${f.name}">${f.label}</label><div class="pw-wrap"><input id="f_${f.name}" name="${f.name}" type="password" placeholder="${ph}" autocomplete="current-password" spellcheck="false" ${req}><button type="button" class="pw-btn eye" onclick="togglePw('f_${f.name}')" title="Показать/скрыть">👁</button><button type="button" class="pw-btn paste" onclick="pastePw('f_${f.name}')">Paste</button></div>`;
+    }
+    const val = savedValues[f.name] ? ` value="${escAttr(savedValues[f.name])}"` : '';
+    return `<label for="f_${f.name}">${f.label}</label><input id="f_${f.name}" name="${f.name}" type="${type}" placeholder="${ph}" autocomplete="off" spellcheck="false" ${req}${val}>`;
   }).join('\n  ');
+
+  const rememberHtml = hasNonPasswordFields
+    ? `<label class="remember"><input type="checkbox" id="save_chk"${hasSavedData ? ' checked' : ''}> Запомнить для следующего раза</label>`
+    : '';
 
   const fieldNames = JSON.stringify(fields.map(f => f.name));
 
@@ -659,9 +715,16 @@ function dynamicFormHtml(token, pending) {
   label:first-of-type{margin-top:0}
   input,textarea{width:100%;border:1.5px solid #e0e0e0;border-radius:10px;padding:12px 14px;font-size:15px;font-family:inherit;outline:none;transition:border .15s;resize:vertical}
   input:focus,textarea:focus{border-color:#007aff}
-  button{margin-top:20px;width:100%;background:#007aff;color:#fff;border:none;border-radius:10px;padding:13px;font-size:16px;font-weight:600;cursor:pointer;transition:opacity .15s}
-  button:hover{opacity:.88}
-  button:disabled{opacity:.5;cursor:default}
+  .pw-wrap{position:relative}
+  .pw-wrap input{padding-right:104px}
+  .pw-btn{position:absolute;top:50%;transform:translateY(-50%);border:none;cursor:pointer;padding:4px 8px;border-radius:6px;font-size:13px;background:none;color:#666;margin:0;width:auto;line-height:1}
+  .pw-btn.eye{right:58px}
+  .pw-btn.paste{right:6px;background:#f0f7ff;color:#007aff;font-weight:600}
+  .remember{margin-top:16px;display:flex;align-items:center;gap:8px;font-size:13px;color:#555;cursor:pointer;font-weight:400}
+  .remember input[type=checkbox]{width:auto;margin:0;cursor:pointer;accent-color:#007aff}
+  button#btn{margin-top:20px;width:100%;background:#007aff;color:#fff;border:none;border-radius:10px;padding:13px;font-size:16px;font-weight:600;cursor:pointer;transition:opacity .15s}
+  button#btn:hover{opacity:.88}
+  button#btn:disabled{opacity:.5;cursor:default}
   .msg{margin-top:16px;padding:12px 14px;border-radius:10px;font-size:14px;display:none}
   .msg.ok{background:#e8f5e9;color:#2e7d32}
   .msg.err{background:#fdecea;color:#c62828}
@@ -676,6 +739,7 @@ function dynamicFormHtml(token, pending) {
     <h1>${title}</h1>
     <p class="sub">${description}</p>
     ${fieldHtml}
+    ${rememberHtml}
     <button id="btn" onclick="submit()">Отправить</button>
     <div id="msg" class="msg"></div>
   </div>
@@ -689,21 +753,37 @@ function dynamicFormHtml(token, pending) {
 <script>
 const T = '${token}';
 const FIELD_NAMES = ${fieldNames};
+function togglePw(id) {
+  const el = document.getElementById(id);
+  el.type = el.type === 'password' ? 'text' : 'password';
+}
+async function pastePw(id) {
+  try {
+    const text = await navigator.clipboard.readText();
+    document.getElementById(id).value = text.trim();
+  } catch {
+    showMsg('err', 'Разрешите доступ к буферу обмена или вставьте вручную (Ctrl+V / ⌘V)');
+  }
+}
 async function submit() {
   const fields = {};
   for (const name of FIELD_NAMES) {
     const el = document.getElementById('f_' + name);
     if (el) fields[name] = el.value.trim();
   }
-  const empty = FIELD_NAMES.find(n => !fields[n]);
-  if (empty) { showMsg('err', 'Заполните все поля'); return; }
+  const empty = FIELD_NAMES.find(n => {
+    const el = document.getElementById('f_' + n);
+    return el && el.required && !fields[n];
+  });
+  if (empty) { showMsg('err', 'Заполните все обязательные поля'); return; }
+  const save = document.getElementById('save_chk')?.checked ?? false;
   const btn = document.getElementById('btn');
   btn.disabled = true; btn.textContent = 'Сохраняю…';
   try {
     const r = await fetch(location.pathname, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ t: T, fields }),
+      body: JSON.stringify({ t: T, fields, save }),
     });
     const d = await r.json();
     if (d.ok) {
@@ -722,7 +802,6 @@ function showMsg(cls, text) {
   const el = document.getElementById('msg');
   el.className = 'msg ' + cls; el.textContent = text; el.style.display = 'block';
 }
-// Submit on Enter in last input
 document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.target.tagName === 'INPUT') submit();
 });
