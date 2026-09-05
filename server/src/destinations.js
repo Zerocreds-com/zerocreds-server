@@ -200,15 +200,60 @@ async function saveMacosKeychain(destination, fields) {
   return { secret_id: `keychain:${service}/${account}` };
 }
 
+// ── windows_credential_manager ────────────────────────────────────────────────
+// destination: { type: "windows_credential_manager", service: "zerocreds", account: "github" }
+// Stores JSON via Windows PasswordVault (WinRT) — no extra dependencies.
+// Read back (PowerShell):
+//   (New-Object Windows.Security.Credentials.PasswordVault).Retrieve("zerocreds","github").Password
+async function saveWindowsCredentialManager(destination, fields) {
+  if (process.platform !== 'win32') throw new Error('windows_credential_manager: only supported on Windows');
+  const { execFile } = require('child_process');
+  const { service = 'zerocreds', account = 'default' } = destination;
+  if (!/^[a-zA-Z0-9_@.-]{1,128}$/.test(account)) throw new Error('windows_credential_manager: invalid account');
+  if (!/^[a-zA-Z0-9_@.-]{1,128}$/.test(service)) throw new Error('windows_credential_manager: invalid service');
+
+  const value = JSON.stringify(fields).replace(/'/g, "''");
+  const ps = [
+    `Add-Type -AssemblyName Windows.Security`,
+    `$v = New-Object Windows.Security.Credentials.PasswordVault`,
+    `try { $v.Remove($v.Retrieve('${service}','${account}')) } catch {}`,
+    `$v.Add((New-Object Windows.Security.Credentials.PasswordCredential('${service}','${account}','${value}')))`,
+  ].join('; ');
+
+  await new Promise((resolve, reject) => {
+    execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps],
+      { timeout: 8000 },
+      (err, _stdout, stderr) => err
+        ? reject(new Error(`windows_credential_manager: ${stderr || err.message}`))
+        : resolve(undefined),
+    );
+  });
+  return { secret_id: `wincred:${service}/${account}` };
+}
+
+// ── os_keychain ───────────────────────────────────────────────────────────────
+// destination: { type: "os_keychain", service: "zerocreds", account: "github" }
+// Auto-selects native credential store by OS:
+//   macOS   → Keychain (security CLI)
+//   Windows → Credential Manager (PowerShell / PasswordVault)
+//   Linux   → local_file fallback
+async function saveOsKeychain(destination, fields, opts) {
+  if (process.platform === 'darwin') return saveMacosKeychain(destination, fields);
+  if (process.platform === 'win32') return saveWindowsCredentialManager(destination, fields);
+  return saveLocalFile(destination, fields, opts);
+}
+
 // ── dispatcher ────────────────────────────────────────────────────────────────
 async function saveToDestination(destination, fields, opts = {}) {
   switch (destination.type) {
-    case 'local_file':          return saveLocalFile(destination, fields, opts);
-    case 'gcp_secret_manager':  return saveGcpSecret(destination, fields);
-    case 'aws_secrets_manager': return saveAwsSecret(destination, fields);
-    case 'vault':               return saveVault(destination, fields);
-    case 'http_post':           return saveHttpPost(destination, fields);
-    case 'macos_keychain':      return saveMacosKeychain(destination, fields);
+    case 'local_file':                  return saveLocalFile(destination, fields, opts);
+    case 'gcp_secret_manager':          return saveGcpSecret(destination, fields);
+    case 'aws_secrets_manager':         return saveAwsSecret(destination, fields);
+    case 'vault':                       return saveVault(destination, fields);
+    case 'http_post':                   return saveHttpPost(destination, fields);
+    case 'macos_keychain':              return saveMacosKeychain(destination, fields);
+    case 'windows_credential_manager':  return saveWindowsCredentialManager(destination, fields);
+    case 'os_keychain':                 return saveOsKeychain(destination, fields, opts);
     default: throw new Error(`Unknown destination type: ${destination.type}`);
   }
 }
