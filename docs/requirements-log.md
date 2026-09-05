@@ -11,6 +11,13 @@
 - [реализовано] Деплой на 178.212.14.192 (Hostland RU VM), systemd сервис zerocreds-server
 - [реализовано] nginx vhost zerocreds.ru — /connect/* → :3456, / → статика
 
+- [реализовано] Dynamic Form API v0.2.0 — POST /api/session/create создаёт форму с произвольными полями, GET /f/{token} отдаёт её пользователю, POST /f/{token} сохраняет данные
+- [реализовано] Multi-destination: local_file, gcp_secret_manager (write-only через secretVersionAdder), aws_secrets_manager (PutSecretValue), vault
+- [реализовано] GET /api/session/{token}/status — агент опрашивает статус без видимости credentials
+- [реализовано] ZEROCREDS_ADMIN_TOKEN — опциональная защита API создания сессий
+- [реализовано] GCP Secret Manager write-only auth — JWT без SDK, roles/secretmanager.secretVersionAdder
+- [реализовано] AWS Secrets Manager write-only — AWS4 HMAC подпись, PutSecretValue без GetSecretValue
+
 ## Планируется
 
 - [планируется] Landing page zerocreds.ru — на русском, с объяснением концепции

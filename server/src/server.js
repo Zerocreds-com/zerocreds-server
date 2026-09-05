@@ -4,11 +4,16 @@ const http = require('http');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { startNalogLogin, confirmNalogCode } = require('./nalog-login');
+const { saveToDestination } = require('./destinations');
 
 const PORT = process.env.PORT || 3456;
 const CONNECT_PENDING_DIR = path.join(os.homedir(), 'connect-pending');
 const AGENT_TOKENS_DIR = path.join(os.homedir(), 'agent-tokens');
+
+// Admin token protects POST /api/session/create
+const ADMIN_TOKEN = process.env.ZEROCREDS_ADMIN_TOKEN || '';
 
 // Read git commit at startup for /version endpoint
 function readCommit() {
@@ -86,6 +91,12 @@ function deletePending(token) {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
+
+  // CORS preflight for API
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type,Authorization', 'Access-Control-Allow-Methods': 'GET,POST' }).end();
+    return;
+  }
 
   // GET / — redirect to landing
   if (req.method === 'GET' && url.pathname === '/') {
@@ -225,6 +236,131 @@ const server = http.createServer(async (req, res) => {
         const name = meta.name;
         tgNotify(pending.tg_bot_token, pending.tg_chat_id || pending.uid,
           `✅ ${name} подключён! Токен сохранён.`);
+      }
+      return;
+    }
+
+    res.writeHead(405).end(); return;
+  }
+
+  // ── POST /api/session/create ───────────────────────────────────────────────
+  // Creates a dynamic form session. Requires Authorization: Bearer {ADMIN_TOKEN}.
+  // Body: { title, description?, fields: [{name, label, type, placeholder?, required?}],
+  //         destination: {type, ...}, ttl_minutes?, notify?: {tg_bot_token, tg_chat_id} }
+  if (req.method === 'POST' && url.pathname === '/api/session/create') {
+    if (ADMIN_TOKEN && req.headers['authorization'] !== `Bearer ${ADMIN_TOKEN}`) {
+      return json(res, 401, { error: 'unauthorized' });
+    }
+    const body = await readBody(req);
+    let payload;
+    try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
+
+    const { title, description, fields, destination, ttl_minutes = 30, notify } = payload;
+    if (!title || !Array.isArray(fields) || fields.length === 0 || !destination?.type) {
+      return json(res, 400, { error: 'missing title, fields, or destination.type' });
+    }
+    // Validate fields
+    const VALID_TYPES = ['text', 'password', 'email', 'number', 'tel', 'textarea'];
+    for (const f of fields) {
+      if (!f.name || !f.label) return json(res, 400, { error: `field missing name or label: ${JSON.stringify(f)}` });
+      if (!/^[a-zA-Z0-9_]{1,64}$/.test(f.name)) return json(res, 400, { error: `invalid field name: ${f.name}` });
+      if (f.type && !VALID_TYPES.includes(f.type)) return json(res, 400, { error: `invalid field type: ${f.type}` });
+    }
+
+    const token = crypto.randomBytes(16).toString('hex');
+    const expires = Date.now() + Math.min(Math.max(ttl_minutes, 1), 1440) * 60 * 1000;
+
+    const pending = { token, title, description, fields, destination, expires, notify };
+    fs.mkdirSync(CONNECT_PENDING_DIR, { recursive: true });
+    fs.writeFileSync(path.join(CONNECT_PENDING_DIR, `${token}.json`), JSON.stringify(pending), { mode: 0o600 });
+
+    const baseUrl = process.env.ZEROCREDS_BASE_URL || 'https://zerocreds.ru';
+    return json(res, 200, {
+      token,
+      url: `${baseUrl}/f/${token}`,
+      expires_at: new Date(expires).toISOString(),
+    });
+  }
+
+  // ── GET /api/session/:token/status ─────────────────────────────────────────
+  const statusMatch = url.pathname.match(/^\/api\/session\/([a-f0-9]{32})\/status$/);
+  if (statusMatch && req.method === 'GET') {
+    if (ADMIN_TOKEN && req.headers['authorization'] !== `Bearer ${ADMIN_TOKEN}`) {
+      return json(res, 401, { error: 'unauthorized' });
+    }
+    const token = statusMatch[1];
+    const pendingFile = path.join(CONNECT_PENDING_DIR, `${token}.json`);
+    const doneFile = path.join(CONNECT_PENDING_DIR, `${token}.done`);
+
+    if (fs.existsSync(doneFile)) return json(res, 200, { status: 'done' });
+    if (!fs.existsSync(pendingFile)) return json(res, 200, { status: 'expired' });
+    try {
+      const p = JSON.parse(fs.readFileSync(pendingFile, 'utf8'));
+      if (p.expires < Date.now()) return json(res, 200, { status: 'expired' });
+    } catch {}
+    return json(res, 200, { status: 'pending' });
+  }
+
+  // ── /f/:token — dynamic form ───────────────────────────────────────────────
+  const dynMatch = url.pathname.match(/^\/f\/([a-f0-9]{32})$/);
+  if (dynMatch) {
+    const token = dynMatch[1];
+
+    if (req.method === 'GET') {
+      const pending = readPending(token);
+      if (!pending || !pending.fields) {
+        res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
+        return;
+      }
+      if (pending.expires < Date.now()) {
+        res.writeHead(410, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(dynamicFormHtml(token, pending));
+      return;
+    }
+
+    if (req.method === 'POST') {
+      const body = await readBody(req);
+      let payload;
+      try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
+      const { t, fields: submitted } = payload;
+      if (!t || !submitted || typeof submitted !== 'object') return json(res, 400, { error: 'missing t or fields' });
+      if (t !== token) return json(res, 400, { error: 'token mismatch' });
+
+      const pending = readPending(token);
+      if (!pending || !pending.fields) return json(res, 403, { error: 'invalid or expired token' });
+      if (pending.expires < Date.now()) { deletePending(token); return json(res, 403, { error: 'link expired' }); }
+
+      // Validate all required fields are present
+      for (const f of pending.fields) {
+        if (f.required !== false && !submitted[f.name]) {
+          return json(res, 400, { error: `missing required field: ${f.name}` });
+        }
+      }
+
+      // Only keep declared field names — strip anything extra
+      const clean = {};
+      for (const f of pending.fields) {
+        if (submitted[f.name] !== undefined) clean[f.name] = String(submitted[f.name]);
+      }
+
+      try {
+        await saveToDestination(pending.destination, clean);
+      } catch (e) {
+        console.error('[dynamic] save failed:', e.message);
+        return json(res, 500, { error: 'failed to save credentials' });
+      }
+
+      deletePending(token);
+      // Leave a .done marker so status endpoint knows it completed
+      try { fs.writeFileSync(path.join(CONNECT_PENDING_DIR, `${token}.done`), '', { mode: 0o600 }); } catch {}
+
+      json(res, 200, { ok: true });
+
+      if (pending.notify?.tg_bot_token) {
+        tgNotify(pending.notify.tg_bot_token, pending.notify.tg_chat_id,
+          `✅ ${pending.title}: данные получены и сохранены.`);
       }
       return;
     }
@@ -372,6 +508,117 @@ async function submitCode() {
 }
 document.getElementById('password').addEventListener('keydown', e => { if (e.key === 'Enter') submitCreds(); });
 document.getElementById('code').addEventListener('keydown', e => { if (e.key === 'Enter') submitCode(); });
+</script>
+</body>
+</html>`;
+}
+
+function expiredHtml() {
+  return `<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ссылка недействительна</title>
+<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f7;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}.card{background:#fff;border-radius:16px;padding:32px;max-width:480px;width:100%;box-shadow:0 2px 20px rgba(0,0,0,.08);text-align:center}.icon{font-size:48px;margin-bottom:16px}h1{font-size:20px;font-weight:600;margin-bottom:8px}.sub{color:#666;font-size:14px;line-height:1.5}</style>
+</head><body><div class="card"><div class="icon">⏰</div><h1>Ссылка недействительна</h1><p class="sub">Эта ссылка истекла или уже была использована. Запросите новую у бота.</p></div></body></html>`;
+}
+
+function dynamicFormHtml(token, pending) {
+  const fields = pending.fields || [];
+  const title = pending.title || 'Введите данные';
+  const description = pending.description || 'Данные поступают напрямую на сервер — в чат с ботом <b>не попадают</b>.';
+
+  const fieldHtml = fields.map(f => {
+    const type = f.type || 'text';
+    const placeholder = f.placeholder || '';
+    const required = f.required !== false ? 'required' : '';
+    if (type === 'textarea') {
+      return `<label for="f_${f.name}">${f.label}</label><textarea id="f_${f.name}" name="${f.name}" placeholder="${placeholder}" ${required} rows="4"></textarea>`;
+    }
+    return `<label for="f_${f.name}">${f.label}</label><input id="f_${f.name}" name="${f.name}" type="${type}" placeholder="${placeholder}" autocomplete="off" spellcheck="false" ${required}>`;
+  }).join('\n  ');
+
+  const fieldNames = JSON.stringify(fields.map(f => f.name));
+
+  return `<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${title}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f7;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
+  .card{background:#fff;border-radius:16px;padding:32px;max-width:480px;width:100%;box-shadow:0 2px 20px rgba(0,0,0,.08)}
+  h1{font-size:20px;font-weight:600;margin-bottom:8px}
+  .sub{color:#666;font-size:14px;margin-bottom:24px;line-height:1.5}
+  label{display:block;font-size:13px;font-weight:500;color:#333;margin-bottom:6px;margin-top:16px}
+  label:first-of-type{margin-top:0}
+  input,textarea{width:100%;border:1.5px solid #e0e0e0;border-radius:10px;padding:12px 14px;font-size:15px;font-family:inherit;outline:none;transition:border .15s;resize:vertical}
+  input:focus,textarea:focus{border-color:#007aff}
+  button{margin-top:20px;width:100%;background:#007aff;color:#fff;border:none;border-radius:10px;padding:13px;font-size:16px;font-weight:600;cursor:pointer;transition:opacity .15s}
+  button:hover{opacity:.88}
+  button:disabled{opacity:.5;cursor:default}
+  .msg{margin-top:16px;padding:12px 14px;border-radius:10px;font-size:14px;display:none}
+  .msg.ok{background:#e8f5e9;color:#2e7d32}
+  .msg.err{background:#fdecea;color:#c62828}
+  .lock{font-size:13px;color:#999;margin-top:20px;text-align:center}
+  #done{display:none;text-align:center}
+  #done .icon{font-size:48px;margin-bottom:12px}
+</style>
+</head>
+<body>
+<div class="card">
+  <div id="form-view">
+    <h1>${title}</h1>
+    <p class="sub">${description}</p>
+    ${fieldHtml}
+    <button id="btn" onclick="submit()">Отправить</button>
+    <div id="msg" class="msg"></div>
+  </div>
+  <div id="done">
+    <div class="icon">✅</div>
+    <h1>Готово!</h1>
+    <p class="sub">Данные сохранены. Можете закрыть эту страницу и вернуться в бот.</p>
+  </div>
+  <p class="lock">🔒 Данные не попадают в LLM · Ссылка одноразовая · <a href="/version" style="color:#999">v${VERSION}</a></p>
+</div>
+<script>
+const T = '${token}';
+const FIELD_NAMES = ${fieldNames};
+async function submit() {
+  const fields = {};
+  for (const name of FIELD_NAMES) {
+    const el = document.getElementById('f_' + name);
+    if (el) fields[name] = el.value.trim();
+  }
+  const empty = FIELD_NAMES.find(n => !fields[n]);
+  if (empty) { showMsg('err', 'Заполните все поля'); return; }
+  const btn = document.getElementById('btn');
+  btn.disabled = true; btn.textContent = 'Сохраняю…';
+  try {
+    const r = await fetch(location.pathname, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ t: T, fields }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      document.getElementById('form-view').style.display = 'none';
+      document.getElementById('done').style.display = '';
+    } else {
+      showMsg('err', d.error || 'Ошибка сервера');
+      btn.disabled = false; btn.textContent = 'Отправить';
+    }
+  } catch(e) {
+    showMsg('err', 'Сетевая ошибка: ' + e.message);
+    btn.disabled = false; btn.textContent = 'Отправить';
+  }
+}
+function showMsg(cls, text) {
+  const el = document.getElementById('msg');
+  el.className = 'msg ' + cls; el.textContent = text; el.style.display = 'block';
+}
+// Submit on Enter in last input
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.tagName === 'INPUT') submit();
+});
 </script>
 </body>
 </html>`;
