@@ -143,18 +143,21 @@ async function saveVault(destination, fields) {
 }
 
 // ── http_post ─────────────────────────────────────────────────────────────────
-// destination: { type: "http_post", url: "https://agent/tokens",
-//                headers: { "Authorization": "Bearer {SECRET}" },
-//                body: { "userId": "{uid}", "label": "{label}", "value": "{fields_json}" } }
-// If body is omitted, posts fields as-is. Placeholders {key} in body strings are
-// replaced with field values; {fields_json} is replaced with the full JSON of fields.
-// Supports both http:// and https://.
+// destination: { type: "http_post", url: "https://agent/tokens?label={label}",
+//                headers: { "Authorization": "Bearer {api_key}" },
+//                body: { "userId": "{uid}", "value": "{fields_json}" } }
+// url, header values, and body strings all support {field_name} placeholders;
+// {fields_json} is replaced with the full JSON of submitted fields.
+// If body is omitted, posts fields as-is. Supports both http:// and https://.
+// Times out after 10 seconds to avoid hanging if the callback server is down.
 async function saveHttpPost(destination, fields) {
-  const { url, headers: customHeaders = {}, body: bodyTemplate } = destination;
-  if (!url) throw new Error('http_post: missing url');
+  const { url: urlTemplate, headers: headersTemplate = {}, body: bodyTemplate } = destination;
+  if (!urlTemplate) throw new Error('http_post: missing url');
+  const url = applyTemplate(urlTemplate, fields);
   try { new URL(url); } catch { throw new Error('http_post: invalid url'); }
+  const resolvedHeaders = applyTemplate(headersTemplate, fields);
   const bodyObj = bodyTemplate ? applyTemplate(bodyTemplate, fields) : fields;
-  await httpPost(url, bodyObj, null, customHeaders);
+  await httpPost(url, bodyObj, null, resolvedHeaders);
 }
 
 function applyTemplate(template, fields) {
@@ -214,6 +217,7 @@ function httpPost(url, bodyObj, bearerToken, extraHeaders = {}) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(10_000, () => { req.destroy(new Error('http_post: request timeout')); });
     req.end(body);
   });
 }
