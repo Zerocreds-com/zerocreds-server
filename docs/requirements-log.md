@@ -18,6 +18,8 @@
 - [реализовано] GCP Secret Manager write-only auth — JWT без SDK, roles/secretmanager.secretVersionAdder
 - [реализовано] AWS Secrets Manager write-only — AWS4 HMAC подпись, PutSecretValue без GetSecretValue
 
+- [реализовано] Remember me — cookie `zc_uid` (UUID, HttpOnly, 365 дней) идентифицирует браузер; не-пароли сохраняются в `~/zerocreds-saved/{uid}.json` и предзаполняются при следующем визите; checkbox "Запомнить для следующего раза" на форме (предвыбран если данные уже есть); show/hide toggle (👁) и кнопка Paste для полей type=password
+
 ## Планируется
 
 - [планируется] Landing page zerocreds.ru — на русском, с объяснением концепции
