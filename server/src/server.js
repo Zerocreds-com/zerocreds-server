@@ -930,6 +930,7 @@ function createApp(config = {}) {
         destinations_by_level: resolvedByLevel || null,
         expires, notify,
         integrator_id,
+        uid: uid || null,
         allowSave: allow_save !== false,
         ...(useDeterministic ? { service_slug, user_hash, integrator_slug: integrator_id } : {}),
       };
@@ -966,6 +967,26 @@ function createApp(config = {}) {
         if (p.expires < Date.now()) return json(res, 200, { status: 'expired' });
       } catch {}
       return json(res, 200, { status: 'pending' });
+    }
+
+    // ── GET /api/destinations ──────────────────────────────────────────────────
+    if (url.pathname === '/api/destinations' && req.method === 'GET') {
+      const { isAdmin, integrator } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin && !integrator) return json(res, 401, { error: 'unauthorized' });
+      // Build destinations map: only expose type (no credentials)
+      const adminDests = {};
+      for (const [name, dest] of Object.entries(NAMED_DESTINATIONS)) {
+        adminDests[name] = { type: dest.type };
+      }
+      if (isAdmin) {
+        return json(res, 200, { destinations: adminDests });
+      }
+      // Integrator: merge admin destinations with integrator's own (integrator overrides)
+      const merged = { ...adminDests };
+      for (const [name, dest] of Object.entries(integrator.destinations || {})) {
+        merged[name] = { type: dest.type };
+      }
+      return json(res, 200, { destinations: merged });
     }
 
     // ── /f/:token — dynamic form ───────────────────────────────────────────────
@@ -1047,12 +1068,12 @@ function createApp(config = {}) {
                 console.warn(`[dynamic] no destination for level "${level}", skipping:`, Object.keys(groupFields));
                 continue;
               }
-              const r = await saveToDestination(dest, groupFields, { tokensDir: AGENT_TOKENS_DIR });
+              const r = await saveToDestination(dest, groupFields, { tokensDir: AGENT_TOKENS_DIR, context: { uid: pending.uid, service: pending.service_slug } });
               if (r?.secret_id) secretIds[level] = r.secret_id;
             }
             saveResult = { secret_ids: secretIds };
           } else {
-            saveResult = await saveToDestination(pending.destination, clean, { tokensDir: AGENT_TOKENS_DIR });
+            saveResult = await saveToDestination(pending.destination, clean, { tokensDir: AGENT_TOKENS_DIR, context: { uid: pending.uid, service: pending.service_slug } });
           }
         } catch (e) {
           console.error('[dynamic] save failed:', e.message);
