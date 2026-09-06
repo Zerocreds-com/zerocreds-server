@@ -40,7 +40,6 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
             EXPECTED=$(git rev-parse HEAD | cut -c1-12)
-            cp -f ~/zerocreds-server/landing/index.html ~/zerocreds-landing/index.html
             cd server && npm install --omit=dev
             sudo /usr/bin/systemctl restart zerocreds-server
             sleep 2
