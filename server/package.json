@@ -6,9 +6,7 @@
   "scripts": {
     "start": "node src/server.js"
   },
-  "dependencies": {
-    "playwright": "^1.48.0"
-  },
+  "dependencies": {},
   "engines": {
     "node": ">=18"
   }

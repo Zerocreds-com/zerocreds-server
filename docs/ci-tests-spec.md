@@ -144,7 +144,6 @@ jobs:
 
 ## Что не покрываем (сознательно)
 
-- **nalog.ru / Playwright-логин** — требует браузер и реальные креды, слишком дорого для CI
 - **GCP Secret Manager / AWS / Vault** — внешние сервисы с реальными ключами; тестируем через http_post mock
 - **Telegram notifications** — достаточно проверить, что tgNotify не падает (fire-and-forget)
 

@@ -45,7 +45,6 @@ Agent                    ZeroCreds Server             User
 git clone https://github.com/Zerocreds-com/zerocreds-server
 cd zerocreds-server/server
 npm install
-npx playwright install chromium --with-deps   # only needed for nalog.ru
 
 export ZEROCREDS_ADMIN_TOKEN=your-secret-token
 PORT=3456 npm start
@@ -261,7 +260,6 @@ The original hardcoded service endpoints are still supported:
 
 | Service | Endpoint | Method |
 |---------|----------|--------|
-| nalog.ru (FNS) | `/connect/nalog` | Playwright login via Gosuslugi |
 | GitHub | `/connect/github` | API token paste |
 | Weeek CRM | `/connect/weeek` | API token paste |
 | Tilda | `/connect/tilda` | Session cookie paste |
