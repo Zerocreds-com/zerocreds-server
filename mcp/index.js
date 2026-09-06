@@ -41,7 +41,8 @@ server.tool(
       type: z.enum(['text', 'password', 'email', 'tel', 'number', 'textarea', 'url']).optional().describe('Input type (default: text)'),
       placeholder: z.string().optional(),
       required: z.boolean().optional(),
-    })).describe('List of fields to collect'),
+      level: z.enum(['secret', 'pii', 'credential', 'session']).optional().describe('Sensitivity badge shown on the form. Use "secret" for passwords/tokens (never logged), "pii" for personal data (anonymised in logs), "credential" for API keys, "session" for temporary session tokens.'),
+    })).describe('List of fields to collect. Always set level for each field: "secret" for passwords/tokens, "pii" for usernames/emails/domains.'),
     destination: z.union([
       z.string().describe('Named destination from zerocreds-destinations.json'),
       z.object({
