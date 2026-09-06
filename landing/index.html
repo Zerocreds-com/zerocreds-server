@@ -3,387 +3,548 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ZeroCreds — Credentials never reach the LLM</title>
-<meta name="description" content="Open-source self-hosted server that collects credentials from users and writes them directly to your secret store — the AI agent only sees {status: ok}.">
+<title>ZeroCreds</title>
+<meta name="description" content="Open-source server that collects credentials from users and writes them directly to your secret store — AI agents only see {status: ok}.">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23141414' rx='6'/%3E%3Ctext x='16' y='22' font-family='monospace' font-size='14' font-weight='700' fill='%23f0f0f0' text-anchor='middle'%3EZC%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;1,400&family=Manrope:wght@600;700;800&display=swap">
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-  :root {
-    --bg:      #f7f7f5;
-    --surface: #efefed;
-    --border:  #d8d8d4;
-    --text:    #141414;
-    --muted:   #888882;
-    --dim:     #c8c8c4;
-    --accent:  #141414;
-    --mono: 'IBM Plex Mono', monospace;
-    --display: 'Manrope', sans-serif;
-    --sans: 'IBM Plex Sans', sans-serif;
-    --term-bg: #111111;
-    --term-border: #2a2a2a;
-    --term-surface: #181818;
+:root {
+  --bg:           #f7f7f5;
+  --surface:      #efefed;
+  --border:       #d8d8d4;
+  --text:         #141414;
+  --muted:        #888882;
+  --dim:          #c8c8c4;
+  --accent:       #141414;
+  --term-bg:      #111111;
+  --term-border:  #2a2a2a;
+  --term-surface: #181818;
+  --term-text:    #666662;
+  --mono: 'IBM Plex Mono', monospace;
+  --display: 'Manrope', sans-serif;
+  --sans: 'IBM Plex Sans', sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:           #111112;
+    --surface:      #18181a;
+    --border:       #2a2a30;
+    --text:         #e8e8ec;
+    --muted:        #6a6a78;
+    --dim:          #3a3a45;
+    --accent:       #e8e8ec;
+    --term-bg:      #0a0a0c;
+    --term-border:  #1e1e24;
+    --term-surface: #101012;
+    --term-text:    #555558;
   }
+}
+:root[data-theme="dark"] {
+  --bg:           #111112;
+  --surface:      #18181a;
+  --border:       #2a2a30;
+  --text:         #e8e8ec;
+  --muted:        #6a6a78;
+  --dim:          #3a3a45;
+  --accent:       #e8e8ec;
+  --term-bg:      #0a0a0c;
+  --term-border:  #1e1e24;
+  --term-surface: #101012;
+  --term-text:    #555558;
+}
 
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--sans);
-    font-size: 16px;
-    line-height: 1.6;
-    -webkit-font-smoothing: antialiased;
-  }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
 
-  /* ── NAV ── */
-  nav {
-    position: sticky; top: 0; z-index: 100;
-    background: var(--bg);
-    border-bottom: 1px solid var(--border);
-    padding: 0 40px;
-    height: 56px;
-    display: flex; align-items: center; justify-content: space-between;
-  }
-  .nav-brand {
-    font-family: var(--mono); font-size: 13px; font-weight: 500;
-    letter-spacing: 0.12em; color: var(--text); text-decoration: none;
-    display: flex; align-items: center; gap: 8px;
-  }
-  .nav-badge {
-    font-size: 9px; letter-spacing: 0.1em; padding: 2px 6px;
-    border: 1px solid var(--border); color: var(--muted); text-transform: uppercase;
-  }
-  .nav-links { display: flex; gap: 32px; align-items: center; }
-  .nav-links a {
-    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
-    color: var(--muted); text-decoration: none; text-transform: uppercase;
-    transition: color .15s;
-  }
-  .nav-links a:hover { color: var(--text); }
-  .nav-gh {
-    display: flex; align-items: center; gap: 6px;
-    border: 1px solid var(--border); padding: 6px 14px;
-    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
-    color: var(--text) !important; text-transform: uppercase !important;
-    transition: background .15s !important;
-  }
-  .nav-gh:hover { background: var(--surface) !important; }
+/* ── NAV ── */
+nav {
+  position: sticky; top: 0; z-index: 100;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  padding: 0 40px;
+  height: 56px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.nav-brand {
+  font-family: var(--mono); font-size: 13px; font-weight: 500;
+  letter-spacing: 0.12em; color: var(--text); text-decoration: none;
+  display: flex; align-items: center; gap: 8px;
+}
+.nav-badge {
+  font-size: 9px; letter-spacing: 0.1em; padding: 2px 6px;
+  border: 1px solid var(--border); color: var(--muted); text-transform: uppercase;
+}
+.nav-links { display: flex; gap: 32px; align-items: center; }
+.nav-links a {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+  color: var(--muted); text-decoration: none; text-transform: uppercase;
+  transition: color .15s;
+}
+.nav-links a:hover { color: var(--text); }
+.nav-gh {
+  display: flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); padding: 6px 14px;
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+  color: var(--text) !important; text-transform: uppercase !important;
+  transition: background .15s !important;
+}
+.nav-gh:hover { background: var(--surface) !important; }
 
-  /* ── HERO ── */
-  .hero {
-    max-width: 1200px; margin: 0 auto;
-    padding: 96px 40px 80px;
-    display: grid; grid-template-columns: 1fr 1fr; gap: 72px; align-items: start;
-  }
-  .eyebrow {
-    font-family: var(--mono); font-size: 11px;
-    color: var(--muted); letter-spacing: 0.2em;
-    text-transform: uppercase; margin-bottom: 28px;
-    display: flex; align-items: center; gap: 12px;
-  }
-  .eyebrow::before { content: ''; width: 24px; height: 1px; background: var(--muted); }
-  h1 {
-    font-family: var(--display); font-weight: 800;
-    font-size: clamp(32px, 4vw, 54px);
-    line-height: 1.06; letter-spacing: -0.02em; text-wrap: balance;
-    margin-bottom: 28px;
-  }
-  h1 em { color: var(--muted); font-style: normal; }
-  .hero-sub {
-    font-size: 17px; color: var(--muted); line-height: 1.7;
-    max-width: 420px; margin-bottom: 36px;
-  }
-  .cta-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-  .btn-primary {
-    font-family: var(--mono); font-size: 12px; font-weight: 500;
-    letter-spacing: 0.1em; text-transform: uppercase; text-decoration: none;
-    background: var(--text); color: var(--bg);
-    padding: 13px 28px; display: inline-block; transition: opacity .15s;
-  }
-  .btn-primary:hover { opacity: .85; }
-  .btn-outline {
-    font-family: var(--mono); font-size: 12px; letter-spacing: 0.1em;
-    text-transform: uppercase; text-decoration: none; color: var(--muted);
-    border: 1px solid var(--border); padding: 13px 28px; display: inline-block;
-    transition: border-color .15s, color .15s;
-  }
-  .btn-outline:hover { border-color: var(--muted); color: var(--text); }
+/* ── HERO ── */
+.hero {
+  max-width: 1200px; margin: 0 auto;
+  padding: 88px 40px 72px;
+  display: grid; grid-template-columns: 5fr 6fr; gap: 64px; align-items: center;
+}
+.eyebrow {
+  font-family: var(--mono); font-size: 11px;
+  color: var(--muted); letter-spacing: 0.2em;
+  text-transform: uppercase; margin-bottom: 28px;
+  display: flex; align-items: center; gap: 12px;
+}
+.eyebrow::before { content: ''; width: 24px; height: 1px; background: var(--muted); }
+h1 {
+  font-family: var(--display); font-weight: 800;
+  font-size: clamp(30px, 3.8vw, 52px);
+  line-height: 1.05; letter-spacing: -0.02em; text-wrap: balance;
+  margin-bottom: 24px;
+}
+h1 em { color: var(--muted); font-style: normal; }
+.hero-sub {
+  font-size: 16px; color: var(--muted); line-height: 1.75;
+  max-width: 400px; margin-bottom: 36px;
+}
+.cta-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.btn-primary {
+  font-family: var(--mono); font-size: 12px; font-weight: 500;
+  letter-spacing: 0.1em; text-transform: uppercase; text-decoration: none;
+  background: var(--text); color: var(--bg);
+  padding: 13px 28px; display: inline-block; transition: opacity .15s;
+  border: none; cursor: pointer;
+}
+.btn-primary:hover { opacity: .8; }
+.btn-outline {
+  font-family: var(--mono); font-size: 12px; letter-spacing: 0.1em;
+  text-transform: uppercase; text-decoration: none; color: var(--muted);
+  border: 1px solid var(--border); padding: 13px 28px; display: inline-block;
+  transition: border-color .15s, color .15s;
+}
+.btn-outline:hover { border-color: var(--muted); color: var(--text); }
 
-  /* ── TERMINAL ── */
-  .hero-right { padding-top: 8px; }
-  .terminal-wrap {
-    border: 1px solid var(--term-border);
-    background: var(--term-bg);
-  }
-  .terminal-bar {
-    border-bottom: 1px solid var(--term-border); padding: 10px 16px;
-    display: flex; align-items: center; gap: 8px;
-    background: var(--term-surface);
-  }
-  .dot { width: 10px; height: 10px; border-radius: 50%; background: #333; }
-  .terminal-title {
-    font-family: var(--mono); font-size: 11px; color: #555;
-    letter-spacing: 0.05em; margin-left: 8px;
-  }
-  .service-tabs { margin-left: auto; display: flex; gap: 2px; }
-  .stab {
-    font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em;
-    padding: 4px 10px; border: 1px solid var(--term-border);
-    background: transparent; color: #555; cursor: pointer; transition: all .15s;
-  }
-  .stab:hover { color: #ccc; border-color: #555; }
-  .stab.active { background: #2a2a2a; color: #f0f0f0; border-color: #444; }
-  .terminal-body { padding: 22px 20px; font-family: var(--mono); font-size: 13px; line-height: 2; min-height: 220px; }
-  .t-prompt { color: #444; }
-  .t-dim { color: #3a3a3a; }
-  .t-out { color: #555; }
-  .t-key { color: #888; }
-  .t-val { color: #b0b0b0; }
-  .t-ok { color: #7a7a7a; }
-  .t-green { color: #5a8a5a; }
-  .t-comment { color: #3a5a3a; }
-  .cursor {
-    display: inline-block; width: 8px; height: 14px;
-    background: #555; vertical-align: middle;
-    animation: blink 1.1s step-end infinite;
-  }
-  @keyframes blink { 50% { opacity: 0; } }
+/* ── SEQUENCE DIAGRAM ── */
+.diagram-terminal {
+  border: 1px solid var(--term-border);
+  background: var(--term-bg);
+  overflow: hidden;
+}
+.diagram-bar {
+  border-bottom: 1px solid var(--term-border); padding: 10px 16px;
+  display: flex; align-items: center; gap: 8px;
+  background: var(--term-surface);
+}
+.diag-dot { width: 9px; height: 9px; border-radius: 50%; background: #2a2a2a; }
+.diagram-bar-label {
+  font-family: var(--mono); font-size: 10px; color: #444;
+  letter-spacing: 0.1em; margin-left: 8px; text-transform: uppercase;
+}
+.diagram-body {
+  padding: 24px 20px 20px;
+  overflow-x: auto;
+}
+pre.seq-diagram {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.9;
+  color: var(--term-text);
+  white-space: pre;
+  tab-size: 4;
+}
+.sd-head { color: #505056; }
+.sd-post { color: #5a8a5a; }
+.sd-get  { color: #7a9a7a; }
+.sd-ok   { color: #4a7a4a; }
+.sd-data { color: #686868; }
+.sd-note { color: #3a4a3a; font-style: italic; }
 
-  /* ── TRUST STRIP ── */
-  .trust-strip {
-    border-top: 1px solid var(--border);
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
-  }
-  .trust-inner {
-    max-width: 1200px; margin: 0 auto; padding: 18px 40px;
-    display: flex; align-items: center; gap: 40px; flex-wrap: wrap;
-  }
-  .trust-item {
-    display: flex; align-items: center; gap: 10px;
-    font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em;
-    color: var(--muted); text-transform: uppercase;
-  }
-  .trust-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); flex-shrink: 0; }
+/* ── TRUST STRIP ── */
+.trust-strip {
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.trust-inner {
+  max-width: 1200px; margin: 0 auto; padding: 18px 40px;
+  display: flex; align-items: center; gap: 36px; flex-wrap: wrap;
+}
+.trust-item {
+  display: flex; align-items: center; gap: 10px;
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em;
+  color: var(--muted); text-transform: uppercase;
+}
+.trust-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--dim); flex-shrink: 0; }
 
-  /* ── HOW IT WORKS ── */
-  .how-section { max-width: 1200px; margin: 0 auto; padding: 96px 40px; }
-  .section-header {
-    display: flex; align-items: baseline; justify-content: space-between;
-    margin-bottom: 56px; border-bottom: 1px solid var(--border); padding-bottom: 20px;
-  }
-  .section-label {
-    font-family: var(--mono); font-size: 11px; letter-spacing: 0.2em;
-    color: var(--muted); text-transform: uppercase;
-  }
-  .section-title {
-    font-family: var(--display); font-size: 30px; font-weight: 800;
-    letter-spacing: -0.02em;
-  }
-  .steps {
-    display: grid; grid-template-columns: repeat(3, 1fr);
-    border: 1px solid var(--border); gap: 0; background: var(--border);
-  }
-  .step { background: var(--bg); padding: 40px 32px; }
-  .step-num {
-    font-family: var(--mono); font-size: 10px; letter-spacing: 0.2em;
-    color: var(--dim); margin-bottom: 20px; text-transform: uppercase;
-  }
-  .step h3 {
-    font-family: var(--display); font-size: 20px; font-weight: 800;
-    letter-spacing: -0.01em; margin-bottom: 14px;
-  }
-  .step p { color: var(--muted); font-size: 14px; line-height: 1.75; }
-  .step-code {
-    font-family: var(--mono); font-size: 12px; color: var(--dim);
-    margin-top: 20px; line-height: 1.8;
-    border-left: 2px solid var(--border); padding-left: 14px;
-  }
-  .step-code .sc-key { color: var(--muted); }
+/* ── INTEGRATION SECTION ── */
+.integrate-section { max-width: 1200px; margin: 0 auto; padding: 88px 40px; }
+.section-top {
+  display: flex; align-items: baseline; justify-content: space-between;
+  border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 36px;
+}
+.section-label {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.2em;
+  color: var(--muted); text-transform: uppercase;
+}
+.section-title {
+  font-family: var(--display); font-size: 30px; font-weight: 800;
+  letter-spacing: -0.02em;
+}
 
-  /* ── QUICKSTART ── */
-  .quickstart {
-    max-width: 1200px; margin: 0 auto; padding: 80px 40px;
-  }
-  .qs-header {
-    margin-bottom: 48px;
-    border-bottom: 1px solid var(--border); padding-bottom: 20px;
-    display: flex; align-items: baseline; justify-content: space-between;
-  }
-  .qs-steps { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); }
-  .qs-step { background: var(--bg); padding: 36px 32px; }
-  .qs-num {
-    font-family: var(--mono); font-size: 10px; letter-spacing: 0.2em;
-    color: var(--dim); margin-bottom: 18px; text-transform: uppercase;
-  }
-  .qs-step h3 {
-    font-family: var(--display); font-size: 18px; font-weight: 800;
-    letter-spacing: -0.01em; margin-bottom: 12px;
-  }
-  .qs-step p { color: var(--muted); font-size: 14px; line-height: 1.7; margin-bottom: 16px; }
-  .qs-code {
-    background: var(--term-bg); border: 1px solid var(--term-border);
-    font-family: var(--mono); font-size: 11.5px; line-height: 1.75;
-    padding: 16px; color: #888; overflow-x: auto; white-space: pre;
-  }
-  .qs-code .qk { color: #555; }
-  .qs-code .qv { color: #aaa; }
-  .qs-code .qc { color: #3a5a3a; }
-  .qs-code .qg { color: #5a8a5a; }
-  .qs-btn {
-    font-family: var(--mono); font-size: 12px; font-weight: 500;
-    letter-spacing: 0.1em; text-transform: uppercase;
-    background: var(--text); color: var(--bg);
-    border: none; padding: 13px 28px; cursor: pointer; transition: opacity .15s;
-    display: inline-block;
-  }
-  .qs-btn:hover { opacity: .85; }
-  @media (max-width: 900px) {
-    .qs-steps { grid-template-columns: 1fr; }
-  }
+/* tabs */
+.mode-tabs {
+  display: flex; gap: 0; margin-bottom: 32px;
+  border: 1px solid var(--border); width: fit-content;
+}
+.mode-tab {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+  text-transform: uppercase; padding: 10px 22px;
+  background: none; border: none; color: var(--muted);
+  cursor: pointer; transition: background .12s, color .12s;
+  border-right: 1px solid var(--border);
+}
+.mode-tab:last-child { border-right: none; }
+.mode-tab.active { background: var(--text); color: var(--bg); }
+.mode-tab:not(.active):hover { background: var(--surface); color: var(--text); }
 
-  /* ── INTEGRATION ── */
-  .integration-section {
-    background: var(--term-bg);
-    border-top: 1px solid var(--term-border);
-    border-bottom: 1px solid var(--term-border);
-  }
-  .integration-inner {
-    max-width: 1200px; margin: 0 auto; padding: 96px 40px;
-    display: grid; grid-template-columns: 1fr 1fr; gap: 80px; align-items: start;
-  }
-  .integration-left {}
-  .integration-left .eyebrow { color: #555; }
-  .integration-left .eyebrow::before { background: #555; }
-  .integration-left h2 {
-    font-family: var(--display); font-size: clamp(26px, 3vw, 40px);
-    font-weight: 800; letter-spacing: -0.02em; line-height: 1.1;
-    color: #f0f0f0; margin-bottom: 24px;
-  }
-  .integration-left p { color: #666; font-size: 15px; line-height: 1.7; margin-bottom: 16px; }
-  .integration-left p strong { color: #999; font-weight: 500; }
-  .api-block {
-    border: 1px solid var(--term-border); background: var(--term-surface);
-    font-family: var(--mono); font-size: 12px; line-height: 1.9;
-  }
-  .api-block-header {
-    border-bottom: 1px solid var(--term-border); padding: 8px 16px;
-    display: flex; align-items: center; gap: 10px;
-    font-size: 10px; letter-spacing: 0.12em; color: #555; text-transform: uppercase;
-  }
-  .method-badge {
-    padding: 2px 8px; font-size: 10px; font-weight: 500;
-    background: #1a2a1a; color: #5a8a5a; letter-spacing: 0.05em;
-  }
-  .api-block-body { padding: 16px 20px; }
-  .api-line { display: flex; }
-  .ai-key { color: #666; min-width: 120px; }
-  .ai-val { color: #a0a0a0; }
-  .ai-str { color: #888; }
-  .ai-comment { color: #444; }
-  .integration-right .api-block + .api-block { margin-top: 16px; }
-  .flow-arrow {
-    font-family: var(--mono); font-size: 11px; color: #444;
-    text-align: center; padding: 10px 0; letter-spacing: 0.1em;
-  }
+/* 2-col integrate layout */
+.integrate-pane { display: none; }
+.integrate-pane.active { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; background: var(--border); border: 1px solid var(--border); }
 
-  /* ── DESTINATIONS ── */
-  .dest-section { max-width: 1200px; margin: 0 auto; padding: 96px 40px; }
-  .dest-grid {
-    display: grid; grid-template-columns: repeat(2, 1fr);
-    border: 1px solid var(--border); background: var(--border); gap: 1px;
-  }
-  .dest-card { background: var(--bg); padding: 36px 32px; }
-  .dest-icon {
-    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
-    color: var(--dim); margin-bottom: 16px; text-transform: uppercase;
-    display: flex; align-items: center; gap: 10px;
-  }
-  .dest-icon::before { content: ''; width: 16px; height: 1px; background: var(--dim); }
-  .dest-card h3 {
-    font-family: var(--display); font-size: 18px; font-weight: 800;
-    letter-spacing: -0.01em; margin-bottom: 10px;
-  }
-  .dest-card p { color: var(--muted); font-size: 14px; line-height: 1.7; margin-bottom: 16px; }
-  .dest-guarantee {
-    font-family: var(--mono); font-size: 11px; color: var(--dim);
-    border-left: 2px solid var(--border); padding-left: 12px; line-height: 1.8;
-  }
+/* code panel (left, dark) */
+.code-panel {
+  background: var(--term-bg);
+  display: flex; flex-direction: column;
+}
+.code-panel-bar {
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--term-border);
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--term-surface);
+}
+.code-panel-label {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.15em;
+  color: #555; text-transform: uppercase;
+}
+.copy-btn {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em;
+  text-transform: uppercase; padding: 4px 12px;
+  background: #222; border: 1px solid #333; color: #666;
+  cursor: pointer; transition: color .12s, border-color .12s;
+}
+.copy-btn:hover { color: #aaa; border-color: #555; }
+pre.code-block {
+  font-family: var(--mono); font-size: 12px; line-height: 1.85;
+  color: #666; padding: 22px 20px;
+  white-space: pre; overflow-x: auto;
+  flex: 1;
+}
+.cb-cmd   { color: #8a8a9a; }
+.cb-key   { color: #5a8a5a; }
+.cb-val   { color: #8a9a8a; }
+.cb-str   { color: #7a8a7a; }
+.cb-arrow { color: #444; }
+.cb-dim   { color: #3a3a3a; }
+.cb-note  { color: #3a5a3a; }
 
-  /* ── OPEN SOURCE ── */
-  .oss-section { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-  .oss-inner {
-    max-width: 1200px; margin: 0 auto; padding: 96px 40px;
-    display: grid; grid-template-columns: 1fr 1fr; gap: 96px; align-items: center;
-  }
-  .oss-inner h2 {
-    font-family: var(--display); font-size: clamp(28px, 3.5vw, 44px);
-    font-weight: 800; line-height: 1.1; letter-spacing: -0.02em; text-wrap: balance;
-  }
-  .oss-right p { color: var(--muted); font-size: 16px; line-height: 1.7; margin-bottom: 24px; }
-  .license-box {
-    border: 1px solid var(--border); padding: 20px 24px; margin-bottom: 28px;
-    font-family: var(--mono); font-size: 12px; line-height: 1.9;
-  }
-  .l-label {
-    font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase;
-    color: var(--muted); margin-bottom: 10px;
-  }
-  .l-item { color: var(--text); }
-  .l-check { color: var(--muted); margin-right: 8px; }
-  .oss-links { display: flex; gap: 12px; flex-wrap: wrap; }
+/* form preview panel (right, light) */
+.form-panel {
+  background: var(--bg);
+  display: flex; flex-direction: column;
+}
+.form-panel-bar {
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center;
+  background: var(--surface);
+}
+.form-panel-label {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.15em;
+  color: var(--muted); text-transform: uppercase;
+}
+.form-panel-body { padding: 24px 24px 28px; flex: 1; display: flex; flex-direction: column; gap: 20px; }
 
-  /* ── AUDIT ── */
-  .audit-section {
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
-  }
-  .audit-inner {
-    max-width: 1200px; margin: 0 auto; padding: 56px 40px;
-    display: flex; align-items: center; justify-content: space-between; gap: 40px; flex-wrap: wrap;
-  }
-  .audit-inner p {
-    font-family: var(--mono); font-size: 13px; color: var(--muted); line-height: 1.9;
-    max-width: 600px;
-  }
-  .audit-inner p code { color: var(--text); }
-  .audit-check {
-    font-family: var(--mono); font-size: 12px; color: var(--muted);
-    border: 1px solid var(--border); padding: 16px 24px; white-space: nowrap;
-  }
-  .audit-check div { margin-bottom: 4px; }
-  .audit-check .ac-done { color: var(--text); }
+/* browser chrome mockup */
+.browser-wrap {
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.browser-chrome {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 9px 12px;
+  display: flex; align-items: center; gap: 10px;
+}
+.bchrome-dots { display: flex; gap: 5px; }
+.bchrome-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+.bchrome-url {
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  background: var(--bg); border: 1px solid var(--border);
+  padding: 3px 10px; flex: 1; letter-spacing: 0.02em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.browser-content { padding: 20px; background: var(--bg); }
 
-  /* ── FOOTER ── */
-  footer {
-    padding: 28px 40px;
-    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;
-    border-top: 1px solid var(--border);
-  }
-  .footer-brand { font-family: var(--mono); font-size: 12px; letter-spacing: 0.12em; color: var(--muted); }
-  .footer-links { display: flex; gap: 24px; }
-  .footer-links a {
-    font-family: var(--mono); font-size: 11px; color: var(--dim); text-decoration: none;
-    letter-spacing: 0.08em;
-  }
-  .footer-links a:hover { color: var(--muted); }
-  .footer-copy { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+/* the credential form inside the mockup */
+.cred-form-header { margin-bottom: 16px; }
+.cred-form-icon {
+  font-size: 18px; margin-bottom: 8px; display: block;
+}
+.cred-form-title {
+  font-family: var(--display); font-size: 17px; font-weight: 800;
+  letter-spacing: -0.01em; margin-bottom: 4px;
+}
+.cred-form-sub {
+  font-size: 13px; color: var(--muted);
+}
+.cred-field { margin-bottom: 14px; }
+.cred-label {
+  display: block; font-size: 12px; font-weight: 500; color: var(--text);
+  margin-bottom: 5px;
+}
+.cred-input-row {
+  display: flex; gap: 0; border: 1px solid var(--border);
+}
+.cred-input {
+  flex: 1; padding: 9px 12px; font-family: var(--mono); font-size: 12px;
+  color: var(--muted); background: var(--bg); border: none; outline: none;
+  letter-spacing: 0.15em;
+}
+.cred-input-btn {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em;
+  padding: 0 12px; background: var(--surface); border: none;
+  border-left: 1px solid var(--border); color: var(--muted);
+  cursor: default; text-transform: uppercase;
+}
+.cred-submit {
+  width: 100%; padding: 11px; margin-top: 4px;
+  font-family: var(--mono); font-size: 12px; font-weight: 500;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  background: var(--text); color: var(--bg);
+  border: none; cursor: default;
+}
 
-  /* ── RESPONSIVE ── */
-  @media (max-width: 900px) {
-    nav { padding: 0 20px; }
-    .hero { grid-template-columns: 1fr; gap: 48px; padding: 60px 20px 48px; }
-    .how-section { padding: 64px 20px; }
-    .steps { grid-template-columns: 1fr; }
-    .integration-inner { grid-template-columns: 1fr; gap: 48px; padding: 64px 20px; }
-    .dest-section { padding: 64px 20px; }
-    .dest-grid { grid-template-columns: 1fr; }
-    .oss-inner { grid-template-columns: 1fr; gap: 40px; padding: 64px 20px; }
-    .audit-inner { padding: 40px 20px; }
-    footer { padding: 24px 20px; flex-direction: column; align-items: flex-start; }
-    .trust-inner { gap: 20px; padding: 16px 20px; }
-  }
-  @media (prefers-reduced-motion: reduce) { .cursor { animation: none; } }
+/* what-it-means note below browser */
+.panel-note {
+  font-size: 13px; color: var(--muted); line-height: 1.65;
+  padding-top: 4px;
+}
+.panel-note code {
+  font-family: var(--mono); font-size: 12px;
+  background: var(--surface); padding: 1px 6px;
+  color: var(--text);
+}
+
+/* MCP tab content */
+.mcp-right { padding: 24px; }
+.mcp-right p { font-size: 14px; color: var(--muted); line-height: 1.7; margin-bottom: 16px; }
+.mcp-right strong { color: var(--text); font-weight: 500; }
+.mcp-badge {
+  display: inline-block;
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em;
+  padding: 3px 8px; border: 1px solid var(--border);
+  color: var(--muted); text-transform: uppercase; margin-bottom: 16px;
+}
+.mcp-flow {
+  font-family: var(--mono); font-size: 12px; line-height: 2;
+  color: var(--muted); border-left: 2px solid var(--border); padding-left: 14px;
+}
+.mfc-ok { color: var(--text); }
+
+/* ── DESTINATIONS ── */
+.dest-section { max-width: 1200px; margin: 0 auto; padding: 0 40px 88px; }
+.dest-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr);
+  border: 1px solid var(--border); background: var(--border); gap: 1px;
+}
+.dest-card { background: var(--bg); padding: 36px 32px; }
+.dest-icon {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+  color: var(--dim); margin-bottom: 16px; text-transform: uppercase;
+  display: flex; align-items: center; gap: 10px;
+}
+.dest-icon::before { content: ''; width: 16px; height: 1px; background: var(--dim); }
+.dest-card h3 {
+  font-family: var(--display); font-size: 18px; font-weight: 800;
+  letter-spacing: -0.01em; margin-bottom: 10px;
+}
+.dest-card p { color: var(--muted); font-size: 14px; line-height: 1.7; margin-bottom: 16px; }
+.dest-guarantee {
+  font-family: var(--mono); font-size: 11px; color: var(--dim);
+  border-left: 2px solid var(--border); padding-left: 12px; line-height: 1.9;
+}
+
+/* ── OSS ── */
+.oss-section { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.oss-inner {
+  max-width: 1200px; margin: 0 auto; padding: 88px 40px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 88px; align-items: center;
+}
+.oss-inner h2 {
+  font-family: var(--display); font-size: clamp(28px, 3.5vw, 44px);
+  font-weight: 800; line-height: 1.1; letter-spacing: -0.02em; text-wrap: balance;
+}
+.oss-right p { color: var(--muted); font-size: 16px; line-height: 1.7; margin-bottom: 24px; }
+.license-box {
+  border: 1px solid var(--border); padding: 20px 24px; margin-bottom: 28px;
+  font-family: var(--mono); font-size: 12px; line-height: 2;
+}
+.l-label {
+  font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 10px;
+}
+.l-item { color: var(--text); }
+.l-check { color: var(--muted); margin-right: 8px; }
+.oss-links { display: flex; gap: 12px; flex-wrap: wrap; }
+
+/* ── SETUP CTA ── */
+.setup-cta {
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.setup-cta-inner {
+  max-width: 1200px; margin: 0 auto; padding: 56px 40px;
+  display: flex; align-items: center; justify-content: space-between; gap: 40px; flex-wrap: wrap;
+}
+.setup-cta h3 {
+  font-family: var(--display); font-size: 24px; font-weight: 800;
+  letter-spacing: -0.01em; margin-bottom: 8px;
+}
+.setup-cta p { color: var(--muted); font-size: 15px; }
+
+/* ── AUDIT ── */
+.audit-section { background: var(--surface); border-bottom: 1px solid var(--border); }
+.audit-inner {
+  max-width: 1200px; margin: 0 auto; padding: 52px 40px;
+  display: flex; align-items: center; justify-content: space-between; gap: 40px; flex-wrap: wrap;
+}
+.audit-inner p {
+  font-family: var(--mono); font-size: 13px; color: var(--muted); line-height: 1.9;
+  max-width: 560px;
+}
+.audit-inner p code { color: var(--text); }
+.audit-check {
+  font-family: var(--mono); font-size: 12px; color: var(--muted);
+  border: 1px solid var(--border); padding: 16px 24px; white-space: nowrap;
+}
+.audit-check div { margin-bottom: 4px; }
+.audit-check .ac-done { color: var(--text); }
+
+/* ── FOOTER ── */
+footer {
+  padding: 28px 40px;
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;
+  border-top: 1px solid var(--border);
+}
+.footer-brand { font-family: var(--mono); font-size: 12px; letter-spacing: 0.12em; color: var(--muted); }
+.footer-links { display: flex; gap: 24px; }
+.footer-links a {
+  font-family: var(--mono); font-size: 11px; color: var(--dim); text-decoration: none;
+  letter-spacing: 0.08em;
+}
+.footer-links a:hover { color: var(--muted); }
+.footer-copy { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+
+/* ── MODAL ── */
+.modal-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,.55); z-index: 1000;
+  align-items: center; justify-content: center; padding: 20px;
+}
+.modal-box {
+  background: #fff; border-radius: 16px; padding: 32px;
+  max-width: 480px; width: 100%; box-shadow: 0 8px 40px rgba(0,0,0,.2);
+  position: relative; max-height: 90vh; overflow-y: auto;
+}
+.modal-close {
+  position: absolute; top: 16px; right: 16px;
+  background: none; border: none; font-size: 20px; cursor: pointer;
+  color: #999; line-height: 1;
+}
+.modal-title { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+.modal-sub { color: #666; font-size: 14px; margin-bottom: 24px; }
+.modal-field { margin-bottom: 14px; }
+.modal-label { display: block; font-size: 13px; font-weight: 500; color: #333; margin-bottom: 5px; }
+.modal-input {
+  width: 100%; border: 1.5px solid #e0e0e0; border-radius: 10px;
+  padding: 11px 14px; font-size: 14px; outline: none; box-sizing: border-box;
+  transition: border .15s;
+}
+.modal-input:focus { border-color: #007aff; }
+.modal-select {
+  width: 100%; border: 1.5px solid #e0e0e0; border-radius: 10px;
+  padding: 11px 14px; font-size: 14px; outline: none; box-sizing: border-box;
+  background: #fff; appearance: none; transition: border .15s;
+}
+.modal-select:focus { border-color: #007aff; }
+.modal-terms { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; margin-bottom: 20px; }
+.modal-terms span { font-size: 13px; color: #444; line-height: 1.5; }
+.modal-submit {
+  width: 100%; background: #007aff; color: #fff; border: none;
+  border-radius: 10px; padding: 13px; font-size: 15px; font-weight: 600;
+  cursor: pointer; opacity: .5; transition: opacity .15s;
+}
+.modal-error {
+  display: none; margin-top: 12px; padding: 10px 14px;
+  background: #fdecea; color: #c62828; border-radius: 8px; font-size: 13px;
+}
+.modal-warn { color: #e65c00; font-size: 13px; font-weight: 500; margin-bottom: 16px; }
+.token-display {
+  background: #f5f5f7; border-radius: 10px;
+  padding: 14px 16px; font-family: monospace; font-size: 13px;
+  word-break: break-all;
+}
+.modal-copy-btn {
+  margin-top: 10px; width: 100%; background: #007aff; color: #fff;
+  border: none; border-radius: 10px; padding: 12px; font-size: 15px;
+  font-weight: 600; cursor: pointer;
+}
+.qs-curl-wrap {
+  margin-top: 24px; border-top: 1px solid #f0f0f0; padding-top: 20px;
+}
+.qs-curl-label { font-size: 13px; font-weight: 600; color: #333; margin-bottom: 10px; }
+.qs-curl-block {
+  background: #1a1a2e; border-radius: 10px;
+  padding: 14px 16px; font-family: monospace; font-size: 12px;
+  color: #e0e0e0; line-height: 1.7; overflow-x: auto; position: relative;
+}
+.qs-curl-copy {
+  position: absolute; top: 8px; right: 8px;
+  background: #333; color: #aaa; border: none; border-radius: 6px;
+  padding: 3px 8px; font-size: 11px; cursor: pointer;
+}
+.qs-curl-note { margin-top: 8px; font-size: 12px; color: #999; }
+
+/* ── RESPONSIVE ── */
+@media (max-width: 960px) {
+  nav { padding: 0 20px; }
+  .hero { grid-template-columns: 1fr; gap: 48px; padding: 56px 20px 48px; }
+  .integrate-section { padding: 64px 20px; }
+  .integrate-pane.active { grid-template-columns: 1fr; }
+  .dest-section { padding: 0 20px 64px; }
+  .dest-grid { grid-template-columns: 1fr; }
+  .oss-inner { grid-template-columns: 1fr; gap: 40px; padding: 64px 20px; }
+  .setup-cta-inner { padding: 40px 20px; }
+  .audit-inner { padding: 40px 20px; }
+  footer { padding: 24px 20px; flex-direction: column; align-items: flex-start; }
+  .trust-inner { gap: 18px; padding: 16px 20px; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 </style>
 </head>
 <body>
@@ -392,7 +553,7 @@
 <nav>
   <a href="/" class="nav-brand">ZEROCREDS <span class="nav-badge">Open Source</span></a>
   <div class="nav-links">
-    <a href="#how">How it works</a>
+    <a href="#integrate">How it works</a>
     <a href="#integrate">Integrate</a>
     <a href="https://github.com/Zerocreds-com/zerocreds-server" class="nav-gh">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
@@ -407,148 +568,43 @@
     <div class="eyebrow">Agent Security Infrastructure</div>
     <h1>Credentials<br>never reach<br><em>the LLM.</em></h1>
     <p class="hero-sub">
-      Your AI agent creates a one-time link, the user fills the form, credentials are saved to your secret store. The agent only sees <code style="font-size:15px;background:var(--surface);padding:2px 6px">{&nbsp;status:&nbsp;"ok"&nbsp;}</code>.
+      Your agent creates a one-time link. The user fills the form.
+      Credentials go straight to your secret store.
+      The agent only sees <code style="font-family:var(--mono);font-size:14px;background:var(--surface);padding:2px 7px">{&nbsp;status:&nbsp;"ok"&nbsp;}</code>.
     </p>
     <div class="cta-row">
-      <button class="btn-primary" id="get-token-btn" onclick="getToken()">Get API token →</button>
-      <a class="btn-outline" href="#integrate">API docs</a>
-    </div>
-
-    <!-- token modal -->
-    <div id="token-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;align-items:center;justify-content:center;padding:20px">
-      <div style="background:#fff;border-radius:16px;padding:32px;max-width:480px;width:100%;box-shadow:0 8px 40px rgba(0,0,0,.2);position:relative;max-height:90vh;overflow-y:auto">
-        <button onclick="closeModal()" style="position:absolute;top:16px;right:16px;background:none;border:none;font-size:20px;cursor:pointer;color:#999;line-height:1">✕</button>
-
-        <!-- Step 1: registration form -->
-        <div id="reg-form">
-          <div style="font-size:22px;font-weight:700;margin-bottom:6px">Get your API token</div>
-          <div style="color:#666;font-size:14px;margin-bottom:24px">Free. No credit card. Takes 10 seconds.</div>
-
-          <div style="margin-bottom:14px">
-            <label style="display:block;font-size:13px;font-weight:500;color:#333;margin-bottom:5px">Work email <span style="color:#c00">*</span></label>
-            <input id="reg-email" type="email" placeholder="you@company.com" required
-              style="width:100%;border:1.5px solid #e0e0e0;border-radius:10px;padding:11px 14px;font-size:14px;outline:none;box-sizing:border-box;transition:border .15s"
-              onfocus="this.style.borderColor='#007aff'" onblur="this.style.borderColor='#e0e0e0'">
-          </div>
-
-          <div style="margin-bottom:14px">
-            <label style="display:block;font-size:13px;font-weight:500;color:#333;margin-bottom:5px">Website or product URL</label>
-            <input id="reg-website" type="url" placeholder="https://yourapp.com"
-              style="width:100%;border:1.5px solid #e0e0e0;border-radius:10px;padding:11px 14px;font-size:14px;outline:none;box-sizing:border-box;transition:border .15s"
-              onfocus="this.style.borderColor='#007aff'" onblur="this.style.borderColor='#e0e0e0'">
-          </div>
-
-          <div style="margin-bottom:20px">
-            <label style="display:block;font-size:13px;font-weight:500;color:#333;margin-bottom:5px">What are you building? <span style="color:#c00">*</span></label>
-            <select id="reg-category" required
-              style="width:100%;border:1.5px solid #e0e0e0;border-radius:10px;padding:11px 14px;font-size:14px;outline:none;box-sizing:border-box;background:#fff;appearance:none;transition:border .15s"
-              onfocus="this.style.borderColor='#007aff'" onblur="this.style.borderColor='#e0e0e0'">
-              <option value="">Select category…</option>
-              <option value="ai_agent">AI agent / automation</option>
-              <option value="saas">SaaS product</option>
-              <option value="internal">Internal / enterprise tool</option>
-              <option value="personal">Personal project</option>
-              <option value="other">Other</option>
-            </select>
-          </div>
-
-          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;margin-bottom:20px">
-            <input type="checkbox" id="reg-terms" style="margin-top:2px;accent-color:#007aff;flex-shrink:0">
-            <span style="font-size:13px;color:#444;line-height:1.5">
-              I agree to use ZeroCreds only for legitimate credential collection with users' explicit consent.
-              I will not use it to phish, deceive, or collect credentials without authorization.
-              I understand that abuse may result in token revocation.
-            </span>
-          </label>
-
-          <button onclick="submitReg()" id="reg-submit-btn"
-            style="width:100%;background:#007aff;color:#fff;border:none;border-radius:10px;padding:13px;font-size:15px;font-weight:600;cursor:pointer;opacity:.5;transition:opacity .15s"
-            disabled>Generate token</button>
-
-          <div id="reg-error" style="display:none;margin-top:12px;padding:10px 14px;background:#fdecea;color:#c62828;border-radius:8px;font-size:13px"></div>
-        </div>
-
-        <!-- Step 2: token display -->
-        <div id="token-modal-body" style="display:none">
-          <div style="font-size:22px;font-weight:700;margin-bottom:6px">Your API token</div>
-          <div style="color:#e65c00;font-size:13px;font-weight:500;margin-bottom:16px">⚠ Save it now — won't be shown again</div>
-          <div style="background:#f5f5f7;border-radius:10px;padding:14px 16px;font-family:monospace;font-size:13px;word-break:break-all" id="token-display"></div>
-          <button onclick="copyToken()" style="margin-top:10px;width:100%;background:#007aff;color:#fff;border:none;border-radius:10px;padding:12px;font-size:15px;font-weight:600;cursor:pointer" id="copy-btn">Copy token</button>
-
-          <div style="margin-top:24px;border-top:1px solid #f0f0f0;padding-top:20px">
-            <div style="font-size:13px;font-weight:600;color:#333;margin-bottom:10px">Quick start — create your first form session:</div>
-            <div style="background:#1a1a2e;border-radius:10px;padding:14px 16px;font-family:monospace;font-size:12px;color:#e0e0e0;line-height:1.7;overflow-x:auto;position:relative">
-              <button onclick="copyCurl()" style="position:absolute;top:8px;right:8px;background:#333;color:#aaa;border:none;border-radius:6px;padding:3px 8px;font-size:11px;cursor:pointer" id="curl-copy-btn">copy</button>
-              <div><span style="color:#7ec8e3">curl</span> -X POST https://zerocreds.ru/api/session/create \</div>
-              <div>&nbsp;&nbsp;-H <span style="color:#a8d8a8">"Authorization: Bearer <span id="curl-token-display" style="color:#ffd700">YOUR_TOKEN</span>"</span> \</div>
-              <div>&nbsp;&nbsp;-H <span style="color:#a8d8a8">"Content-Type: application/json"</span> \</div>
-              <div>&nbsp;&nbsp;-d <span style="color:#a8d8a8">'{</span></div>
-              <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a8d8a8">"title": "Connect GitHub",</span></div>
-              <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a8d8a8">"fields": [{"name":"token","label":"GitHub Token","type":"password"}],</span></div>
-              <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a8d8a8">"destination": {"type":"local_file","uid":"me","filename":"github"}</span></div>
-              <div>&nbsp;&nbsp;<span style="color:#a8d8a8">}'</span></div>
-            </div>
-            <div style="margin-top:8px;font-size:12px;color:#999">Returns <code style="background:#f0f0f0;padding:1px 4px;border-radius:3px">{"url":"https://zerocreds.ru/f/…"}</code> — send that link to your user</div>
-          </div>
-        </div>
-      </div>
+      <button class="btn-primary" onclick="getToken()">Get API token →</button>
+      <a class="btn-outline" href="https://github.com/Zerocreds-com/zerocreds-server">View on GitHub</a>
     </div>
   </div>
 
   <div class="hero-right">
-    <div class="terminal-wrap">
-      <div class="terminal-bar">
-        <div class="dot"></div><div class="dot"></div><div class="dot"></div>
-        <span class="terminal-title">zerocreds · agent view</span>
-        <div class="service-tabs">
-          <button class="stab active" onclick="switchSvc('create',this)">Create</button>
-          <button class="stab" onclick="switchSvc('poll',this)">Poll</button>
-          <button class="stab" onclick="switchSvc('done',this)">Done</button>
-        </div>
+    <div class="diagram-terminal">
+      <div class="diagram-bar">
+        <div class="diag-dot"></div>
+        <div class="diag-dot"></div>
+        <div class="diag-dot"></div>
+        <span class="diagram-bar-label">Sequence diagram · what actually happens</span>
       </div>
-
-      <div class="terminal-body" id="term-create">
-        <div><span class="t-prompt">POST </span><span class="t-val">/api/session/create</span></div>
-        <div class="t-dim">{</div>
-        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">title:</span> <span class="t-str">"Connect GitHub"</span><span class="t-dim">,</span></div>
-        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">fields:</span> <span class="t-str">[{name:"token", type:"password"}]</span><span class="t-dim">,</span></div>
-        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">destination:</span> <span class="t-str">{type:"local_file",uid:"me",filename:"github"}</span></div>
-        <div class="t-dim">}</div>
-        <div>&nbsp;</div>
-        <div><span class="t-prompt">← </span><span class="t-val">{</span></div>
-        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">url:</span> <span class="t-str">"https://zerocreds.ru/f/8a3f…"</span></div>
-        <div><span class="t-dim">&nbsp;&nbsp;</span><span class="t-key">expires_at:</span> <span class="t-str">"2026-09-05T13:30:00Z"</span></div>
-        <div><span class="t-val">}</span></div>
-        <div>&nbsp;</div>
-        <div><span class="t-dim">→ Send link to user via Telegram</span></div>
-      </div>
-
-      <div class="terminal-body" id="term-poll" style="display:none">
-        <div><span class="t-comment"># user opened the link and filled the form</span></div>
-        <div>&nbsp;</div>
-        <div><span class="t-prompt">GET </span><span class="t-val">/api/session/8a3f…/status</span></div>
-        <div><span class="t-prompt">← </span><span class="t-val">{ status: "pending" }</span></div>
-        <div>&nbsp;</div>
-        <div><span class="t-comment"># 12 seconds later…</span></div>
-        <div>&nbsp;</div>
-        <div><span class="t-prompt">GET </span><span class="t-val">/api/session/8a3f…/status</span></div>
-        <div><span class="t-prompt">← </span><span class="t-val">{ status: "done" }</span></div>
-        <div>&nbsp;</div>
-        <div class="t-green">✓ Credentials saved. Agent never saw them.</div>
-      </div>
-
-      <div class="terminal-body" id="term-done" style="display:none">
-        <div><span class="t-comment"># Credentials are now in GCP Secret Manager</span></div>
-        <div><span class="t-comment"># ZeroCreds held secretVersionAdder role only</span></div>
-        <div><span class="t-comment"># It CANNOT read them back — by IAM design</span></div>
-        <div>&nbsp;</div>
-        <div><span class="t-prompt">$ </span><span class="t-val">gcloud secrets versions access latest \</span></div>
-        <div><span class="t-dim">&nbsp;&nbsp;--secret="github-creds"</span></div>
-        <div><span class="t-comment"># → your runtime reads with secretAccessor role</span></div>
-        <div><span class="t-comment"># → zerocreds cannot. Two separate service accounts.</span></div>
-        <div>&nbsp;</div>
-        <div class="t-green">Zero knowledge. Verifiable. Open source.</div>
-        <div><span class="t-prompt">$ </span><span class="cursor"></span></div>
+      <div class="diagram-body">
+<pre class="seq-diagram"><span class="sd-head">Agent                     ZeroCreds                      User</span>
+  │                            │                            │
+  ├─<span class="sd-post">POST /api/session/create</span>──►│                            │
+  │  {fields, destination}     │                            │
+  │◄─{url, expires_at}─────────┤                            │
+  │                            │                            │
+  ├─send URL (TG / email)─────────────────────────────────►│
+  │                            │                            │
+  │                            │◄─<span class="sd-get">GET /f/{token}</span>───────────┤
+  │                            │──form html────────────────►│
+  │                            │◄─<span class="sd-data">POST {credentials}</span>────────┤
+  │                            │                            │
+  │                            ├─<span class="sd-ok">write to secret store</span>       │
+  │                            │                            │
+  ├─<span class="sd-get">GET /session/{t}/status</span>────►│                            │
+  │◄─<span class="sd-ok">{ status: "done" }</span>──────────┤                            │
+  │                            │                            │
+  │  <span class="sd-note">never saw credentials</span>      │                            │</pre>
       </div>
     </div>
   </div>
@@ -565,154 +621,156 @@
   </div>
 </div>
 
-<!-- QUICKSTART -->
-<div id="quickstart">
-  <div class="quickstart">
-    <div class="qs-header">
-      <span class="section-label">Quickstart</span>
-      <span class="section-title">Start in 3 steps</span>
+<!-- INTEGRATE -->
+<section class="integrate-section" id="integrate">
+  <div class="section-top">
+    <span class="section-label">Integration</span>
+    <span class="section-title">Use from any agent</span>
+  </div>
+
+  <!-- Mode tabs -->
+  <div class="mode-tabs">
+    <button class="mode-tab active" onclick="switchMode('api',this)">zerocreds.ru</button>
+    <button class="mode-tab" onclick="switchMode('mcp',this)">MCP · Local</button>
+  </div>
+
+  <!-- API pane -->
+  <div class="integrate-pane active" id="pane-api">
+    <!-- LEFT: curl to copy -->
+    <div class="code-panel">
+      <div class="code-panel-bar">
+        <span class="code-panel-label">Your agent calls this</span>
+        <button class="copy-btn" onclick="copyCode('curl-api',this)">Copy</button>
+      </div>
+<pre class="code-block" id="curl-api"><span class="cb-cmd">curl</span> -X POST https://zerocreds.ru/api/session/create \
+  -H <span class="cb-str">"Authorization: Bearer YOUR_TOKEN"</span> \
+  -H <span class="cb-str">"Content-Type: application/json"</span> \
+  -d <span class="cb-str">'{</span>
+<span class="cb-str">    "title":       "Connect GitHub",</span>
+<span class="cb-str">    "description": "Paste your token with repo scope",</span>
+<span class="cb-str">    "fields": [</span>
+<span class="cb-str">      {"name":"token","label":"Personal Access Token","type":"password"}</span>
+<span class="cb-str">    ],</span>
+<span class="cb-str">    "destination": "prod-gcp"</span>
+<span class="cb-str">  }'</span>
+
+<span class="cb-arrow">←</span> <span class="cb-val">{ "url": "https://zerocreds.ru/f/8a3f…" }</span>
+
+<span class="cb-note"># send url to the user → wait → poll:</span>
+
+<span class="cb-cmd">curl</span> https://zerocreds.ru/api/session/8a3f…/status \
+  -H <span class="cb-str">"Authorization: Bearer YOUR_TOKEN"</span>
+
+<span class="cb-arrow">←</span> <span class="cb-key">{ "status": "done" }</span>  <span class="cb-note">✓ never saw the password</span></pre>
     </div>
-    <div class="qs-steps">
-      <div class="qs-step">
-        <div class="qs-num">step 01</div>
-        <h3>Get your token</h3>
-        <p>Click below — fill in your email and what you're building. Takes 30 seconds, no credit card.</p>
-        <button class="qs-btn" onclick="getToken()">Get API token →</button>
+
+    <!-- RIGHT: what the user sees -->
+    <div class="form-panel">
+      <div class="form-panel-bar">
+        <span class="form-panel-label">What your user sees</span>
       </div>
-      <div class="qs-step">
-        <div class="qs-num">step 02</div>
-        <h3>Create a form session</h3>
-        <p>Your agent calls the API and gets back a one-time link. Send it to the user via Telegram, email, or any channel.</p>
-        <div class="qs-code"><span class="qk">POST</span> <span class="qv">https://zerocreds.ru/api/session/create</span>
-<span class="qk">Authorization:</span> <span class="qv">Bearer YOUR_TOKEN</span>
-
-<span class="qk">{</span>
-  <span class="qk">"title":</span> <span class="qv">"Connect GitHub"</span>,
-  <span class="qk">"fields":</span> <span class="qv">[{name:"token", type:"password"}]</span>,
-  <span class="qk">"destination":</span> <span class="qv">{type:"local_file", uid:"me", filename:"github"}</span>
-<span class="qk">}</span>
-
-<span class="qc">← </span><span class="qv">{ "url": "https://zerocreds.ru/f/8a3f…" }</span></div>
-      </div>
-      <div class="qs-step">
-        <div class="qs-num">step 03</div>
-        <h3>Poll until done</h3>
-        <p>User fills the form. Your agent polls for status. When <code style="font-family:var(--mono);font-size:12px">done</code> — credentials are saved. Agent never saw them.</p>
-        <div class="qs-code"><span class="qk">GET</span> <span class="qv">/api/session/{token}/status</span>
-<span class="qk">Authorization:</span> <span class="qv">Bearer YOUR_TOKEN</span>
-
-<span class="qc">← </span><span class="qv">{ "status": "pending" }</span>
-<span class="qc">← </span><span class="qv">{ "status": "pending" }</span>
-<span class="qc">← </span><span class="qg">{ "status": "done" }</span>  <span class="qc">✓</span></div>
+      <div class="form-panel-body">
+        <div class="browser-wrap">
+          <div class="browser-chrome">
+            <div class="bchrome-dots">
+              <div class="bchrome-dot"></div>
+              <div class="bchrome-dot"></div>
+              <div class="bchrome-dot"></div>
+            </div>
+            <div class="bchrome-url">zerocreds.ru/f/8a3f1c2d…</div>
+          </div>
+          <div class="browser-content">
+            <div class="cred-form-header">
+              <span class="cred-form-icon">🔒</span>
+              <div class="cred-form-title">Connect GitHub</div>
+              <div class="cred-form-sub">Paste your token with repo scope</div>
+            </div>
+            <div class="cred-field">
+              <label class="cred-label">Personal Access Token <span style="color:#c00">*</span></label>
+              <div class="cred-input-row">
+                <div class="cred-input">ghp_●●●●●●●●●●●●●●●●</div>
+                <div class="cred-input-btn">Paste</div>
+                <div class="cred-input-btn">👁</div>
+              </div>
+            </div>
+            <button class="cred-submit">Submit credentials</button>
+          </div>
+        </div>
+        <p class="panel-note">
+          Credentials POST directly to ZeroCreds — never through your agent or LLM context.
+          When the user submits, you get <code>{ status: "done" }</code> and the values are
+          already in your configured secret store.
+        </p>
       </div>
     </div>
   </div>
-</div>
 
-<!-- HOW IT WORKS -->
-<section class="how-section" id="how">
-  <div class="section-header">
-    <span class="section-label">Mechanism</span>
-    <span class="section-title">How it works</span>
-  </div>
-  <div class="steps">
-    <div class="step">
-      <div class="step-num">step 01</div>
-      <h3>Agent creates session</h3>
-      <p>Your agent calls <code>/api/session/create</code> with a list of fields and a destination. Gets back a one-time URL. No credentials involved — just a form schema.</p>
-      <div class="step-code">
-        <span class="sc-key">POST</span> /api/session/create<br>
-        fields: [{name, type, label}]<br>
-        destination: "named-preset"<br>
-        <span class="sc-key">←</span> { url, expires_at }
+  <!-- MCP pane -->
+  <div class="integrate-pane" id="pane-mcp">
+    <!-- LEFT: config JSON -->
+    <div class="code-panel">
+      <div class="code-panel-bar">
+        <span class="code-panel-label">Claude Code / Desktop config</span>
+        <button class="copy-btn" onclick="copyCode('mcp-config',this)">Copy</button>
       </div>
+<pre class="code-block" id="mcp-config"><span class="cb-dim"># ~/.claude/settings.json</span>
+
+<span class="cb-str">{</span>
+  <span class="cb-key">"mcpServers"</span>: {
+    <span class="cb-key">"zerocreds"</span>: {
+      <span class="cb-key">"command"</span>: <span class="cb-val">"npx"</span>,
+      <span class="cb-key">"args"</span>:    [<span class="cb-val">"-y"</span>, <span class="cb-val">"zerocreds-mcp"</span>],
+      <span class="cb-key">"env"</span>: {
+        <span class="cb-key">"ZEROCREDS_TOKEN"</span>: <span class="cb-val">"your-token-here"</span>
+      }
+    }
+  }
+<span class="cb-str">}</span>
+
+<span class="cb-note"># Then Claude Code calls the tool directly:</span>
+
+<span class="cb-dim">zerocreds.collect_credentials({</span>
+  <span class="cb-key">title</span>:       <span class="cb-val">"Connect GitHub"</span>,
+  <span class="cb-key">fields</span>:      [{ <span class="cb-key">name</span>: <span class="cb-val">"token"</span>, <span class="cb-key">type</span>: <span class="cb-val">"password"</span> }],
+  <span class="cb-key">destination</span>: <span class="cb-val">"local-dev"</span>
+<span class="cb-dim">})</span>
+
+<span class="cb-arrow">←</span> <span class="cb-key">{ status: "done" }</span>  <span class="cb-note">credentials in ~/agent-tokens/</span></pre>
     </div>
-    <div class="step">
-      <div class="step-num">step 02</div>
-      <h3>User fills the form</h3>
-      <p>Agent sends the URL to the user (Telegram, email, Slack). User opens the secure form on <em>your server</em>, types their credentials. Data goes directly to the configured destination over HTTPS.</p>
-      <div class="step-code">
-        user → opens zerocreds.ru/f/{token}<br>
-        → fills form → POST /f/{token}<br>
-        → server writes to destination<br>
-        <span class="sc-key">←</span> { ok: true }
+
+    <!-- RIGHT: how it works with Claude -->
+    <div class="form-panel">
+      <div class="form-panel-bar">
+        <span class="form-panel-label">How it feels in Claude Code</span>
       </div>
-    </div>
-    <div class="step">
-      <div class="step-num">step 03</div>
-      <h3>Agent gets confirmation</h3>
-      <p>Agent polls <code>/api/session/{token}/status</code> until <code>"done"</code>. It learns that credentials were saved — but never sees the values. Your runtime reads them from the secret store with a separate key.</p>
-      <div class="step-code">
-        <span class="sc-key">GET</span> /session/{token}/status<br>
-        <span class="sc-key">←</span> { status: "done" }<br>
-        <br>
-        agent: continues task ✓
+      <div class="form-panel-body">
+        <div class="mcp-badge">Coming soon · beta</div>
+        <div class="mcp-right" style="padding:0">
+          <p>
+            Add ZeroCreds as an MCP server. Claude Code picks up the tool automatically
+            — no manual HTTP calls, no token handling in your prompt.
+          </p>
+          <p>
+            Claude creates the session, waits for the user, and continues
+            the task once <strong>{ status: "done" }</strong> comes back.
+            The credential values stay out of the conversation context entirely.
+          </p>
+          <div class="mcp-flow">
+            <div>> Connect my GitHub account</div>
+            <div class="cb-dim">Claude: collecting credentials…</div>
+            <div class="cb-dim">🔗 Please fill: zerocreds.ru/f/8a3f…</div>
+            <div class="cb-dim">…user fills the form…</div>
+            <div class="mfc-ok">✓ Done. Continuing with GitHub access.</div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 </section>
 
-<!-- INTEGRATION -->
-<div class="integration-section" id="integrate">
-  <div class="integration-inner">
-    <div class="integration-left">
-      <div class="eyebrow" style="color:#555;margin-bottom:24px"><span style="display:inline-block;width:24px;height:1px;background:#444;margin-right:12px;vertical-align:middle"></span>For Integrators</div>
-      <h2>Your agent. Your secret store. One API call.</h2>
-      <p>
-        Configure named destinations once on your server. Your agent references them by name — <strong>no credentials travel in API requests.</strong>
-      </p>
-      <p>
-        Works with Google Secret Manager (write-only IAM role), AWS Secrets Manager, HashiCorp Vault, or plain local files. Pick what fits your stack.
-      </p>
-      <p style="margin-bottom:0">
-        Protect the session creation endpoint with <code style="color:#888;font-size:13px">ZEROCREDS_ADMIN_TOKEN</code>. Each integration partner gets their own token.
-      </p>
-    </div>
-    <div class="integration-right">
-      <div class="api-block">
-        <div class="api-block-header">
-          <span class="method-badge">1</span> ~/zerocreds-destinations.json (server config)
-        </div>
-        <div class="api-block-body">
-          <div class="ai-comment">{</div>
-          <div><span class="ai-key">&nbsp;&nbsp;"prod-gcp":</span> <span class="ai-comment">{</span></div>
-          <div><span class="ai-key">&nbsp;&nbsp;&nbsp;&nbsp;"type":</span> <span class="ai-str">"gcp_secret_manager"</span><span class="ai-comment">,</span></div>
-          <div><span class="ai-key">&nbsp;&nbsp;&nbsp;&nbsp;"secret":</span> <span class="ai-str">"projects/P/secrets/S"</span><span class="ai-comment">,</span></div>
-          <div><span class="ai-key">&nbsp;&nbsp;&nbsp;&nbsp;"credentials":</span> <span class="ai-str">"&lt;base64 SA key&gt;"</span></div>
-          <div class="ai-comment">&nbsp;&nbsp;}</div>
-          <div class="ai-comment">}</div>
-        </div>
-      </div>
-      <div class="flow-arrow">↓ agent references by name</div>
-      <div class="api-block">
-        <div class="api-block-header">
-          <span class="method-badge">2</span> POST /api/session/create
-        </div>
-        <div class="api-block-body">
-          <div class="ai-comment">{</div>
-          <div><span class="ai-key">&nbsp;&nbsp;"title":</span> <span class="ai-str">"Connect GitHub"</span><span class="ai-comment">,</span></div>
-          <div><span class="ai-key">&nbsp;&nbsp;"fields":</span> <span class="ai-val">[{name, label, type}]</span><span class="ai-comment">,</span></div>
-          <div><span class="ai-key">&nbsp;&nbsp;"destination":</span> <span class="ai-str">"prod-gcp"</span> <span class="ai-comment">← just a name</span></div>
-          <div class="ai-comment">}</div>
-        </div>
-      </div>
-      <div class="flow-arrow">↓ returns one-time URL</div>
-      <div class="api-block">
-        <div class="api-block-header">
-          <span class="method-badge">3</span> GET /api/session/{token}/status
-        </div>
-        <div class="api-block-body">
-          <div><span class="ai-val">{ status: </span><span class="ai-str">"done"</span><span class="ai-val"> }</span></div>
-          <div class="ai-comment" style="margin-top:6px"># credentials saved · agent never saw them</div>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
 <!-- DESTINATIONS -->
 <section class="dest-section">
-  <div class="section-header">
+  <div class="section-top">
     <span class="section-label">Storage</span>
     <span class="section-title">Write-only destinations</span>
   </div>
@@ -720,9 +778,9 @@
     <div class="dest-card">
       <div class="dest-icon">GCP Secret Manager</div>
       <h3>Google Cloud</h3>
-      <p>ZeroCreds uses <code>roles/secretmanager.secretVersionAdder</code> — it can push a new version but physically cannot read any secret back. Enforced by IAM, not code.</p>
+      <p>ZeroCreds uses <code style="font-family:var(--mono);font-size:12px">roles/secretmanager.secretVersionAdder</code> — it can push a new version but physically cannot read any secret back. Enforced by IAM, not code.</p>
       <div class="dest-guarantee">
-        IAM permission: secretmanager.versions.add<br>
+        IAM: secretmanager.versions.add<br>
         NOT granted: secretmanager.versions.access<br>
         Granularity: per-secret, not project-wide
       </div>
@@ -730,7 +788,7 @@
     <div class="dest-card">
       <div class="dest-icon">AWS Secrets Manager</div>
       <h3>Amazon Web Services</h3>
-      <p>IAM policy grants only <code>secretsmanager:PutSecretValue</code> on a specific ARN. <code>GetSecretValue</code> is never in the policy — write-only by construction.</p>
+      <p>IAM policy grants only <code style="font-family:var(--mono);font-size:12px">secretsmanager:PutSecretValue</code> on a specific ARN. <code style="font-family:var(--mono);font-size:12px">GetSecretValue</code> is never in the policy — write-only by construction.</p>
       <div class="dest-guarantee">
         Action: secretsmanager:PutSecretValue<br>
         NOT granted: GetSecretValue<br>
@@ -740,7 +798,7 @@
     <div class="dest-card">
       <div class="dest-icon">HashiCorp Vault</div>
       <h3>Self-hosted Vault</h3>
-      <p>Vault policy allows <code>create</code> and <code>update</code> capabilities on the target path. <code>read</code> is simply omitted — Vault enforces it at the policy layer.</p>
+      <p>Vault policy allows <code style="font-family:var(--mono);font-size:12px">create</code> and <code style="font-family:var(--mono);font-size:12px">update</code> capabilities on the target path. <code style="font-family:var(--mono);font-size:12px">read</code> is simply omitted — Vault enforces it at the policy layer.</p>
       <div class="dest-guarantee">
         capabilities = ["create", "update"]<br>
         "read" not listed = denied<br>
@@ -750,7 +808,7 @@
     <div class="dest-card">
       <div class="dest-icon">Local File</div>
       <h3>Filesystem</h3>
-      <p>Simplest option. Credentials are written as JSON to <code>~/agent-tokens/{uid}/{name}</code> with mode 0600. No external dependency — works offline, ideal for single-machine setups.</p>
+      <p>Simplest option for local agents. Credentials are written as JSON to <code style="font-family:var(--mono);font-size:12px">~/agent-tokens/{uid}/{name}</code> with mode 0600. No external dependency.</p>
       <div class="dest-guarantee">
         path: ~/agent-tokens/{uid}/{filename}<br>
         permissions: 0600 (owner-only read)<br>
@@ -760,13 +818,14 @@
   </div>
 </section>
 
-<!-- OPEN SOURCE -->
+<!-- OSS -->
 <div class="oss-section">
   <div class="oss-inner">
     <h2>Open source.<br>Audit the code.<br>Run it yourself.</h2>
     <div class="oss-right">
       <p>
-        A security specialist can check the exact git commit running on your server via <code>/version</code>, match it to the public source code, and verify line by line what happens to user input.
+        A security specialist can check the exact git commit running on your server via <code>/version</code>,
+        match it to the public source code, and verify line by line what happens to user input.
       </p>
       <p>
         Get a token in 30 seconds on zerocreds.ru, or deploy on your own server for full control.
@@ -774,10 +833,10 @@
       </p>
       <div class="license-box">
         <div class="l-label">MIT License</div>
-        <div class="l-item"><span class="l-check">→</span> Free for any use, commercial or personal</div>
-        <div class="l-item"><span class="l-check">→</span> Modify and distribute freely</div>
-        <div class="l-item"><span class="l-check">→</span> Self-host for full control — deploy in 5 minutes</div>
-        <div class="l-item"><span class="l-check">→</span> Contributions welcome</div>
+        <div class="l-item"><span class="l-check">→</span>Free for any use, commercial or personal</div>
+        <div class="l-item"><span class="l-check">→</span>Modify and distribute freely</div>
+        <div class="l-item"><span class="l-check">→</span>Self-host in 5 minutes — full control</div>
+        <div class="l-item"><span class="l-check">→</span>Contributions welcome</div>
       </div>
       <div class="oss-links">
         <button class="btn-primary" onclick="getToken()">Get API token →</button>
@@ -788,15 +847,13 @@
 </div>
 
 <!-- SETUP CTA -->
-<div style="border-top:1px solid var(--border);border-bottom:1px solid var(--border);background:var(--surface)">
-  <div style="max-width:1200px;margin:0 auto;padding:56px 40px;display:flex;align-items:center;justify-content:space-between;gap:40px;flex-wrap:wrap">
+<div class="setup-cta">
+  <div class="setup-cta-inner">
     <div>
-      <div style="font-family:var(--display);font-size:24px;font-weight:800;letter-spacing:-0.01em;margin-bottom:8px">Need help setting up?</div>
-      <div style="color:var(--muted);font-size:15px">We'll configure ZeroCreds for your stack — destinations, agent integration, the works.</div>
+      <h3>Need help setting up?</h3>
+      <p>We'll configure ZeroCreds for your stack — destinations, agent integration, the works.</p>
     </div>
-    <a href="https://t.me/kobzevvv" target="_blank" rel="noopener"
-      style="font-family:var(--mono);font-size:12px;font-weight:500;letter-spacing:0.1em;text-transform:uppercase;text-decoration:none;background:var(--text);color:var(--bg);padding:14px 32px;white-space:nowrap;flex-shrink:0;transition:opacity .15s"
-      onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">Request setup →</a>
+    <a href="https://t.me/kobzevvv" target="_blank" rel="noopener" class="btn-primary">Request setup →</a>
   </div>
 </div>
 
@@ -816,32 +873,113 @@
   </div>
 </div>
 
+<!-- REGISTRATION MODAL -->
+<div class="modal-overlay" id="token-modal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeModal()">✕</button>
+
+    <!-- Step 1: form -->
+    <div id="reg-form">
+      <div class="modal-title">Get your API token</div>
+      <div class="modal-sub">Free. No credit card. Takes 10 seconds.</div>
+
+      <div class="modal-field">
+        <label class="modal-label">Work email <span style="color:#c00">*</span></label>
+        <input class="modal-input" id="reg-email" type="email" placeholder="you@company.com" required>
+      </div>
+      <div class="modal-field">
+        <label class="modal-label">Website or product URL</label>
+        <input class="modal-input" id="reg-website" type="url" placeholder="https://yourapp.com">
+      </div>
+      <div class="modal-field">
+        <label class="modal-label">Three words about what you're doing</label>
+        <input class="modal-input" id="reg-category" type="text" placeholder="e.g. AI hiring agent">
+      </div>
+
+      <label class="modal-terms">
+        <input type="checkbox" id="reg-terms" style="margin-top:2px;accent-color:#007aff;flex-shrink:0">
+        <span>I commit to deleting credentials from the secret store upon user request, and to providing an audit log of credential access upon request.</span>
+      </label>
+
+      <button class="modal-submit" id="reg-submit-btn" onclick="submitReg()" disabled>Generate token</button>
+      <div class="modal-error" id="reg-error"></div>
+
+      <div style="margin-top:20px;border-top:1px solid #f0f0f0;padding-top:18px">
+        <div style="font-family:monospace;font-size:11px;color:#bbb;text-align:center;letter-spacing:0.08em;margin-bottom:14px">— or request automatically —</div>
+        <div style="font-size:13px;font-weight:500;color:#333;margin-bottom:8px">Paste to your agent with placeholders filled:</div>
+        <div style="position:relative;background:#1a1a2e;border-radius:8px;padding:14px 16px 14px;font-family:monospace;font-size:12px;color:#ccc;line-height:1.75;overflow-x:auto">
+          <button onclick="copyRegTemplate()" id="reg-template-btn" style="position:absolute;top:8px;right:8px;background:#2a2a3e;color:#888;border:1px solid #333;border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer;font-family:monospace">Copy template</button>
+          <div><span style="color:#7ec8e3">curl</span> -X POST https://zerocreds.ru/api/register \</div>
+          <div>&nbsp;&nbsp;-H <span style="color:#a8d8a8">"Content-Type: application/json"</span> \</div>
+          <div>&nbsp;&nbsp;-d <span style="color:#a8d8a8">'{</span></div>
+          <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a8d8a8">"email":    "</span><span style="color:#ffd700">YOUR_EMAIL</span><span style="color:#a8d8a8">",</span></div>
+          <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a8d8a8">"website":  "</span><span style="color:#ffd700">YOUR_WEBSITE</span><span style="color:#a8d8a8">",</span></div>
+          <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a8d8a8">"category": "</span><span style="color:#ffd700">what you are building</span><span style="color:#a8d8a8">"</span></div>
+          <div>&nbsp;&nbsp;<span style="color:#a8d8a8">}'</span></div>
+        </div>
+        <div style="margin-top:8px;font-size:12px;color:#999">Returns <code style="background:#f0f0f0;padding:1px 4px;border-radius:3px">{"token":"…"}</code> — save it, that's your API key.</div>
+      </div>
+    </div>
+
+    <!-- Step 2: token -->
+    <div id="token-modal-body" style="display:none">
+      <div class="modal-title">Your API token</div>
+      <div class="modal-warn">⚠ Save it now — won't be shown again</div>
+      <div class="token-display" id="token-display"></div>
+      <button class="modal-copy-btn" onclick="copyToken()" id="copy-btn">Copy token</button>
+
+      <div class="qs-curl-wrap">
+        <div class="qs-curl-label">Quick start — create your first form session:</div>
+        <div class="qs-curl-block">
+          <button class="qs-curl-copy" onclick="copyCurl()" id="curl-copy-btn">copy</button>
+          <div><span style="color:#7ec8e3">curl</span> -X POST https://zerocreds.ru/api/session/create \</div>
+          <div>&nbsp;&nbsp;-H <span style="color:#a8d8a8">"Authorization: Bearer <span id="curl-token-display" style="color:#ffd700">YOUR_TOKEN</span>"</span> \</div>
+          <div>&nbsp;&nbsp;-H <span style="color:#a8d8a8">"Content-Type: application/json"</span> \</div>
+          <div>&nbsp;&nbsp;-d <span style="color:#a8d8a8">'{</span></div>
+          <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a8d8a8">"title": "Connect GitHub",</span></div>
+          <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a8d8a8">"fields": [{"name":"token","label":"GitHub Token","type":"password"}],</span></div>
+          <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a8d8a8">"destination": {"type":"local_file","uid":"me","filename":"github"}</span></div>
+          <div>&nbsp;&nbsp;<span style="color:#a8d8a8">}'</span></div>
+        </div>
+        <div class="qs-curl-note">Returns <code style="background:#f0f0f0;padding:1px 4px;border-radius:3px">{"url":"https://zerocreds.ru/f/…"}</code> — send that link to your user</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <span class="footer-brand">ZEROCREDS</span>
+  <div class="footer-links">
+    <a href="https://github.com/Zerocreds-com/zerocreds-server">GitHub</a>
+    <a href="https://github.com/Zerocreds-com/zerocreds-server/blob/main/LICENSE">MIT License</a>
+    <a href="https://github.com/Zerocreds-com/zerocreds-server/blob/main/CONTRIBUTING.md">Contributing</a>
+    <a href="/version">Version</a>
+  </div>
+  <span class="footer-copy">Credentials stay yours. Agents stay useful.</span>
+</footer>
+
 <script>
-const SVCS = ['create', 'poll', 'done'];
-let autoIdx = 0;
-let autoTimer;
+/* ── Mode tabs ── */
+function switchMode(tab, btn) {
+  document.querySelectorAll('.mode-tab').forEach(b => b.classList.toggle('active', b === btn));
+  document.querySelectorAll('.integrate-pane').forEach(p => {
+    p.classList.toggle('active', p.id === 'pane-' + tab);
+  });
+}
 
-function switchSvc(svc, btn) {
-  clearInterval(autoTimer);
-  _show(svc);
-  autoIdx = SVCS.indexOf(svc);
-  startAuto();
+/* ── Copy code blocks ── */
+function copyCode(id, btnEl) {
+  const el = document.getElementById(id);
+  const text = el ? el.textContent : '';
+  navigator.clipboard.writeText(text.trim()).then(() => {
+    const orig = btnEl.textContent;
+    btnEl.textContent = 'Copied!';
+    setTimeout(() => { btnEl.textContent = orig; }, 2000);
+  }).catch(() => {});
 }
-function _show(svc) {
-  document.querySelectorAll('.terminal-body').forEach(el => el.style.display = 'none');
-  document.querySelectorAll('.stab').forEach(el => el.classList.remove('active'));
-  document.getElementById('term-' + svc).style.display = 'block';
-  const btn = document.querySelector(`.stab[onclick*="${svc}"]`);
-  if (btn) btn.classList.add('active');
-}
-function startAuto() {
-  autoTimer = setInterval(() => {
-    autoIdx = (autoIdx + 1) % SVCS.length;
-    _show(SVCS[autoIdx]);
-  }, 4000);
-}
-startAuto();
 
+/* ── Registration modal ── */
 let _token = '';
 
 function getToken() {
@@ -853,15 +991,16 @@ function getToken() {
 function closeModal() {
   document.getElementById('token-modal').style.display = 'none';
 }
+document.getElementById('token-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
 
-// Enable submit button only when required fields filled + terms checked
 ['reg-email','reg-category','reg-terms'].forEach(id => {
-  document.getElementById(id)?.addEventListener('change', validateReg);
-  document.getElementById(id)?.addEventListener('input', validateReg);
+  const el = document.getElementById(id);
+  if (el) { el.addEventListener('change', validateReg); el.addEventListener('input', validateReg); }
 });
 function validateReg() {
   const ok = document.getElementById('reg-email').value.includes('@')
-    && document.getElementById('reg-category').value
     && document.getElementById('reg-terms').checked;
   const btn = document.getElementById('reg-submit-btn');
   btn.disabled = !ok;
@@ -878,8 +1017,8 @@ async function submitReg() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        email: document.getElementById('reg-email').value.trim(),
-        website: document.getElementById('reg-website').value.trim(),
+        email:    document.getElementById('reg-email').value.trim(),
+        website:  document.getElementById('reg-website').value.trim(),
         category: document.getElementById('reg-category').value,
       })
     });
@@ -903,30 +1042,25 @@ function copyToken() {
   navigator.clipboard.writeText(_token).then(() => {
     const b = document.getElementById('copy-btn');
     b.textContent = 'Copied!';
-    setTimeout(() => b.textContent = 'Copy token', 2000);
+    setTimeout(() => { b.textContent = 'Copy token'; }, 2000);
   });
+}
+function copyRegTemplate() {
+  const text = `curl -X POST https://zerocreds.ru/api/register \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "email":    "YOUR_EMAIL",\n    "website":  "YOUR_WEBSITE",\n    "category": "what you are building"\n  }'`;
+  navigator.clipboard.writeText(text).then(() => {
+    const b = document.getElementById('reg-template-btn');
+    b.textContent = 'Copied!';
+    setTimeout(() => { b.textContent = 'Copy template'; }, 2000);
+  }).catch(() => {});
 }
 function copyCurl() {
   const curl = `curl -X POST https://zerocreds.ru/api/session/create \\\n  -H "Authorization: Bearer ${_token}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"title":"Connect GitHub","fields":[{"name":"token","label":"GitHub Token","type":"password"}],"destination":{"type":"local_file","uid":"me","filename":"github"}}'`;
   navigator.clipboard.writeText(curl).then(() => {
     const b = document.getElementById('curl-copy-btn');
     b.textContent = 'copied!';
-    setTimeout(() => b.textContent = 'copy', 2000);
+    setTimeout(() => { b.textContent = 'copy'; }, 2000);
   });
 }
 </script>
-
-<!-- FOOTER -->
-<footer>
-  <span class="footer-brand">ZEROCREDS</span>
-  <div class="footer-links">
-    <a href="https://github.com/Zerocreds-com/zerocreds-server">GitHub</a>
-    <a href="https://github.com/Zerocreds-com/zerocreds-server/blob/main/LICENSE">MIT License</a>
-    <a href="https://github.com/Zerocreds-com/zerocreds-server/blob/main/CONTRIBUTING.md">Contributing</a>
-    <a href="/version">Version</a>
-  </div>
-  <span class="footer-copy">Credentials stay yours. Agents stay useful.</span>
-</footer>
-
 </body>
 </html>
