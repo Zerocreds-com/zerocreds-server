@@ -101,25 +101,29 @@ function nalogFormHtml(token) {
 <title>Подключить Налог.ру</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f7;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
-  .card{background:#fff;border-radius:16px;padding:32px;max-width:480px;width:100%;box-shadow:0 2px 20px rgba(0,0,0,.08)}
-  h1{font-size:20px;font-weight:600;margin-bottom:8px}
-  .sub{color:#666;font-size:14px;margin-bottom:24px;line-height:1.5}
-  label{display:block;font-size:13px;font-weight:500;color:#333;margin-bottom:6px;margin-top:16px}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d0f17;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;color:#c8cdd8}
+  .card{background:#161924;border:1px solid #232635;border-radius:6px;padding:32px;max-width:460px;width:100%}
+  h1{font-size:18px;font-weight:600;color:#e8eaf0;margin-bottom:6px;letter-spacing:-.2px}
+  .sub{color:#6b7280;font-size:13.5px;margin-bottom:24px;line-height:1.55}
+  .sub b{color:#a0aab8}
+  label{display:block;font-size:12px;font-weight:500;color:#8892a4;margin-bottom:6px;margin-top:18px;letter-spacing:.03em}
   label:first-of-type{margin-top:0}
-  input{width:100%;border:1.5px solid #e0e0e0;border-radius:10px;padding:12px 14px;font-size:15px;outline:none;transition:border .15s}
-  input:focus{border-color:#007aff}
-  button{margin-top:20px;width:100%;background:#007aff;color:#fff;border:none;border-radius:10px;padding:13px;font-size:16px;font-weight:600;cursor:pointer;transition:opacity .15s}
-  button:hover{opacity:.88}
-  button:disabled{opacity:.5;cursor:default}
-  .msg{margin-top:16px;padding:12px 14px;border-radius:10px;font-size:14px;display:none}
-  .msg.ok{background:#e8f5e9;color:#2e7d32}
-  .msg.err{background:#fdecea;color:#c62828}
-  .msg.info{background:#e3f2fd;color:#1565c0}
-  .lock{font-size:13px;color:#999;margin-top:20px;text-align:center}
+  input{width:100%;background:#0d0f17;border:1px solid #232635;border-radius:4px;padding:10px 12px;font-size:14px;color:#e8eaf0;outline:none;transition:border-color .15s}
+  input:focus{border-color:#4068e8}
+  input::placeholder{color:#3a3f52}
+  button{margin-top:20px;width:100%;background:#4068e8;color:#fff;border:none;border-radius:4px;padding:11px;font-size:14px;font-weight:600;cursor:pointer;letter-spacing:.01em;transition:background .15s}
+  button:hover{background:#3055cc}
+  button:disabled{opacity:.35;cursor:default}
+  .msg{margin-top:12px;padding:10px 12px;border-radius:4px;font-size:13px;display:none;border-left:2px solid}
+  .msg.ok{background:#0a1f15;color:#4ade80;border-color:#16a34a}
+  .msg.err{background:#1f0a0a;color:#f87171;border-color:#dc2626}
+  .msg.info{background:#0a1220;color:#60a5fa;border-color:#3b82f6}
+  .lock{font-size:11px;color:#2e3348;margin-top:20px;text-align:center;letter-spacing:.02em}
+  .lock a{color:#2e3348;text-decoration:none}
+  .lock a:hover{color:#6b7280}
   #step2{display:none}
-  #step3{display:none;text-align:center}
-  #step3 .icon{font-size:48px;margin-bottom:12px}
+  #step3{display:none;text-align:center;padding:12px 0}
+  #step3 .check-icon{width:48px;height:48px;background:#0a1f15;border:1px solid #166534;border-radius:4px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;color:#4ade80;font-size:22px}
 </style>
 </head>
 <body>
@@ -143,11 +147,11 @@ function nalogFormHtml(token) {
     <div id="msg2" class="msg"></div>
   </div>
   <div id="step3">
-    <div class="icon">✅</div>
-    <h1>Налог.ру подключён!</h1>
+    <div class="check-icon">✓</div>
+    <h1>Налог.ру подключён</h1>
     <p class="sub" id="expiresText">Данные авторизации сохранены. Можете закрыть эту страницу и вернуться в бот.</p>
   </div>
-  <p class="lock">🔒 Данные не попадают в LLM · Ссылка одноразовая · <a href="/version" style="color:#999">v${VERSION}</a></p>
+  <p class="lock">Данные не попадают в LLM &middot; Ссылка одноразовая &middot; <a href="/version">v${VERSION}</a></p>
 </div>
 <script>
 const T = '${token.replace(/'/g, "\\'")}';
@@ -392,21 +396,21 @@ function aboutHtml() {
 
 function expiredHtml() {
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Link expired — ZeroCreds</title>
-<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f7;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}.card{background:#fff;border-radius:16px;padding:32px;max-width:480px;width:100%;box-shadow:0 2px 20px rgba(0,0,0,.08);text-align:center}.icon{font-size:48px;margin-bottom:16px}h1{font-size:20px;font-weight:600;margin-bottom:8px}.sub{color:#666;font-size:14px;line-height:1.5}</style>
-</head><body><div class="card"><div class="icon">⏰</div><h1>Link expired</h1><p class="sub">This link has expired or has already been used. Request a new one.</p></div></body></html>`;
+<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d0f17;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;color:#c8cdd8}.card{background:#161924;border:1px solid #232635;border-radius:6px;padding:32px;max-width:460px;width:100%;text-align:center}.exp-icon{width:48px;height:48px;background:#1a1400;border:1px solid #3a2800;border-radius:4px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;color:#f59e0b;font-size:20px}h1{font-size:18px;font-weight:600;color:#e8eaf0;margin-bottom:8px;letter-spacing:-.2px}.sub{color:#6b7280;font-size:13.5px;line-height:1.55}</style>
+</head><body><div class="card"><div class="exp-icon">⏱</div><h1>Link expired</h1><p class="sub">This link has expired or has already been used. Request a new one.</p></div></body></html>`;
 }
 
 const LEVEL_META = {
-  secret:     { icon: '🔒', color: '#dc2626', bg: '#fef2f2', label: 'Secret store',       aiSees: '❌ never',       logs: '❌ never logged', desc: 'Data goes directly to a secret store. The AI assistant never sees it.' },
-  pii:        { icon: '👤', color: '#d97706', bg: '#fffbeb', label: 'Personal data',      aiSees: '✅ for tasks',   logs: '🔒 anonymised',  desc: 'The AI can use this for tasks. Not stored in logs in plain form.' },
-  attribute:  { icon: '📋', color: '#2563eb', bg: '#eff6ff', label: 'Configuration',      aiSees: '✅ openly',      logs: '✅ yes',          desc: 'Open configuration. The AI uses this in every request.' },
-  credential: { icon: '⏱', color: '#7c3aed', bg: '#f5f3ff', label: 'Session credential', aiSees: '✅ this session', logs: '❌ never logged', desc: 'Used only in the current session. Not saved to logs.' },
+  secret:     { tag: 'SECRET',   color: '#6b3535', bg: '#160d0d', border: '#2a1818', label: 'Secret store',       aiSees: 'Never',          logs: 'Never logged', desc: 'Data goes directly to a secret store. The AI assistant never sees it.' },
+  pii:        { tag: 'PII DATA', color: '#6b5530', bg: '#151000', border: '#2a2010', label: 'Personal data',      aiSees: 'For tasks only', logs: 'Anonymised',   desc: 'The AI can use this for tasks. Not stored in logs in plain form.' },
+  attribute:  { tag: 'CONFIG',   color: '#3d4f6a', bg: '#0c1018', border: '#1a2030', label: 'Configuration',      aiSees: 'Openly',         logs: 'Yes',          desc: 'Open configuration. The AI uses this in every request.' },
+  credential: { tag: 'SESSION',  color: '#4a3a6a', bg: '#0f0c18', border: '#221838', label: 'Session credential', aiSees: 'This session',   logs: 'Never logged', desc: 'Used only in the current session. Not saved to logs.' },
 };
 
-function dynamicFormHtml(token, pending, savedValues = {}) {
+function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
   const fields = pending.fields || [];
   const title = pending.title || 'Enter your credentials';
-  const description = pending.description || 'Data goes directly to the server — your AI assistant <b>never sees it</b>.';
+  const description = pending.description || 'Credentials go straight into your secret store — the AI assistant never sees them.';
 
   function escAttr(s) {
     return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
@@ -415,27 +419,24 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
     return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
-  const hasNonPasswordFields = fields.some(f => f.type !== 'password');
-  const hasSavedData = hasNonPasswordFields && fields.some(f => f.type !== 'password' && savedValues[f.name] !== undefined && savedValues[f.name] !== '');
 
   function levelBadge(f) {
     const lm = LEVEL_META[f.level];
     if (!lm) return '';
-    return `<button type="button" class="level-btn" style="color:${lm.color}" onclick="toggleInfo('${f.name}')" title="What happens to this data">${lm.icon}</button>`;
+    return `<div class="level-tag"><span class="level-chip" style="color:${lm.color};background:${lm.bg};border-color:${lm.border}">${lm.tag}</span><button type="button" class="level-btn" onclick="toggleInfo('${f.name}')" title="What happens to this data?">ⓘ</button></div>`;
   }
 
   function levelInfoCard(f) {
     const lm = LEVEL_META[f.level];
     if (!lm) return '';
-    return `<div id="info_${f.name}" class="level-info" style="display:none;border-left:3px solid ${lm.color};background:${lm.bg}">
-  <div class="level-info-title" style="color:${lm.color}">${lm.icon} ${lm.label}</div>
+    return `<div id="info_${f.name}" class="level-info" style="display:none;border-left-color:${lm.border};background:${lm.bg}">
+  <div class="level-info-title" style="color:${lm.color}">${lm.tag} — ${lm.label}</div>
   <table class="level-table">
-    <tr><td>ZeroCreds server</td><td>✅ receives</td></tr>
+    <tr><td>ZeroCreds server</td><td>Receives</td></tr>
     <tr><td>AI assistant</td><td>${lm.aiSees}</td></tr>
     <tr><td>Logs</td><td>${lm.logs}</td></tr>
   </table>
   <div class="level-desc">${lm.desc}</div>
-  <a href="https://zerocreds.com/security" target="_blank" class="level-link">→ zerocreds.com/security</a>
 </div>`;
   }
 
@@ -455,11 +456,70 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
     return `${labelHtml}<input id="f_${f.name}" name="${f.name}" type="${type}" placeholder="${ph}" autocomplete="off" spellcheck="false" ${req}${val}>`;
   }).join('\n  ');
 
-  const rememberHtml = hasNonPasswordFields
-    ? `<label class="remember"><input type="checkbox" id="save_chk"${hasSavedData ? ' checked' : ''}> Save for next time</label>`
-    : '';
-
   const fieldNames = JSON.stringify(fields.map(f => f.name));
+
+  const isLocal = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host);
+  const hostBadge = isLocal
+    ? `You are on <a href="https://www.google.com/search?q=what+is+localhost" target="_blank" rel="noopener">localhost</a>`
+    : escHtml(host || '');
+
+  // Build per-level "where it goes" explanation
+  function destShort(dest) {
+    if (!dest?.type) return null;
+    switch (dest.type) {
+      case 'local_file': return `~/agent-tokens/${escHtml(String(dest.uid || '…'))}/${escHtml(String(dest.filename || '…'))}`;
+      case 'gcp_secret_manager': return `GCP Secret Manager`;
+      case 'aws_secrets_manager': return `AWS Secrets Manager`;
+      case 'vault': return `HashiCorp Vault`;
+      case 'macos_keychain': return `macOS Keychain`;
+      case 'windows_credential_manager': return `Windows Credential Manager`;
+      case 'os_keychain': return `OS native store (Keychain / Credential Manager / file)`;
+      case 'http_post': return `HTTP endpoint`;
+      default: return escHtml(dest.type);
+    }
+  }
+
+  const LEVEL_BEHAVIOR = {
+    secret:     { store: true,  note: 'Agent has no read access — write-only by design. Only your local process can read it back.' },
+    pii:        { store: true,  note: 'Agent receives this for task context. Not stored in conversation logs in plain form.' },
+    attribute:  { store: true,  note: 'Agent uses this openly in every request.' },
+    credential: { store: true,  note: 'Used in the current session only. Not written to persistent logs.' },
+  };
+
+  // Group fields by level
+  const levelGroups = {};
+  for (const f of fields) {
+    const lvl = f.level || '_none';
+    if (!levelGroups[lvl]) levelGroups[lvl] = [];
+    levelGroups[lvl].push(f);
+  }
+
+  function destForLevel(lvl) {
+    if (pending.destinations_by_level?.[lvl]) return pending.destinations_by_level[lvl];
+    return pending.destination || null;
+  }
+
+  let whereBlocks = [];
+  for (const [lvl, group] of Object.entries(levelGroups)) {
+    const lm = LEVEL_META[lvl];
+    const behavior = LEVEL_BEHAVIOR[lvl];
+    const dest = destForLevel(lvl === '_none' ? null : lvl);
+    const store = destShort(dest);
+    const fieldNames_ = group.map(f => escHtml(f.label)).join(', ');
+
+    let html = `<div class="wb">`;
+    if (lm) html += `<div class="wb-head"><span class="wl-chip" style="color:${lm.color};background:${lm.bg};border:1px solid ${lm.border}">${lm.tag}</span><span class="wb-fields">${fieldNames_}</span></div>`;
+    else     html += `<div class="wb-head"><span class="wb-fields">${fieldNames_}</span></div>`;
+    if (store) html += `<div class="wb-dest">Stored in: ${store}</div>`;
+    if (behavior) html += `<div class="wb-note">${behavior.note}</div>`;
+    html += `</div>`;
+    whereBlocks.push(html);
+  }
+
+  const whereHtml = whereBlocks.length ? `<div class="where-wrap">
+  <button type="button" class="where-btn" onclick="toggleWhere()">How is this data handled? ▾</button>
+  <div id="where-info" class="where-info" style="display:none">${whereBlocks.join('<div class="wb-sep"></div>')}</div>
+</div>` : '';
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -469,73 +529,90 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
 <title>${escHtml(title)}</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f7;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
-  .card{background:#fff;border-radius:16px;padding:32px;max-width:480px;width:100%;box-shadow:0 2px 20px rgba(0,0,0,.08)}
-  h1{font-size:20px;font-weight:600;margin-bottom:8px}
-  .sub{color:#666;font-size:14px;margin-bottom:24px;line-height:1.5}
-  label{display:block;font-size:13px;font-weight:500;color:#333;margin-bottom:6px;margin-top:16px}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#111316;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;color:#9aa0b0}
+  .card{background:#18191f;border:1px solid #26282f;border-radius:5px;padding:32px;max-width:460px;width:100%}
+  h1{font-size:18px;font-weight:600;color:#dde0e8;margin-bottom:6px;letter-spacing:-.2px}
+  .sub{color:#5a606f;font-size:13.5px;margin-bottom:24px;line-height:1.55}
+  .sub b{color:#8a909f}
+  label{display:block;font-size:12px;font-weight:500;color:#6a707f;margin-bottom:6px;margin-top:18px;letter-spacing:.03em}
   label:first-of-type{margin-top:0}
-  input,textarea{width:100%;border:1.5px solid #e0e0e0;border-radius:10px;padding:12px 14px;font-size:15px;font-family:inherit;outline:none;transition:border .15s;resize:vertical}
-  input:focus,textarea:focus{border-color:#007aff}
+  input,textarea{width:100%;background:#111316;border:1px solid #26282f;border-radius:4px;padding:10px 12px;font-size:14px;font-family:inherit;color:#dde0e8;outline:none;transition:border-color .15s;resize:vertical}
+  input:focus,textarea:focus{border-color:#4a505e}
+  input::placeholder,textarea::placeholder{color:#32353d}
   .pw-wrap{position:relative}
-  .pw-wrap input{padding-right:104px}
-  .pw-btn{position:absolute;top:50%;transform:translateY(-50%);border:none;cursor:pointer;padding:4px 8px;border-radius:6px;font-size:13px;background:none;color:#666;margin:0;width:auto;line-height:1}
-  .pw-btn.eye{right:58px}
-  .pw-btn.paste{right:6px;background:#f0f7ff;color:#007aff;font-weight:600}
-  .remember{margin-top:16px;display:flex;align-items:center;gap:8px;font-size:13px;color:#555;cursor:pointer;font-weight:400}
-  .remember input[type=checkbox]{width:auto;margin:0;cursor:pointer;accent-color:#007aff}
-  button#btn{margin-top:20px;width:100%;background:#007aff;color:#fff;border:none;border-radius:10px;padding:13px;font-size:16px;font-weight:600;cursor:pointer;transition:opacity .15s}
-  button#btn:hover{opacity:.88}
-  button#btn:disabled{opacity:.5;cursor:default}
-  .msg{margin-top:16px;padding:12px 14px;border-radius:10px;font-size:14px;display:none}
-  .msg.ok{background:#e8f5e9;color:#2e7d32}
-  .msg.err{background:#fdecea;color:#c62828}
-  .lock{font-size:13px;color:#999;margin-top:20px;text-align:center}
-  .zc-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid #f0f0f0}
+  .pw-wrap input{padding-right:108px;font-family:'SF Mono',Monaco,Consolas,monospace;font-size:13px;letter-spacing:.02em}
+  .pw-btn{position:absolute;top:50%;transform:translateY(-50%);border:none;cursor:pointer;background:none;color:#505560;margin:0;width:auto;line-height:1;padding:4px 6px;border-radius:3px;font-size:13px;transition:color .15s}
+  .pw-btn:hover{color:#9aa0b0;background:#22242c}
+  .pw-btn.eye{right:62px}
+  .pw-btn.paste{right:8px;background:#22242c;color:#7a8090;font-weight:600;font-size:11px;padding:3px 9px;border:1px solid #2e3038;border-radius:3px;letter-spacing:.03em}
+  .pw-btn.paste:hover{background:#2a2c35;color:#9aa0b0}
+  button#btn{margin-top:20px;width:100%;background:#dde0e8;color:#111316;border:none;border-radius:4px;padding:11px;font-size:14px;font-weight:600;cursor:pointer;letter-spacing:.01em;transition:background .15s}
+  button#btn:hover{background:#eef0f5}
+  button#btn:disabled{opacity:.3;cursor:default}
+  .msg{margin-top:12px;padding:10px 12px;border-radius:4px;font-size:13px;display:none;border-left:2px solid}
+  .msg.ok{background:#0d1a12;color:#6bcf8a;border-color:#2a5c3a}
+  .msg.err{background:#1a0e0e;color:#cf6b6b;border-color:#5c2a2a}
+  .zc-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;padding-bottom:18px;border-bottom:1px solid #22242c}
   .zc-brand{display:flex;align-items:center;gap:8px}
-  .zc-icon{width:28px;height:28px;background:#007aff;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}
-  .zc-name{font-size:14px;font-weight:700;color:#1d1d1f;letter-spacing:-.3px}
-  .zc-badge{font-size:11px;font-weight:500;color:#15803d;background:#dcfce7;padding:3px 8px;border-radius:20px;white-space:nowrap}
-  #done{display:none;text-align:center}
-  #done .icon{font-size:48px;margin-bottom:12px}
-  .field-label{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:500;color:#333;margin-bottom:6px;margin-top:16px}
+  .zc-wordmark{font-size:14px;font-weight:700;color:#dde0e8;letter-spacing:-.2px}
+  .zc-badge{font-size:11px;font-weight:400;color:#3d4255;background:none;border:none;padding:0;letter-spacing:0}
+  .zc-badge a{color:#3d4255;text-decoration:none;border-bottom:1px solid #2e3040}
+  .zc-badge a:hover{color:#6a707f}
+  #done{display:none;text-align:center;padding:12px 0}
+  #done .check-icon{width:48px;height:48px;background:#0d1a12;border:1px solid #2a5c3a;border-radius:4px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;color:#6bcf8a;font-size:22px}
+  .lock{font-size:11px;color:#2a2d35;margin-top:20px;text-align:center;letter-spacing:.02em}
+  .lock a{color:#2a2d35;text-decoration:none}
+  .lock a:hover{color:#5a606f}
+  #zc-timer{color:#3d4255}
+  .where-wrap{margin-top:18px;padding-top:16px;border-top:1px solid #22242c}
+  .where-btn{background:none;border:none;cursor:pointer;font-size:11px;color:#3d4255;letter-spacing:.02em;padding:0;text-decoration:underline;text-underline-offset:3px;text-decoration-color:#2e3040;width:auto;display:block;margin:0 auto}
+  .where-btn:hover{color:#6a707f}
+  .where-info{margin-top:14px;font-size:12px}
+  .wb{padding:10px 0}
+  .wb-sep{border-top:1px solid #1e2028;margin:2px 0}
+  .wb-head{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+  .wb-fields{font-size:12px;color:#6a707f}
+  .wb-dest{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:10px;color:#3d4255;margin-bottom:4px;padding-left:1px}
+  .wb-note{font-size:11px;color:#4a5060;line-height:1.5}
+  .wl-chip{font-size:9px;font-weight:700;letter-spacing:.08em;padding:1px 5px;border-radius:3px;flex-shrink:0}
+  .field-label{display:flex;align-items:center;justify-content:space-between;font-size:12px;font-weight:500;color:#6a707f;margin-bottom:6px;margin-top:18px;letter-spacing:.03em}
   .field-label:first-of-type{margin-top:0}
-  .level-btn{background:none;border:none;cursor:pointer;padding:0;margin:0;width:auto;font-size:14px;line-height:1;opacity:.7;transition:opacity .15s}
-  .level-btn:hover{opacity:1}
-  .level-info{margin-bottom:8px;padding:10px 12px;border-radius:8px;font-size:12px;line-height:1.5}
-  .level-info-title{font-weight:600;margin-bottom:6px;font-size:13px}
-  .level-table{border-collapse:collapse;width:100%;margin-bottom:6px}
-  .level-table td{padding:2px 0}
-  .level-table td:first-child{color:#666;width:55%}
-  .level-table td:last-child{font-weight:500}
-  .level-desc{color:#555;margin-bottom:6px}
-  .level-link{color:inherit;opacity:.7;font-size:11px;text-decoration:none}
-  .level-link:hover{opacity:1;text-decoration:underline}
+  .level-tag{display:flex;align-items:center;gap:5px;flex-shrink:0}
+  .level-chip{font-size:9px;font-weight:700;letter-spacing:.1em;padding:2px 6px;border-radius:3px;border:1px solid;text-transform:uppercase;white-space:nowrap}
+  .level-btn{background:none;border:none;cursor:pointer;padding:0 2px;margin:0;width:auto;font-size:12px;line-height:1;color:#30333c;transition:color .15s}
+  .level-btn:hover{color:#6a707f}
+  .level-info{margin-top:6px;margin-bottom:10px;padding:12px 14px;border-radius:4px;font-size:12px;line-height:1.5;border-left:2px solid}
+  .level-info-title{font-weight:700;margin-bottom:8px;font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+  .level-table{border-collapse:collapse;width:100%;margin-bottom:8px}
+  .level-table td{padding:3px 0;font-size:11px}
+  .level-table td:first-child{color:#505560;width:55%}
+  .level-table td:last-child{font-weight:600;color:#9aa0b0}
+  .level-desc{color:#505560;font-size:11px;line-height:1.5}
 </style>
 </head>
 <body>
 <div class="card">
   <div class="zc-header">
     <div class="zc-brand">
-      <div class="zc-icon">🔐</div>
-      <div class="zc-name">ZeroCreds</div>
+      <div class="zc-dot"></div>
+      <span class="zc-wordmark">ZeroCreds</span>
     </div>
-    <span class="zc-badge">Credentials stay on your machine</span>
+    <span class="zc-badge">${hostBadge}</span>
   </div>
   <div id="form-view">
     <h1>${escHtml(title)}</h1>
     <p class="sub">${description}</p>
     ${fieldHtml}
-    ${rememberHtml}
     <button id="btn" onclick="submit()">Submit</button>
     <div id="msg" class="msg"></div>
   </div>
   <div id="done">
-    <div class="icon">✅</div>
-    <h1>Done!</h1>
+    <div class="check-icon">✓</div>
+    <h1>Done</h1>
     <p class="sub">Credentials saved. You can close this page.</p>
   </div>
-  <p class="lock">🔒 Credentials never reach the AI · One-time link · <a href="/about" style="color:#999">How it works?</a> · <a href="/version" style="color:#999">v${VERSION}</a></p>
+  <p class="lock"><span id="zc-timer"></span> &middot; One-time link &middot; <a href="https://github.com/Zerocreds-com/zerocreds-server" target="_blank" rel="noopener">v${VERSION}</a></p>
+  ${whereHtml}
 </div>
 <script>
 const T = '${token}';
@@ -567,14 +644,13 @@ async function submit() {
     return el && el.required && !fields[n];
   });
   if (empty) { showMsg('err', 'Please fill in all required fields'); return; }
-  const save = document.getElementById('save_chk')?.checked ?? false;
   const btn = document.getElementById('btn');
   btn.disabled = true; btn.textContent = 'Saving…';
   try {
     const r = await fetch(location.pathname, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ t: T, fields, save }),
+      body: JSON.stringify({ t: T, fields }),
     });
     const d = await r.json();
     if (d.ok) {
@@ -596,6 +672,24 @@ function showMsg(cls, text) {
 document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.target.tagName === 'INPUT') submit();
 });
+function toggleWhere() {
+  const el = document.getElementById('where-info');
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+(function() {
+  const exp = ${pending.expires};
+  const el = document.getElementById('zc-timer');
+  if (!el) return;
+  function tick() {
+    const left = Math.max(0, exp - Date.now());
+    const m = Math.floor(left / 60000);
+    const s = Math.floor((left % 60000) / 1000);
+    el.textContent = m + ':' + String(s).padStart(2, '0') + ' remaining';
+    if (left > 0) setTimeout(tick, 1000);
+    else { el.textContent = 'link expired'; el.style.color = '#cf6b6b'; }
+  }
+  tick();
+})();
 </script>
 </body>
 </html>`;
@@ -610,21 +704,25 @@ function connectFormHtml(service, meta, token) {
 <title>Connect ${meta.name} — ZeroCreds</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f7;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
-  .card{background:#fff;border-radius:16px;padding:32px;max-width:480px;width:100%;box-shadow:0 2px 20px rgba(0,0,0,.08)}
-  h1{font-size:20px;font-weight:600;margin-bottom:8px}
-  .sub{color:#666;font-size:14px;margin-bottom:24px;line-height:1.5}
-  .sub a{color:#007aff;text-decoration:none}
-  label{display:block;font-size:13px;font-weight:500;color:#333;margin-bottom:6px}
-  input{width:100%;border:1.5px solid #e0e0e0;border-radius:10px;padding:12px 14px;font-size:15px;font-family:monospace;outline:none;transition:border .15s}
-  input:focus{border-color:#007aff}
-  button{margin-top:16px;width:100%;background:#007aff;color:#fff;border:none;border-radius:10px;padding:13px;font-size:16px;font-weight:600;cursor:pointer;transition:opacity .15s}
-  button:hover{opacity:.88}
-  button:disabled{opacity:.5;cursor:default}
-  .msg{margin-top:16px;padding:12px 14px;border-radius:10px;font-size:14px;display:none}
-  .msg.ok{background:#e8f5e9;color:#2e7d32}
-  .msg.err{background:#fdecea;color:#c62828}
-  .lock{font-size:13px;color:#999;margin-top:20px;text-align:center}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d0f17;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;color:#c8cdd8}
+  .card{background:#161924;border:1px solid #232635;border-radius:6px;padding:32px;max-width:460px;width:100%}
+  h1{font-size:18px;font-weight:600;color:#e8eaf0;margin-bottom:6px;letter-spacing:-.2px}
+  .sub{color:#6b7280;font-size:13.5px;margin-bottom:24px;line-height:1.55}
+  .sub a{color:#4068e8;text-decoration:none}
+  .sub b{color:#a0aab8}
+  label{display:block;font-size:12px;font-weight:500;color:#8892a4;margin-bottom:6px;letter-spacing:.03em}
+  input{width:100%;background:#0d0f17;border:1px solid #232635;border-radius:4px;padding:10px 12px;font-size:13px;font-family:'SF Mono',Monaco,Consolas,monospace;color:#e8eaf0;outline:none;transition:border-color .15s;letter-spacing:.02em}
+  input:focus{border-color:#4068e8}
+  input::placeholder{color:#3a3f52}
+  button{margin-top:16px;width:100%;background:#4068e8;color:#fff;border:none;border-radius:4px;padding:11px;font-size:14px;font-weight:600;cursor:pointer;letter-spacing:.01em;transition:background .15s}
+  button:hover{background:#3055cc}
+  button:disabled{opacity:.35;cursor:default}
+  .msg{margin-top:12px;padding:10px 12px;border-radius:4px;font-size:13px;display:none;border-left:2px solid}
+  .msg.ok{background:#0a1f15;color:#4ade80;border-color:#16a34a}
+  .msg.err{background:#1f0a0a;color:#f87171;border-color:#dc2626}
+  .lock{font-size:11px;color:#2e3348;margin-top:20px;text-align:center;letter-spacing:.02em}
+  .lock a{color:#2e3348;text-decoration:none}
+  .lock a:hover{color:#6b7280}
 </style>
 </head>
 <body>
@@ -635,7 +733,7 @@ function connectFormHtml(service, meta, token) {
   <input id="tok" type="password" placeholder="${meta.placeholder}" autocomplete="off" spellcheck="false">
   <button id="btn" onclick="submit()">Connect</button>
   <div id="msg" class="msg"></div>
-  <p class="lock">🔒 Credentials never reach the AI · One-time link · <a href="/version" style="color:#999">v${VERSION}</a></p>
+  <p class="lock">Credentials never reach the AI &middot; One-time link &middot; <a href="/version">v${VERSION}</a></p>
 </div>
 <script>
 const T = '${token.replace(/'/g, "\\'")}';
@@ -1195,7 +1293,7 @@ function createApp(config = {}) {
         res.writeHead(200, {
           'Content-Type': 'text/html; charset=utf-8',
           'Set-Cookie': cookieSetHeader(uid, req),
-        }).end(dynamicFormHtml(token, pending, savedValues));
+        }).end(dynamicFormHtml(token, pending, savedValues, req.headers.host || ''));
         return;
       }
 
@@ -1334,7 +1432,7 @@ function createApp(config = {}) {
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
         'Set-Cookie': cookieSetHeader(cookieUid, req),
-      }).end(dynamicFormHtml(pending.token, pending, savedValues));
+      }).end(dynamicFormHtml(pending.token, pending, savedValues, req.headers.host || ''));
       return;
     }
 

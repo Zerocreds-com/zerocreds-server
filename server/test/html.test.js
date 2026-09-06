@@ -44,7 +44,7 @@ test('XSS in placeholder — escaped as attribute', async () => {
 test('field with level: "secret" → HTML contains level-btn', async () => {
   const html = await getFormHtml([{ name: 'tok', label: 'Token', level: 'secret' }]);
   assert.ok(html.includes('class="level-btn"'), 'level-btn should appear for fields with a level');
-  assert.ok(html.includes('🔒'), 'secret level icon should appear');
+  assert.ok(html.includes('SECRET'), 'secret level chip should appear');
 });
 
 test('field without level → no level-btn', async () => {
