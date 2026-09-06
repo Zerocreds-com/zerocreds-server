@@ -401,16 +401,16 @@ function expiredHtml() {
 }
 
 const LEVEL_META = {
-  secret:     { tag: 'SECRET',   color: '#ef4444', bg: '#1a0a0a', label: 'Secret store',       aiSees: 'Never',          logs: 'Never logged', desc: 'Data goes directly to a secret store. The AI assistant never sees it.' },
-  pii:        { tag: 'PII DATA', color: '#f59e0b', bg: '#1a1200', label: 'Personal data',      aiSees: 'For tasks only', logs: 'Anonymised',   desc: 'The AI can use this for tasks. Not stored in logs in plain form.' },
-  attribute:  { tag: 'CONFIG',   color: '#3b82f6', bg: '#0a1220', label: 'Configuration',      aiSees: 'Openly',         logs: 'Yes',          desc: 'Open configuration. The AI uses this in every request.' },
-  credential: { tag: 'SESSION',  color: '#8b5cf6', bg: '#130f1f', label: 'Session credential', aiSees: 'This session',   logs: 'Never logged', desc: 'Used only in the current session. Not saved to logs.' },
+  secret:     { tag: 'SECRET',   color: '#6b3535', bg: '#160d0d', border: '#2a1818', label: 'Secret store',       aiSees: 'Never',          logs: 'Never logged', desc: 'Data goes directly to a secret store. The AI assistant never sees it.' },
+  pii:        { tag: 'PII DATA', color: '#6b5530', bg: '#151000', border: '#2a2010', label: 'Personal data',      aiSees: 'For tasks only', logs: 'Anonymised',   desc: 'The AI can use this for tasks. Not stored in logs in plain form.' },
+  attribute:  { tag: 'CONFIG',   color: '#3d4f6a', bg: '#0c1018', border: '#1a2030', label: 'Configuration',      aiSees: 'Openly',         logs: 'Yes',          desc: 'Open configuration. The AI uses this in every request.' },
+  credential: { tag: 'SESSION',  color: '#4a3a6a', bg: '#0f0c18', border: '#221838', label: 'Session credential', aiSees: 'This session',   logs: 'Never logged', desc: 'Used only in the current session. Not saved to logs.' },
 };
 
 function dynamicFormHtml(token, pending, savedValues = {}) {
   const fields = pending.fields || [];
   const title = pending.title || 'Enter your credentials';
-  const description = pending.description || 'Data goes directly to the server — your AI assistant <b>never sees it</b>.';
+  const description = pending.description || 'Credentials go straight into your secret store — the AI assistant <b>never sees them</b>.';
 
   function escAttr(s) {
     return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
@@ -419,19 +419,17 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
     return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
-  const hasNonPasswordFields = fields.some(f => f.type !== 'password');
-  const hasSavedData = hasNonPasswordFields && fields.some(f => f.type !== 'password' && savedValues[f.name] !== undefined && savedValues[f.name] !== '');
 
   function levelBadge(f) {
     const lm = LEVEL_META[f.level];
     if (!lm) return '';
-    return `<div class="level-tag"><span class="level-chip" style="color:${lm.color};background:${lm.bg};border-color:${lm.color}33">${lm.tag}</span><button type="button" class="level-btn" onclick="toggleInfo('${f.name}')" title="What happens to this data?">ⓘ</button></div>`;
+    return `<div class="level-tag"><span class="level-chip" style="color:${lm.color};background:${lm.bg};border-color:${lm.border}">${lm.tag}</span><button type="button" class="level-btn" onclick="toggleInfo('${f.name}')" title="What happens to this data?">ⓘ</button></div>`;
   }
 
   function levelInfoCard(f) {
     const lm = LEVEL_META[f.level];
     if (!lm) return '';
-    return `<div id="info_${f.name}" class="level-info" style="display:none;border-left-color:${lm.color};background:${lm.bg}">
+    return `<div id="info_${f.name}" class="level-info" style="display:none;border-left-color:${lm.border};background:${lm.bg}">
   <div class="level-info-title" style="color:${lm.color}">${lm.tag} — ${lm.label}</div>
   <table class="level-table">
     <tr><td>ZeroCreds server</td><td>Receives</td></tr>
@@ -458,10 +456,6 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
     return `${labelHtml}<input id="f_${f.name}" name="${f.name}" type="${type}" placeholder="${ph}" autocomplete="off" spellcheck="false" ${req}${val}>`;
   }).join('\n  ');
 
-  const rememberHtml = hasNonPasswordFields
-    ? `<label class="remember"><input type="checkbox" id="save_chk"${hasSavedData ? ' checked' : ''}> Save for next time</label>`
-    : '';
-
   const fieldNames = JSON.stringify(fields.map(f => f.name));
 
   return `<!DOCTYPE html>
@@ -472,54 +466,51 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
 <title>${escHtml(title)}</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d0f17;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;color:#c8cdd8}
-  .card{background:#161924;border:1px solid #232635;border-radius:6px;padding:32px;max-width:460px;width:100%}
-  h1{font-size:18px;font-weight:600;color:#e8eaf0;margin-bottom:6px;letter-spacing:-.2px}
-  .sub{color:#6b7280;font-size:13.5px;margin-bottom:24px;line-height:1.55}
-  .sub b{color:#a0aab8}
-  label{display:block;font-size:12px;font-weight:500;color:#8892a4;margin-bottom:6px;margin-top:18px;letter-spacing:.03em}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#111316;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;color:#9aa0b0}
+  .card{background:#18191f;border:1px solid #26282f;border-radius:5px;padding:32px;max-width:460px;width:100%}
+  h1{font-size:18px;font-weight:600;color:#dde0e8;margin-bottom:6px;letter-spacing:-.2px}
+  .sub{color:#5a606f;font-size:13.5px;margin-bottom:24px;line-height:1.55}
+  .sub b{color:#8a909f}
+  label{display:block;font-size:12px;font-weight:500;color:#6a707f;margin-bottom:6px;margin-top:18px;letter-spacing:.03em}
   label:first-of-type{margin-top:0}
-  input,textarea{width:100%;background:#0d0f17;border:1px solid #232635;border-radius:4px;padding:10px 12px;font-size:14px;font-family:inherit;color:#e8eaf0;outline:none;transition:border-color .15s;resize:vertical}
-  input:focus,textarea:focus{border-color:#4068e8}
-  input::placeholder,textarea::placeholder{color:#3a3f52}
+  input,textarea{width:100%;background:#111316;border:1px solid #26282f;border-radius:4px;padding:10px 12px;font-size:14px;font-family:inherit;color:#dde0e8;outline:none;transition:border-color .15s;resize:vertical}
+  input:focus,textarea:focus{border-color:#4a505e}
+  input::placeholder,textarea::placeholder{color:#32353d}
   .pw-wrap{position:relative}
-  .pw-wrap input{padding-right:112px;font-family:'SF Mono',Monaco,Consolas,monospace;font-size:13px;letter-spacing:.02em}
-  .pw-btn{position:absolute;top:50%;transform:translateY(-50%);border:none;cursor:pointer;background:none;color:#6b7280;margin:0;width:auto;line-height:1;padding:4px 6px;border-radius:3px;font-size:13px;transition:color .15s}
-  .pw-btn:hover{color:#c8cdd8;background:#1e2130}
-  .pw-btn.eye{right:66px}
-  .pw-btn.paste{right:8px;background:#1a2040;color:#4068e8;font-weight:600;font-size:11px;padding:3px 9px;border:1px solid #2a3060;border-radius:3px;letter-spacing:.03em}
-  .pw-btn.paste:hover{background:#202860;color:#7090f8}
-  .remember{margin-top:16px;display:flex;align-items:center;gap:8px;font-size:12px;color:#6b7280;cursor:pointer;font-weight:400}
-  .remember input[type=checkbox]{width:auto;margin:0;cursor:pointer;accent-color:#4068e8}
-  button#btn{margin-top:20px;width:100%;background:#4068e8;color:#fff;border:none;border-radius:4px;padding:11px;font-size:14px;font-weight:600;cursor:pointer;letter-spacing:.01em;transition:background .15s}
-  button#btn:hover{background:#3055cc}
-  button#btn:disabled{opacity:.35;cursor:default}
+  .pw-wrap input{padding-right:108px;font-family:'SF Mono',Monaco,Consolas,monospace;font-size:13px;letter-spacing:.02em}
+  .pw-btn{position:absolute;top:50%;transform:translateY(-50%);border:none;cursor:pointer;background:none;color:#505560;margin:0;width:auto;line-height:1;padding:4px 6px;border-radius:3px;font-size:13px;transition:color .15s}
+  .pw-btn:hover{color:#9aa0b0;background:#22242c}
+  .pw-btn.eye{right:62px}
+  .pw-btn.paste{right:8px;background:#22242c;color:#7a8090;font-weight:600;font-size:11px;padding:3px 9px;border:1px solid #2e3038;border-radius:3px;letter-spacing:.03em}
+  .pw-btn.paste:hover{background:#2a2c35;color:#9aa0b0}
+  button#btn{margin-top:20px;width:100%;background:#dde0e8;color:#111316;border:none;border-radius:4px;padding:11px;font-size:14px;font-weight:600;cursor:pointer;letter-spacing:.01em;transition:background .15s}
+  button#btn:hover{background:#eef0f5}
+  button#btn:disabled{opacity:.3;cursor:default}
   .msg{margin-top:12px;padding:10px 12px;border-radius:4px;font-size:13px;display:none;border-left:2px solid}
-  .msg.ok{background:#0a1f15;color:#4ade80;border-color:#16a34a}
-  .msg.err{background:#1f0a0a;color:#f87171;border-color:#dc2626}
-  .zc-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;padding-bottom:18px;border-bottom:1px solid #1e2130}
+  .msg.ok{background:#0d1a12;color:#6bcf8a;border-color:#2a5c3a}
+  .msg.err{background:#1a0e0e;color:#cf6b6b;border-color:#5c2a2a}
+  .zc-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;padding-bottom:18px;border-bottom:1px solid #22242c}
   .zc-brand{display:flex;align-items:center;gap:8px}
-  .zc-dot{width:7px;height:7px;background:#4068e8;border-radius:50%;flex-shrink:0}
-  .zc-wordmark{font-size:14px;font-weight:700;color:#e8eaf0;letter-spacing:-.2px}
-  .zc-badge{font-size:10px;font-weight:600;letter-spacing:.08em;color:#4b5268;background:#1a1d2a;border:1px solid #252836;padding:3px 8px;border-radius:3px;text-transform:uppercase}
+  .zc-wordmark{font-size:14px;font-weight:700;color:#dde0e8;letter-spacing:-.2px}
+  .zc-badge{font-size:10px;font-weight:600;letter-spacing:.08em;color:#3d4050;background:#16171c;border:1px solid #22242c;padding:3px 8px;border-radius:3px;text-transform:uppercase}
   #done{display:none;text-align:center;padding:12px 0}
-  #done .check-icon{width:48px;height:48px;background:#0a1f15;border:1px solid #166534;border-radius:4px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;color:#4ade80;font-size:22px}
-  .lock{font-size:11px;color:#2e3348;margin-top:20px;text-align:center;letter-spacing:.02em}
-  .lock a{color:#2e3348;text-decoration:none}
-  .lock a:hover{color:#6b7280}
-  .field-label{display:flex;align-items:center;justify-content:space-between;font-size:12px;font-weight:500;color:#8892a4;margin-bottom:6px;margin-top:18px;letter-spacing:.03em}
+  #done .check-icon{width:48px;height:48px;background:#0d1a12;border:1px solid #2a5c3a;border-radius:4px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;color:#6bcf8a;font-size:22px}
+  .lock{font-size:11px;color:#2a2d35;margin-top:20px;text-align:center;letter-spacing:.02em}
+  .lock a{color:#2a2d35;text-decoration:none}
+  .lock a:hover{color:#5a606f}
+  .field-label{display:flex;align-items:center;justify-content:space-between;font-size:12px;font-weight:500;color:#6a707f;margin-bottom:6px;margin-top:18px;letter-spacing:.03em}
   .field-label:first-of-type{margin-top:0}
   .level-tag{display:flex;align-items:center;gap:5px;flex-shrink:0}
   .level-chip{font-size:9px;font-weight:700;letter-spacing:.1em;padding:2px 6px;border-radius:3px;border:1px solid;text-transform:uppercase;white-space:nowrap}
-  .level-btn{background:none;border:none;cursor:pointer;padding:0 2px;margin:0;width:auto;font-size:12px;line-height:1;color:#3a4560;transition:color .15s}
-  .level-btn:hover{color:#8892a4}
+  .level-btn{background:none;border:none;cursor:pointer;padding:0 2px;margin:0;width:auto;font-size:12px;line-height:1;color:#30333c;transition:color .15s}
+  .level-btn:hover{color:#6a707f}
   .level-info{margin-top:6px;margin-bottom:10px;padding:12px 14px;border-radius:4px;font-size:12px;line-height:1.5;border-left:2px solid}
   .level-info-title{font-weight:700;margin-bottom:8px;font-size:11px;letter-spacing:.08em;text-transform:uppercase}
   .level-table{border-collapse:collapse;width:100%;margin-bottom:8px}
   .level-table td{padding:3px 0;font-size:11px}
-  .level-table td:first-child{color:#6b7280;width:55%}
-  .level-table td:last-child{font-weight:600;color:#c8cdd8}
-  .level-desc{color:#6b7280;font-size:11px;line-height:1.5}
+  .level-table td:first-child{color:#505560;width:55%}
+  .level-table td:last-child{font-weight:600;color:#9aa0b0}
+  .level-desc{color:#505560;font-size:11px;line-height:1.5}
 </style>
 </head>
 <body>
@@ -535,7 +526,6 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
     <h1>${escHtml(title)}</h1>
     <p class="sub">${description}</p>
     ${fieldHtml}
-    ${rememberHtml}
     <button id="btn" onclick="submit()">Submit</button>
     <div id="msg" class="msg"></div>
   </div>
@@ -576,14 +566,13 @@ async function submit() {
     return el && el.required && !fields[n];
   });
   if (empty) { showMsg('err', 'Please fill in all required fields'); return; }
-  const save = document.getElementById('save_chk')?.checked ?? false;
   const btn = document.getElementById('btn');
   btn.disabled = true; btn.textContent = 'Saving…';
   try {
     const r = await fetch(location.pathname, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ t: T, fields, save }),
+      body: JSON.stringify({ t: T, fields }),
     });
     const d = await r.json();
     if (d.ok) {
