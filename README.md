@@ -53,7 +53,102 @@ PORT=3456 npm start
 
 ---
 
-## Agent Integration
+## MCP Integration (no-code setup)
+
+The fastest way to give any agent access to ZeroCreds is via the MCP server in `mcp/`. The agent gets two tools — `zerocreds_create_session` and `zerocreds_check_status` — and never touches the HTTP API directly.
+
+### Supported agents
+
+| Agent | Config file | Status |
+|-------|-------------|--------|
+| **Claude Code** | `~/.claude/settings.json` | ✅ |
+| **Codex CLI** | `~/.codex/config.toml` | ✅ |
+| **Cursor** | `~/.cursor/mcp.json` | ✅ |
+| **Gemini CLI** | `~/.gemini/settings.json` | ✅ |
+| **Windsurf** | `~/.codeium/windsurf/mcp_config.json` | ✅ (same format as Cursor) |
+| **Cline / RooCode** | VS Code Settings → MCP | ✅ (same format) |
+
+### Setup (2 minutes)
+
+**1. Get your integrator token** — create one via `POST /api/integrator/register` or ask the server admin.
+
+**2. Add to your agent's config:**
+
+#### Claude Code (`~/.claude/settings.json`)
+```json
+{
+  "mcpServers": {
+    "zerocreds": {
+      "command": "node",
+      "args": ["/path/to/zerocreds-server/mcp/index.js"],
+      "env": {
+        "ZEROCREDS_URL": "https://zerocreds.ru",
+        "ZEROCREDS_ADMIN_TOKEN": "tok_..."
+      }
+    }
+  }
+}
+```
+
+#### Codex CLI (`~/.codex/config.toml`)
+```toml
+[mcp_servers.zerocreds]
+command = "node"
+args = ["/path/to/zerocreds-server/mcp/index.js"]
+env = {ZEROCREDS_URL = "https://zerocreds.ru", ZEROCREDS_ADMIN_TOKEN = "tok_..."}
+```
+
+#### Cursor / Windsurf / Cline (`~/.cursor/mcp.json` or equivalent)
+```json
+{
+  "mcpServers": {
+    "zerocreds": {
+      "command": "node",
+      "args": ["/path/to/zerocreds-server/mcp/index.js"],
+      "env": {
+        "ZEROCREDS_URL": "https://zerocreds.ru",
+        "ZEROCREDS_ADMIN_TOKEN": "tok_..."
+      }
+    }
+  }
+}
+```
+
+#### Gemini CLI (`~/.gemini/settings.json`)
+```json
+{
+  "mcpServers": {
+    "zerocreds": {
+      "command": "node",
+      "args": ["/path/to/zerocreds-server/mcp/index.js"],
+      "env": {
+        "ZEROCREDS_URL": "https://zerocreds.ru",
+        "ZEROCREDS_ADMIN_TOKEN": "tok_..."
+      }
+    }
+  }
+}
+```
+
+**3. Restart the agent** — the tools `zerocreds_create_session` and `zerocreds_check_status` will appear automatically.
+
+### MCP tools
+
+**`zerocreds_create_session`** — create a form, get a URL to send to the user:
+```
+title, description, fields[], destination, ttl_minutes, notify
+→ { token, url, expires_at }
+```
+
+**`zerocreds_check_status`** — poll until the user submits:
+```
+token
+→ { status: "pending" | "done" | "expired" }
+```
+
+---
+
+## Agent Integration (HTTP API)
 
 Three steps from the agent's side:
 
