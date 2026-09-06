@@ -8,11 +8,22 @@ const https = require('https');
 
 const AGENT_TOKENS_DIR = path.join(os.homedir(), 'agent-tokens');
 
+// ── template resolution ───────────────────────────────────────────────────────
+// Resolves {{variable}} placeholders in a string using ctx.
+// Unknown keys are left as-is ({{key}}).
+function resolveTemplate(str, ctx) {
+  if (!str || typeof str !== 'string') return str;
+  return str.replace(/\{\{([a-zA-Z0-9_]+)\}\}/g, (_, k) => ctx[k] !== undefined ? String(ctx[k]) : '{{' + k + '}}');
+}
+
 // ── local_file ────────────────────────────────────────────────────────────────
 // destination: { type: "local_file", uid: "123", filename: "github" }
 // Writes JSON to ~/agent-tokens/{uid}/{filename}
+// uid and filename support {{uid}} and {{service}} template placeholders.
 async function saveLocalFile(destination, fields, opts = {}) {
-  const { uid, filename } = destination;
+  const ctx = opts.context || {};
+  const uid = resolveTemplate(destination.uid, ctx);
+  const filename = resolveTemplate(destination.filename, ctx);
   if (!uid || !filename) throw new Error('local_file: missing uid or filename');
   if (!/^[a-zA-Z0-9_-]{1,64}$/.test(filename)) throw new Error('local_file: invalid filename');
   if (!/^-?[a-zA-Z0-9_-]{1,128}$/.test(String(uid))) throw new Error('local_file: invalid uid');
@@ -131,16 +142,55 @@ async function saveAwsSecret(destination, fields) {
 // ── vault ─────────────────────────────────────────────────────────────────────
 // destination: { type: "vault", address: "https://vault.example.com",
 //                path: "secret/data/myapp", token: "hvs.xxx" }
+// OR AppRole auth:
+// destination: { type: "vault", address: "...", path: "...",
+//                role_id: "...", secret_id: "..." }
 // Vault policy should allow create+update but NOT read.
-async function saveVault(destination, fields) {
-  const { address, path: vaultPath, token: vaultToken } = destination;
-  if (!address || !vaultPath || !vaultToken) throw new Error('vault: missing address, path, or token');
 
+// Authenticates via Vault AppRole and returns a client token.
+// Uses raw http.request (same pattern as getGcpAccessToken) — no SDK.
+function vaultAppRoleLogin(address, roleId, secretId) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(`${address}/v1/auth/approle/login`);
+    const isHttps = parsed.protocol === 'https:';
+    const transport = isHttps ? https : http;
+    const body = JSON.stringify({ role_id: roleId, secret_id: secretId });
+    const req = transport.request({
+      hostname: parsed.hostname,
+      port: parsed.port || (isHttps ? 443 : 80),
+      path: parsed.pathname,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      agent: false,
+    }, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        try {
+          if (res.statusCode >= 400) return reject(new Error('vault approle login failed: ' + data));
+          const d = JSON.parse(data);
+          if (!d?.auth?.client_token) return reject(new Error('vault approle: no client_token in response'));
+          resolve(d.auth.client_token);
+        } catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(10_000, () => { req.destroy(new Error('vault: approle login timeout')); });
+    req.end(body);
+  });
+}
+
+async function saveVault(destination, fields) {
+  const { address, path: vaultPath, token: vaultToken, role_id, secret_id } = destination;
+  if (!address || !vaultPath) throw new Error('vault: missing address or path');
+  if (!vaultToken && (!role_id || !secret_id)) throw new Error('vault: provide token or role_id+secret_id');
+
+  const clientToken = vaultToken || await vaultAppRoleLogin(address, role_id, secret_id);
   await httpPost(
     `${address}/v1/${vaultPath.replace(/^\//, '')}`,
     { data: fields },
     null,
-    { 'X-Vault-Token': vaultToken },
+    { 'X-Vault-Token': clientToken },
   );
 }
 
@@ -294,4 +344,4 @@ function httpPost(url, bodyObj, bearerToken, extraHeaders = {}) {
   });
 }
 
-module.exports = { saveToDestination };
+module.exports = { saveToDestination, resolveTemplate };
