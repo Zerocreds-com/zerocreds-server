@@ -222,6 +222,174 @@ document.getElementById('code').addEventListener('keydown', e => { if (e.key ===
 </html>`;
 }
 
+function aboutHtml() {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>How it works — ZeroCreds</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f7;color:#1d1d1f;padding:40px 20px;line-height:1.6}
+  .wrap{max-width:680px;margin:0 auto}
+  .brand{display:flex;align-items:center;gap:10px;margin-bottom:40px}
+  .brand-icon{width:36px;height:36px;background:#007aff;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
+  .brand-name{font-size:22px;font-weight:700;letter-spacing:-.5px}
+  .brand-tag{font-size:13px;color:#666;margin-top:1px}
+  h1{font-size:28px;font-weight:700;letter-spacing:-.5px;margin-bottom:10px}
+  .lead{font-size:16px;color:#444;margin-bottom:40px;max-width:520px}
+  h2{font-size:17px;font-weight:600;margin-bottom:16px;margin-top:40px}
+  .diagram{background:#fff;border-radius:16px;padding:28px 24px;box-shadow:0 2px 16px rgba(0,0,0,.07);margin-bottom:40px;overflow-x:auto}
+  .flow{display:flex;flex-direction:column;gap:0}
+  .row{display:flex;align-items:center;gap:12px;min-height:48px}
+  .row.indent{padding-left:32px}
+  .box{border-radius:10px;padding:8px 14px;font-size:13px;font-weight:500;white-space:nowrap;flex-shrink:0}
+  .box.ai{background:#e8f0fe;color:#1a56db;border:1.5px solid #c5d5fb}
+  .box.zc{background:#f0fdf4;color:#15803d;border:1.5px solid #bbf7d0}
+  .box.usr{background:#fff7ed;color:#c2410c;border:1.5px solid #fed7aa}
+  .box.store{background:#f5f3ff;color:#6d28d9;border:1.5px solid #ddd6fe}
+  .arr{color:#999;font-size:13px;flex-shrink:0}
+  .label{font-size:12px;color:#666;flex:1}
+  .connector{width:2px;height:20px;background:#e5e7eb;margin-left:22px}
+  .highlight{background:#f0fdf4;border:1.5px solid #86efac;border-radius:12px;padding:16px 20px;margin:24px 0;font-size:14px;color:#166534}
+  .highlight strong{display:block;font-size:15px;margin-bottom:4px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}
+  @media(max-width:500px){.grid{grid-template-columns:1fr}}
+  .cell{background:#fff;border-radius:12px;padding:18px;box-shadow:0 1px 8px rgba(0,0,0,.06)}
+  .cell h3{font-size:14px;font-weight:600;margin-bottom:6px}
+  .cell p{font-size:13px;color:#555}
+  .tag{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;margin-bottom:8px}
+  .tag.local{background:#dcfce7;color:#166534}
+  .tag.remote{background:#fef3c7;color:#92400e}
+  footer{margin-top:48px;font-size:12px;color:#aaa;text-align:center}
+  a{color:#007aff;text-decoration:none}
+  a:hover{text-decoration:underline}
+  .never{color:#dc2626;font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <div class="brand-icon">🔐</div>
+    <div>
+      <div class="brand-name">ZeroCreds</div>
+      <div class="brand-tag">Credentials never reach the AI</div>
+    </div>
+  </div>
+
+  <h1>Credentials never leave your machine</h1>
+  <p class="lead">When ZeroCreds runs on localhost, your passwords and API tokens go straight into your local secret store — they never touch the internet or the AI model.</p>
+
+  <h2>How it works</h2>
+  <div class="diagram">
+    <div class="flow">
+      <div class="row">
+        <div class="box ai">AI Agent</div>
+        <div class="arr">──1──▶</div>
+        <div class="box zc">ZeroCreds (localhost)</div>
+        <div class="label">create_session() — no credentials here</div>
+      </div>
+      <div class="connector"></div>
+      <div class="row">
+        <div class="box zc">ZeroCreds (localhost)</div>
+        <div class="arr">──2──▶</div>
+        <div class="box ai">AI Agent</div>
+        <div class="label">returns one-time URL</div>
+      </div>
+      <div class="connector"></div>
+      <div class="row">
+        <div class="box ai">AI Agent</div>
+        <div class="arr">──3──▶</div>
+        <div class="box usr">User</div>
+        <div class="label">sends URL (in chat, Telegram, etc.)</div>
+      </div>
+      <div class="connector"></div>
+      <div class="row">
+        <div class="box usr">User</div>
+        <div class="arr">──4──▶</div>
+        <div class="box zc">ZeroCreds (localhost)</div>
+        <div class="label">opens form, enters credentials, clicks Submit</div>
+      </div>
+      <div class="connector"></div>
+      <div class="row">
+        <div class="box zc">ZeroCreds (localhost)</div>
+        <div class="arr">──5──▶</div>
+        <div class="box store">~/agent-tokens/ · Keychain</div>
+        <div class="label">saves to local secret store</div>
+      </div>
+      <div class="connector"></div>
+      <div class="row">
+        <div class="box ai">AI Agent</div>
+        <div class="arr">←─6──</div>
+        <div class="box zc">ZeroCreds (localhost)</div>
+        <div class="label">polls status → gets <code style="background:#f3f4f6;padding:1px 5px;border-radius:4px">{ status: "done" }</code></div>
+      </div>
+    </div>
+
+    <div class="highlight" style="margin-top:24px;margin-bottom:0">
+      <strong>🔒 The AI never sees your credentials</strong>
+      Steps 1, 2, 6 carry no sensitive data. Step 4 goes directly from your browser to localhost — it never leaves your computer. The AI only learns that the operation succeeded.
+    </div>
+  </div>
+
+  <h2>Local vs. remote deployment</h2>
+  <div class="grid">
+    <div class="cell">
+      <div class="tag local">✓ localhost</div>
+      <h3>Credentials stay on your machine</h3>
+      <p>ZeroCreds runs at <code>localhost:3456</code>. Your browser POSTs credentials to localhost. They are saved to <code>~/agent-tokens/</code> or your OS Keychain. Nothing leaves the computer.</p>
+    </div>
+    <div class="cell">
+      <div class="tag remote">⚠ remote server</div>
+      <h3>You trust the ZeroCreds server</h3>
+      <p>When ZeroCreds runs on a remote host (e.g. your own VPS), credentials travel over HTTPS to that server. The AI still never sees them — but you are trusting the server, not only your own machine.</p>
+    </div>
+  </div>
+
+  <h2>What the AI sees at each step</h2>
+  <div class="diagram" style="padding:20px 24px">
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead>
+        <tr style="border-bottom:2px solid #e5e7eb">
+          <th style="text-align:left;padding:8px 0;color:#666;font-weight:500">Step</th>
+          <th style="text-align:left;padding:8px 0;color:#666;font-weight:500">AI agent sends / receives</th>
+          <th style="text-align:left;padding:8px 0;color:#666;font-weight:500">Credentials visible to AI?</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid #f3f4f6">
+          <td style="padding:10px 0;font-weight:500">Session create</td>
+          <td style="padding:10px 0;color:#555">form title, field names, destination config</td>
+          <td style="padding:10px 0"><span class="never">No</span></td>
+        </tr>
+        <tr style="border-bottom:1px solid #f3f4f6">
+          <td style="padding:10px 0;font-weight:500">URL returned</td>
+          <td style="padding:10px 0;color:#555">one-time link, expiry timestamp</td>
+          <td style="padding:10px 0"><span class="never">No</span></td>
+        </tr>
+        <tr style="border-bottom:1px solid #f3f4f6">
+          <td style="padding:10px 0;font-weight:500">User fills form</td>
+          <td style="padding:10px 0;color:#555"><em>AI is not involved at all</em></td>
+          <td style="padding:10px 0"><span class="never">No</span></td>
+        </tr>
+        <tr>
+          <td style="padding:10px 0;font-weight:500">Status poll</td>
+          <td style="padding:10px 0;color:#555"><code style="background:#f3f4f6;padding:1px 5px;border-radius:4px">{ status: "done" }</code></td>
+          <td style="padding:10px 0"><span class="never">No</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <footer>
+    ZeroCreds is open source &mdash; <a href="https://github.com/Zerocreds-com/zerocreds-server" target="_blank">github.com/Zerocreds-com/zerocreds-server</a>
+  </footer>
+</div>
+</body>
+</html>`;
+}
+
 function expiredHtml() {
   return `<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ссылка недействительна</title>
 <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f7;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}.card{background:#fff;border-radius:16px;padding:32px;max-width:480px;width:100%;box-shadow:0 2px 20px rgba(0,0,0,.08);text-align:center}.icon{font-size:48px;margin-bottom:16px}h1{font-size:20px;font-weight:600;margin-bottom:8px}.sub{color:#666;font-size:14px;line-height:1.5}</style>
@@ -323,6 +491,11 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
   .msg.ok{background:#e8f5e9;color:#2e7d32}
   .msg.err{background:#fdecea;color:#c62828}
   .lock{font-size:13px;color:#999;margin-top:20px;text-align:center}
+  .zc-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid #f0f0f0}
+  .zc-brand{display:flex;align-items:center;gap:8px}
+  .zc-icon{width:28px;height:28px;background:#007aff;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}
+  .zc-name{font-size:14px;font-weight:700;color:#1d1d1f;letter-spacing:-.3px}
+  .zc-badge{font-size:11px;font-weight:500;color:#15803d;background:#dcfce7;padding:3px 8px;border-radius:20px;white-space:nowrap}
   #done{display:none;text-align:center}
   #done .icon{font-size:48px;margin-bottom:12px}
   .field-label{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:500;color:#333;margin-bottom:6px;margin-top:16px}
@@ -342,6 +515,13 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
 </head>
 <body>
 <div class="card">
+  <div class="zc-header">
+    <div class="zc-brand">
+      <div class="zc-icon">🔐</div>
+      <div class="zc-name">ZeroCreds</div>
+    </div>
+    <span class="zc-badge">Credentials stay on your machine</span>
+  </div>
   <div id="form-view">
     <h1>${escHtml(title)}</h1>
     <p class="sub">${description}</p>
@@ -355,7 +535,7 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
     <h1>Готово!</h1>
     <p class="sub">Данные сохранены. Можете закрыть эту страницу и вернуться в бот.</p>
   </div>
-  <p class="lock">🔒 Данные не попадают в LLM · Ссылка одноразовая · <a href="/version" style="color:#999">v${VERSION}</a></p>
+  <p class="lock">🔒 Данные не попадают в LLM · Ссылка одноразовая · <a href="/about" style="color:#999">Как это работает?</a> · <a href="/version" style="color:#999">v${VERSION}</a></p>
 </div>
 <script>
 const T = '${token}';
@@ -631,6 +811,12 @@ function createApp(config = {}) {
     // GET / — redirect to landing
     if (req.method === 'GET' && url.pathname === '/') {
       res.writeHead(301, { Location: 'https://zerocreds.ru' }).end();
+      return;
+    }
+
+    // GET /about
+    if (req.method === 'GET' && url.pathname === '/about') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(aboutHtml());
       return;
     }
 
