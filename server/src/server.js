@@ -463,35 +463,62 @@ function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
     ? `You are on <a href="https://www.google.com/search?q=what+is+localhost" target="_blank" rel="noopener">localhost</a>`
     : escHtml(host || '');
 
-  // Build "where stored" info from destination config — addresses only, no credentials
-  function destLabel(dest) {
+  // Build per-level "where it goes" explanation
+  function destShort(dest) {
     if (!dest?.type) return null;
     switch (dest.type) {
-      case 'local_file': return `Local file · ~/agent-tokens/${escHtml(String(dest.uid || '…'))}/${escHtml(String(dest.filename || '…'))}`;
-      case 'gcp_secret_manager': return `GCP Secret Manager · ${escHtml(String(dest.secret || '…'))}`;
-      case 'aws_secrets_manager': return `AWS Secrets Manager · ${escHtml(String(dest.secret_id || '…'))}`;
-      case 'vault': return `HashiCorp Vault · ${escHtml(String(dest.address || ''))}${escHtml(String(dest.path || ''))}`;
-      case 'macos_keychain': return `macOS Keychain · ${escHtml(String(dest.service || 'zerocreds'))}/${escHtml(String(dest.account || '…'))}`;
-      case 'windows_credential_manager': return `Windows Credential Manager · ${escHtml(String(dest.service || 'zerocreds'))}/${escHtml(String(dest.account || '…'))}`;
-      case 'os_keychain': return `OS Keychain · ${escHtml(String(dest.service || 'zerocreds'))}/${escHtml(String(dest.account || '…'))} (macOS Keychain / Windows Credential Manager / local file)`;
-      case 'http_post': return `HTTP endpoint · ${escHtml(String(dest.url || '…'))}`;
+      case 'local_file': return `~/agent-tokens/${escHtml(String(dest.uid || '…'))}/${escHtml(String(dest.filename || '…'))}`;
+      case 'gcp_secret_manager': return `GCP Secret Manager`;
+      case 'aws_secrets_manager': return `AWS Secrets Manager`;
+      case 'vault': return `HashiCorp Vault`;
+      case 'macos_keychain': return `macOS Keychain`;
+      case 'windows_credential_manager': return `Windows Credential Manager`;
+      case 'os_keychain': return `OS native store (Keychain / Credential Manager / file)`;
+      case 'http_post': return `HTTP endpoint`;
       default: return escHtml(dest.type);
     }
   }
-  let whereLines = [];
-  if (pending.destinations_by_level) {
-    for (const [level, dest] of Object.entries(pending.destinations_by_level)) {
-      const lm = LEVEL_META[level];
-      const label = destLabel(dest);
-      if (label) whereLines.push(`<span class="wl-chip" style="color:${lm?.color || '#6a707f'}">${lm?.tag || escHtml(level.toUpperCase())}</span>${label}`);
-    }
-  } else if (pending.destination) {
-    const label = destLabel(pending.destination);
-    if (label) whereLines.push(label);
+
+  const LEVEL_BEHAVIOR = {
+    secret:     { store: true,  note: 'Agent has no read access — write-only by design. Only your local process can read it back.' },
+    pii:        { store: true,  note: 'Agent receives this for task context. Not stored in conversation logs in plain form.' },
+    attribute:  { store: true,  note: 'Agent uses this openly in every request.' },
+    credential: { store: true,  note: 'Used in the current session only. Not written to persistent logs.' },
+  };
+
+  // Group fields by level
+  const levelGroups = {};
+  for (const f of fields) {
+    const lvl = f.level || '_none';
+    if (!levelGroups[lvl]) levelGroups[lvl] = [];
+    levelGroups[lvl].push(f);
   }
-  const whereHtml = whereLines.length ? `<div class="where-wrap">
-  <button type="button" class="where-btn" onclick="toggleWhere()">Check where credentials are stored ▾</button>
-  <div id="where-info" class="where-info" style="display:none">${whereLines.map(l => `<div class="where-line">${l}</div>`).join('')}</div>
+
+  function destForLevel(lvl) {
+    if (pending.destinations_by_level?.[lvl]) return pending.destinations_by_level[lvl];
+    return pending.destination || null;
+  }
+
+  let whereBlocks = [];
+  for (const [lvl, group] of Object.entries(levelGroups)) {
+    const lm = LEVEL_META[lvl];
+    const behavior = LEVEL_BEHAVIOR[lvl];
+    const dest = destForLevel(lvl === '_none' ? null : lvl);
+    const store = destShort(dest);
+    const fieldNames_ = group.map(f => escHtml(f.label)).join(', ');
+
+    let html = `<div class="wb">`;
+    if (lm) html += `<div class="wb-head"><span class="wl-chip" style="color:${lm.color};background:${lm.bg};border:1px solid ${lm.border}">${lm.tag}</span><span class="wb-fields">${fieldNames_}</span></div>`;
+    else     html += `<div class="wb-head"><span class="wb-fields">${fieldNames_}</span></div>`;
+    if (store) html += `<div class="wb-dest">Stored in: ${store}</div>`;
+    if (behavior) html += `<div class="wb-note">${behavior.note}</div>`;
+    html += `</div>`;
+    whereBlocks.push(html);
+  }
+
+  const whereHtml = whereBlocks.length ? `<div class="where-wrap">
+  <button type="button" class="where-btn" onclick="toggleWhere()">How is this data handled? ▾</button>
+  <div id="where-info" class="where-info" style="display:none">${whereBlocks.join('<div class="wb-sep"></div>')}</div>
 </div>` : '';
 
   return `<!DOCTYPE html>
@@ -540,9 +567,14 @@ function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
   .where-wrap{margin-top:18px;padding-top:16px;border-top:1px solid #22242c}
   .where-btn{background:none;border:none;cursor:pointer;font-size:11px;color:#3d4255;letter-spacing:.02em;padding:0;text-decoration:underline;text-underline-offset:3px;text-decoration-color:#2e3040;width:auto;display:block;margin:0 auto}
   .where-btn:hover{color:#6a707f}
-  .where-info{margin-top:10px;font-size:11px;line-height:1.9}
-  .where-line{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:10px;color:#4a5060;padding:1px 0}
-  .wl-chip{font-size:9px;font-weight:700;letter-spacing:.08em;margin-right:6px}
+  .where-info{margin-top:14px;font-size:12px}
+  .wb{padding:10px 0}
+  .wb-sep{border-top:1px solid #1e2028;margin:2px 0}
+  .wb-head{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+  .wb-fields{font-size:12px;color:#6a707f}
+  .wb-dest{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:10px;color:#3d4255;margin-bottom:4px;padding-left:1px}
+  .wb-note{font-size:11px;color:#4a5060;line-height:1.5}
+  .wl-chip{font-size:9px;font-weight:700;letter-spacing:.08em;padding:1px 5px;border-radius:3px;flex-shrink:0}
   .field-label{display:flex;align-items:center;justify-content:space-between;font-size:12px;font-weight:500;color:#6a707f;margin-bottom:6px;margin-top:18px;letter-spacing:.03em}
   .field-label:first-of-type{margin-top:0}
   .level-tag{display:flex;align-items:center;gap:5px;flex-shrink:0}
