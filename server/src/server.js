@@ -407,10 +407,10 @@ const LEVEL_META = {
   credential: { tag: 'SESSION',  color: '#4a3a6a', bg: '#0f0c18', border: '#221838', label: 'Session credential', aiSees: 'This session',   logs: 'Never logged', desc: 'Used only in the current session. Not saved to logs.' },
 };
 
-function dynamicFormHtml(token, pending, savedValues = {}) {
+function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
   const fields = pending.fields || [];
   const title = pending.title || 'Enter your credentials';
-  const description = pending.description || 'Credentials go straight into your secret store — the AI assistant <b>never sees them</b>.';
+  const description = pending.description || 'Credentials go straight into your secret store — the AI assistant never sees them.';
 
   function escAttr(s) {
     return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
@@ -458,6 +458,38 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
 
   const fieldNames = JSON.stringify(fields.map(f => f.name));
 
+  const isLocal = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host);
+  const hostBadge = isLocal
+    ? `You are on <a href="https://www.google.com/search?q=what+is+localhost" target="_blank" rel="noopener">localhost</a>`
+    : escHtml(host || '');
+
+  // Build "where stored" info from destination config — addresses only, no credentials
+  function destLabel(dest) {
+    if (!dest?.type) return null;
+    switch (dest.type) {
+      case 'local_file': return `Local file · ~/agent-tokens/${escHtml(String(dest.uid || '…'))}/${escHtml(String(dest.filename || '…'))}`;
+      case 'gcp_secret_manager': return `GCP Secret Manager · ${escHtml(String(dest.secret || '…'))}`;
+      case 'aws_secrets_manager': return `AWS Secrets Manager · ${escHtml(String(dest.secret_id || '…'))}`;
+      case 'vault': return `HashiCorp Vault · ${escHtml(String(dest.address || ''))}${escHtml(String(dest.path || ''))}`;
+      default: return escHtml(dest.type);
+    }
+  }
+  let whereLines = [];
+  if (pending.destinations_by_level) {
+    for (const [level, dest] of Object.entries(pending.destinations_by_level)) {
+      const lm = LEVEL_META[level];
+      const label = destLabel(dest);
+      if (label) whereLines.push(`<span class="wl-chip" style="color:${lm?.color || '#6a707f'}">${lm?.tag || escHtml(level.toUpperCase())}</span>${label}`);
+    }
+  } else if (pending.destination) {
+    const label = destLabel(pending.destination);
+    if (label) whereLines.push(label);
+  }
+  const whereHtml = whereLines.length ? `<div class="where-wrap">
+  <button type="button" class="where-btn" onclick="toggleWhere()">Check where credentials are stored ▾</button>
+  <div id="where-info" class="where-info" style="display:none">${whereLines.map(l => `<div class="where-line">${l}</div>`).join('')}</div>
+</div>` : '';
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -492,12 +524,21 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
   .zc-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;padding-bottom:18px;border-bottom:1px solid #22242c}
   .zc-brand{display:flex;align-items:center;gap:8px}
   .zc-wordmark{font-size:14px;font-weight:700;color:#dde0e8;letter-spacing:-.2px}
-  .zc-badge{font-size:10px;font-weight:600;letter-spacing:.08em;color:#3d4050;background:#16171c;border:1px solid #22242c;padding:3px 8px;border-radius:3px;text-transform:uppercase}
+  .zc-badge{font-size:11px;font-weight:400;color:#3d4255;background:none;border:none;padding:0;letter-spacing:0}
+  .zc-badge a{color:#3d4255;text-decoration:none;border-bottom:1px solid #2e3040}
+  .zc-badge a:hover{color:#6a707f}
   #done{display:none;text-align:center;padding:12px 0}
   #done .check-icon{width:48px;height:48px;background:#0d1a12;border:1px solid #2a5c3a;border-radius:4px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;color:#6bcf8a;font-size:22px}
   .lock{font-size:11px;color:#2a2d35;margin-top:20px;text-align:center;letter-spacing:.02em}
   .lock a{color:#2a2d35;text-decoration:none}
   .lock a:hover{color:#5a606f}
+  #zc-timer{color:#3d4255}
+  .where-wrap{margin-top:18px;padding-top:16px;border-top:1px solid #22242c}
+  .where-btn{background:none;border:none;cursor:pointer;font-size:11px;color:#3d4255;letter-spacing:.02em;padding:0;text-decoration:underline;text-underline-offset:3px;text-decoration-color:#2e3040;width:auto;display:block;margin:0 auto}
+  .where-btn:hover{color:#6a707f}
+  .where-info{margin-top:10px;font-size:11px;line-height:1.9}
+  .where-line{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:10px;color:#4a5060;padding:1px 0}
+  .wl-chip{font-size:9px;font-weight:700;letter-spacing:.08em;margin-right:6px}
   .field-label{display:flex;align-items:center;justify-content:space-between;font-size:12px;font-weight:500;color:#6a707f;margin-bottom:6px;margin-top:18px;letter-spacing:.03em}
   .field-label:first-of-type{margin-top:0}
   .level-tag{display:flex;align-items:center;gap:5px;flex-shrink:0}
@@ -520,7 +561,7 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
       <div class="zc-dot"></div>
       <span class="zc-wordmark">ZeroCreds</span>
     </div>
-    <span class="zc-badge">Secure Form</span>
+    <span class="zc-badge">${hostBadge}</span>
   </div>
   <div id="form-view">
     <h1>${escHtml(title)}</h1>
@@ -534,7 +575,8 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
     <h1>Done</h1>
     <p class="sub">Credentials saved. You can close this page.</p>
   </div>
-  <p class="lock">Credentials never reach the AI &middot; One-time link &middot; <a href="/about">How it works</a> &middot; <a href="/version">v${VERSION}</a></p>
+  <p class="lock"><span id="zc-timer"></span> &middot; One-time link &middot; <a href="https://github.com/Zerocreds-com/zerocreds-server" target="_blank" rel="noopener">v${VERSION}</a></p>
+  ${whereHtml}
 </div>
 <script>
 const T = '${token}';
@@ -594,6 +636,24 @@ function showMsg(cls, text) {
 document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.target.tagName === 'INPUT') submit();
 });
+function toggleWhere() {
+  const el = document.getElementById('where-info');
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+(function() {
+  const exp = ${pending.expires};
+  const el = document.getElementById('zc-timer');
+  if (!el) return;
+  function tick() {
+    const left = Math.max(0, exp - Date.now());
+    const m = Math.floor(left / 60000);
+    const s = Math.floor((left % 60000) / 1000);
+    el.textContent = m + ':' + String(s).padStart(2, '0') + ' remaining';
+    if (left > 0) setTimeout(tick, 1000);
+    else { el.textContent = 'link expired'; el.style.color = '#cf6b6b'; }
+  }
+  tick();
+})();
 </script>
 </body>
 </html>`;
@@ -1197,7 +1257,7 @@ function createApp(config = {}) {
         res.writeHead(200, {
           'Content-Type': 'text/html; charset=utf-8',
           'Set-Cookie': cookieSetHeader(uid, req),
-        }).end(dynamicFormHtml(token, pending, savedValues));
+        }).end(dynamicFormHtml(token, pending, savedValues, req.headers.host || ''));
         return;
       }
 
@@ -1336,7 +1396,7 @@ function createApp(config = {}) {
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
         'Set-Cookie': cookieSetHeader(cookieUid, req),
-      }).end(dynamicFormHtml(pending.token, pending, savedValues));
+      }).end(dynamicFormHtml(pending.token, pending, savedValues, req.headers.host || ''));
       return;
     }
 
