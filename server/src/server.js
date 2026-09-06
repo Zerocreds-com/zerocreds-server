@@ -1177,7 +1177,8 @@ function createApp(config = {}) {
         if (!f.name || !f.label) return json(res, 400, { error: `field missing name or label: ${JSON.stringify(f)}` });
         if (!/^[a-zA-Z0-9_]{1,64}$/.test(f.name)) return json(res, 400, { error: `invalid field name: ${f.name}` });
         if (f.type && !VALID_TYPES.includes(f.type)) return json(res, 400, { error: `invalid field type: ${f.type}` });
-        if (f.level && !VALID_LEVELS.includes(f.level)) return json(res, 400, { error: `invalid field level: ${f.level}` });
+        if (!f.level) return json(res, 400, { error: `field "${f.name}" missing required level (secret|pii|attribute|credential)` });
+        if (!VALID_LEVELS.includes(f.level)) return json(res, 400, { error: `invalid field level: ${f.level}` });
       }
 
       const integrator_id = integrator?.id || 'admin';
