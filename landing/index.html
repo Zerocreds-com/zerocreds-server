@@ -907,8 +907,10 @@ footer {
       <div style="margin-top:20px;border-top:1px solid #f0f0f0;padding-top:18px">
         <div style="font-family:monospace;font-size:11px;color:#bbb;text-align:center;letter-spacing:0.08em;margin-bottom:14px">— or request automatically —</div>
         <div style="font-size:13px;font-weight:500;color:#333;margin-bottom:8px">Paste to your agent with placeholders filled:</div>
-        <div style="position:relative;background:#1a1a2e;border-radius:8px;padding:14px 16px 14px;font-family:monospace;font-size:12px;color:#ccc;line-height:1.75;overflow-x:auto">
-          <button onclick="copyRegTemplate()" id="reg-template-btn" style="position:absolute;top:8px;right:8px;background:#2a2a3e;color:#888;border:1px solid #333;border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer;font-family:monospace">Copy template</button>
+        <div style="display:flex;justify-content:flex-end;margin-bottom:6px">
+          <button onclick="copyRegTemplate()" id="reg-template-btn" style="background:#2a2a3e;color:#888;border:1px solid #333;border-radius:4px;padding:4px 12px;font-size:11px;cursor:pointer;font-family:monospace;letter-spacing:0.05em">Copy template</button>
+        </div>
+        <div style="background:#1a1a2e;border-radius:8px;padding:14px 16px;font-family:monospace;font-size:12px;color:#ccc;line-height:1.75;overflow-x:auto">
           <div><span style="color:#7ec8e3">curl</span> -X POST https://zerocreds.ru/api/register \</div>
           <div>&nbsp;&nbsp;-H <span style="color:#a8d8a8">"Content-Type: application/json"</span> \</div>
           <div>&nbsp;&nbsp;-d <span style="color:#a8d8a8">'{</span></div>
