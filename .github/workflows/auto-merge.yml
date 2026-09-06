@@ -10,8 +10,27 @@ jobs:
     permissions:
       pull-requests: write
       contents: write
+      actions: write
     steps:
-      - run: gh pr merge --auto --merge "$PR_URL"
+      - name: Enable auto-merge
+        run: gh pr merge --auto --merge "$PR_URL"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+
+      - name: Wait for merge then deploy
+        run: |
+          for i in $(seq 1 36); do
+            STATE=$(gh pr view "$PR_URL" --json state --jq '.state')
+            if [ "$STATE" = "MERGED" ]; then
+              echo "PR merged, dispatching deploy"
+              gh workflow run deploy.yml --ref main
+              exit 0
+            fi
+            echo "Waiting for merge... ($((i*5))s)"
+            sleep 5
+          done
+          echo "Timed out waiting for merge (3 min)"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
