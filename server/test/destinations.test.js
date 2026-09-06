@@ -264,3 +264,91 @@ test('vault — missing token and role_id/secret_id → form submission fails wi
     [{ name: 'apikey', label: 'API Key' }], dest);
   assert.equal(submitRes.status, 500);
 });
+
+// ── GET /api/destinations ──────────────────────────────────────────────────────
+
+test('GET /api/destinations — returns named destination types, no credentials', async () => {
+  // Start a fresh server with named destinations configured
+  const namedDestinations = {
+    'prod-gcp': { type: 'gcp_secret_manager', secret: 'projects/p/secrets/s', credentials: 'base64key' },
+    'local-dev': { type: 'local_file', uid: '123', filename: 'gh' },
+  };
+  const srv = await startServer({ namedDestinations });
+  try {
+    const res = await request(srv.port, 'GET', '/api/destinations', undefined,
+      { Authorization: `Bearer ${srv.adminToken}` });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.destinations, {
+      'prod-gcp': { type: 'gcp_secret_manager' },
+      'local-dev': { type: 'local_file' },
+    });
+    // Must not expose credentials
+    assert.equal(res.body.destinations['prod-gcp'].credentials, undefined);
+    assert.equal(res.body.destinations['local-dev'].uid, undefined);
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('GET /api/destinations — unauthenticated → 401', async () => {
+  const res = await request(ctx.port, 'GET', '/api/destinations');
+  assert.equal(res.status, 401);
+});
+
+test('GET /api/destinations — integrator sees admin + own destinations merged', async () => {
+  const namedDestinations = {
+    'admin-dest': { type: 'gcp_secret_manager', secret: 'projects/p/secrets/s', credentials: 'key' },
+  };
+  const integratorToken = 'test-integrator-token-abc';
+  const integrators = {
+    [integratorToken]: {
+      id: 'myintegrator',
+      name: 'My Integrator',
+      destinations: {
+        'my-dest': { type: 'local_file', uid: '99', filename: 'mine' },
+        'admin-dest': { type: 'local_file', uid: '00', filename: 'override' }, // overrides admin
+      },
+      created: new Date().toISOString(),
+    },
+  };
+  const srv = await startServer({ namedDestinations, integrators });
+  try {
+    const res = await request(srv.port, 'GET', '/api/destinations', undefined,
+      { Authorization: `Bearer ${integratorToken}` });
+    assert.equal(res.status, 200);
+    // Integrator's admin-dest overrides the admin one
+    assert.deepEqual(res.body.destinations['admin-dest'], { type: 'local_file' });
+    assert.deepEqual(res.body.destinations['my-dest'], { type: 'local_file' });
+    // No credentials leaked
+    assert.equal(res.body.destinations['my-dest'].uid, undefined);
+  } finally {
+    await srv.stop();
+  }
+});
+
+// ── {{uid}} template in local_file destination ────────────────────────────────
+
+test('local_file — {{uid}} template in uid field → resolved from session uid', async () => {
+  const sessionUid = '88099';
+  const dest = { type: 'local_file', uid: '{{uid}}', filename: 'creds' };
+  const body = { title: 'T', fields: [{ name: 'tok', label: 'Token' }], destination: dest, uid: sessionUid };
+  const r1 = await request(ctx.port, 'POST', '/api/session/create', body, auth());
+  assert.equal(r1.status, 200);
+  const token = r1.body.token;
+  const r2 = await request(ctx.port, 'POST', `/f/${token}`, { t: token, fields: { tok: 'secret123' } });
+  assert.equal(r2.status, 200);
+  const written = JSON.parse(fs.readFileSync(path.join(tokenDir(sessionUid), 'creds'), 'utf8'));
+  assert.ok(written.tok === 'secret123' || written.value === 'secret123');
+});
+
+test('local_file — {{uid}} template in filename → resolved from session uid', async () => {
+  const sessionUid = '88098';
+  const dest = { type: 'local_file', uid: '88098', filename: '{{uid}}' };
+  const body = { title: 'T', fields: [{ name: 'tok', label: 'Token' }], destination: dest, uid: sessionUid };
+  const r1 = await request(ctx.port, 'POST', '/api/session/create', body, auth());
+  assert.equal(r1.status, 200);
+  const token = r1.body.token;
+  const r2 = await request(ctx.port, 'POST', `/f/${token}`, { t: token, fields: { tok: 'val' } });
+  assert.equal(r2.status, 200);
+  assert.ok(fs.existsSync(path.join(tokenDir('88098'), sessionUid)));
+});
