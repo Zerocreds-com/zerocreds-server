@@ -101,25 +101,29 @@ function nalogFormHtml(token) {
 <title>Подключить Налог.ру</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f7;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
-  .card{background:#fff;border-radius:16px;padding:32px;max-width:480px;width:100%;box-shadow:0 2px 20px rgba(0,0,0,.08)}
-  h1{font-size:20px;font-weight:600;margin-bottom:8px}
-  .sub{color:#666;font-size:14px;margin-bottom:24px;line-height:1.5}
-  label{display:block;font-size:13px;font-weight:500;color:#333;margin-bottom:6px;margin-top:16px}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d0f17;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;color:#c8cdd8}
+  .card{background:#161924;border:1px solid #232635;border-radius:6px;padding:32px;max-width:460px;width:100%}
+  h1{font-size:18px;font-weight:600;color:#e8eaf0;margin-bottom:6px;letter-spacing:-.2px}
+  .sub{color:#6b7280;font-size:13.5px;margin-bottom:24px;line-height:1.55}
+  .sub b{color:#a0aab8}
+  label{display:block;font-size:12px;font-weight:500;color:#8892a4;margin-bottom:6px;margin-top:18px;letter-spacing:.03em}
   label:first-of-type{margin-top:0}
-  input{width:100%;border:1.5px solid #e0e0e0;border-radius:10px;padding:12px 14px;font-size:15px;outline:none;transition:border .15s}
-  input:focus{border-color:#007aff}
-  button{margin-top:20px;width:100%;background:#007aff;color:#fff;border:none;border-radius:10px;padding:13px;font-size:16px;font-weight:600;cursor:pointer;transition:opacity .15s}
-  button:hover{opacity:.88}
-  button:disabled{opacity:.5;cursor:default}
-  .msg{margin-top:16px;padding:12px 14px;border-radius:10px;font-size:14px;display:none}
-  .msg.ok{background:#e8f5e9;color:#2e7d32}
-  .msg.err{background:#fdecea;color:#c62828}
-  .msg.info{background:#e3f2fd;color:#1565c0}
-  .lock{font-size:13px;color:#999;margin-top:20px;text-align:center}
+  input{width:100%;background:#0d0f17;border:1px solid #232635;border-radius:4px;padding:10px 12px;font-size:14px;color:#e8eaf0;outline:none;transition:border-color .15s}
+  input:focus{border-color:#4068e8}
+  input::placeholder{color:#3a3f52}
+  button{margin-top:20px;width:100%;background:#4068e8;color:#fff;border:none;border-radius:4px;padding:11px;font-size:14px;font-weight:600;cursor:pointer;letter-spacing:.01em;transition:background .15s}
+  button:hover{background:#3055cc}
+  button:disabled{opacity:.35;cursor:default}
+  .msg{margin-top:12px;padding:10px 12px;border-radius:4px;font-size:13px;display:none;border-left:2px solid}
+  .msg.ok{background:#0a1f15;color:#4ade80;border-color:#16a34a}
+  .msg.err{background:#1f0a0a;color:#f87171;border-color:#dc2626}
+  .msg.info{background:#0a1220;color:#60a5fa;border-color:#3b82f6}
+  .lock{font-size:11px;color:#2e3348;margin-top:20px;text-align:center;letter-spacing:.02em}
+  .lock a{color:#2e3348;text-decoration:none}
+  .lock a:hover{color:#6b7280}
   #step2{display:none}
-  #step3{display:none;text-align:center}
-  #step3 .icon{font-size:48px;margin-bottom:12px}
+  #step3{display:none;text-align:center;padding:12px 0}
+  #step3 .check-icon{width:48px;height:48px;background:#0a1f15;border:1px solid #166534;border-radius:4px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;color:#4ade80;font-size:22px}
 </style>
 </head>
 <body>
@@ -143,11 +147,11 @@ function nalogFormHtml(token) {
     <div id="msg2" class="msg"></div>
   </div>
   <div id="step3">
-    <div class="icon">✅</div>
-    <h1>Налог.ру подключён!</h1>
+    <div class="check-icon">✓</div>
+    <h1>Налог.ру подключён</h1>
     <p class="sub" id="expiresText">Данные авторизации сохранены. Можете закрыть эту страницу и вернуться в бот.</p>
   </div>
-  <p class="lock">🔒 Данные не попадают в LLM · Ссылка одноразовая · <a href="/version" style="color:#999">v${VERSION}</a></p>
+  <p class="lock">Данные не попадают в LLM &middot; Ссылка одноразовая &middot; <a href="/version">v${VERSION}</a></p>
 </div>
 <script>
 const T = '${token.replace(/'/g, "\\'")}';
@@ -392,15 +396,15 @@ function aboutHtml() {
 
 function expiredHtml() {
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Link expired — ZeroCreds</title>
-<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f7;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}.card{background:#fff;border-radius:16px;padding:32px;max-width:480px;width:100%;box-shadow:0 2px 20px rgba(0,0,0,.08);text-align:center}.icon{font-size:48px;margin-bottom:16px}h1{font-size:20px;font-weight:600;margin-bottom:8px}.sub{color:#666;font-size:14px;line-height:1.5}</style>
-</head><body><div class="card"><div class="icon">⏰</div><h1>Link expired</h1><p class="sub">This link has expired or has already been used. Request a new one.</p></div></body></html>`;
+<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d0f17;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;color:#c8cdd8}.card{background:#161924;border:1px solid #232635;border-radius:6px;padding:32px;max-width:460px;width:100%;text-align:center}.exp-icon{width:48px;height:48px;background:#1a1400;border:1px solid #3a2800;border-radius:4px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;color:#f59e0b;font-size:20px}h1{font-size:18px;font-weight:600;color:#e8eaf0;margin-bottom:8px;letter-spacing:-.2px}.sub{color:#6b7280;font-size:13.5px;line-height:1.55}</style>
+</head><body><div class="card"><div class="exp-icon">⏱</div><h1>Link expired</h1><p class="sub">This link has expired or has already been used. Request a new one.</p></div></body></html>`;
 }
 
 const LEVEL_META = {
-  secret:     { icon: '🔒', color: '#dc2626', bg: '#fef2f2', label: 'Secret store',       aiSees: '❌ never',       logs: '❌ never logged', desc: 'Data goes directly to a secret store. The AI assistant never sees it.' },
-  pii:        { icon: '👤', color: '#d97706', bg: '#fffbeb', label: 'Personal data',      aiSees: '✅ for tasks',   logs: '🔒 anonymised',  desc: 'The AI can use this for tasks. Not stored in logs in plain form.' },
-  attribute:  { icon: '📋', color: '#2563eb', bg: '#eff6ff', label: 'Configuration',      aiSees: '✅ openly',      logs: '✅ yes',          desc: 'Open configuration. The AI uses this in every request.' },
-  credential: { icon: '⏱', color: '#7c3aed', bg: '#f5f3ff', label: 'Session credential', aiSees: '✅ this session', logs: '❌ never logged', desc: 'Used only in the current session. Not saved to logs.' },
+  secret:     { tag: 'SECRET',   color: '#ef4444', bg: '#1a0a0a', label: 'Secret store',       aiSees: 'Never',          logs: 'Never logged', desc: 'Data goes directly to a secret store. The AI assistant never sees it.' },
+  pii:        { tag: 'PII DATA', color: '#f59e0b', bg: '#1a1200', label: 'Personal data',      aiSees: 'For tasks only', logs: 'Anonymised',   desc: 'The AI can use this for tasks. Not stored in logs in plain form.' },
+  attribute:  { tag: 'CONFIG',   color: '#3b82f6', bg: '#0a1220', label: 'Configuration',      aiSees: 'Openly',         logs: 'Yes',          desc: 'Open configuration. The AI uses this in every request.' },
+  credential: { tag: 'SESSION',  color: '#8b5cf6', bg: '#130f1f', label: 'Session credential', aiSees: 'This session',   logs: 'Never logged', desc: 'Used only in the current session. Not saved to logs.' },
 };
 
 function dynamicFormHtml(token, pending, savedValues = {}) {
@@ -421,21 +425,20 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
   function levelBadge(f) {
     const lm = LEVEL_META[f.level];
     if (!lm) return '';
-    return `<button type="button" class="level-btn" style="color:${lm.color}" onclick="toggleInfo('${f.name}')" title="What happens to this data">${lm.icon}</button>`;
+    return `<div class="level-tag"><span class="level-chip" style="color:${lm.color};background:${lm.bg};border-color:${lm.color}33">${lm.tag}</span><button type="button" class="level-btn" onclick="toggleInfo('${f.name}')" title="What happens to this data?">ⓘ</button></div>`;
   }
 
   function levelInfoCard(f) {
     const lm = LEVEL_META[f.level];
     if (!lm) return '';
-    return `<div id="info_${f.name}" class="level-info" style="display:none;border-left:3px solid ${lm.color};background:${lm.bg}">
-  <div class="level-info-title" style="color:${lm.color}">${lm.icon} ${lm.label}</div>
+    return `<div id="info_${f.name}" class="level-info" style="display:none;border-left-color:${lm.color};background:${lm.bg}">
+  <div class="level-info-title" style="color:${lm.color}">${lm.tag} — ${lm.label}</div>
   <table class="level-table">
-    <tr><td>ZeroCreds server</td><td>✅ receives</td></tr>
+    <tr><td>ZeroCreds server</td><td>Receives</td></tr>
     <tr><td>AI assistant</td><td>${lm.aiSees}</td></tr>
     <tr><td>Logs</td><td>${lm.logs}</td></tr>
   </table>
   <div class="level-desc">${lm.desc}</div>
-  <a href="https://zerocreds.com/security" target="_blank" class="level-link">→ zerocreds.com/security</a>
 </div>`;
   }
 
@@ -469,58 +472,64 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
 <title>${escHtml(title)}</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f7;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
-  .card{background:#fff;border-radius:16px;padding:32px;max-width:480px;width:100%;box-shadow:0 2px 20px rgba(0,0,0,.08)}
-  h1{font-size:20px;font-weight:600;margin-bottom:8px}
-  .sub{color:#666;font-size:14px;margin-bottom:24px;line-height:1.5}
-  label{display:block;font-size:13px;font-weight:500;color:#333;margin-bottom:6px;margin-top:16px}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d0f17;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;color:#c8cdd8}
+  .card{background:#161924;border:1px solid #232635;border-radius:6px;padding:32px;max-width:460px;width:100%}
+  h1{font-size:18px;font-weight:600;color:#e8eaf0;margin-bottom:6px;letter-spacing:-.2px}
+  .sub{color:#6b7280;font-size:13.5px;margin-bottom:24px;line-height:1.55}
+  .sub b{color:#a0aab8}
+  label{display:block;font-size:12px;font-weight:500;color:#8892a4;margin-bottom:6px;margin-top:18px;letter-spacing:.03em}
   label:first-of-type{margin-top:0}
-  input,textarea{width:100%;border:1.5px solid #e0e0e0;border-radius:10px;padding:12px 14px;font-size:15px;font-family:inherit;outline:none;transition:border .15s;resize:vertical}
-  input:focus,textarea:focus{border-color:#007aff}
+  input,textarea{width:100%;background:#0d0f17;border:1px solid #232635;border-radius:4px;padding:10px 12px;font-size:14px;font-family:inherit;color:#e8eaf0;outline:none;transition:border-color .15s;resize:vertical}
+  input:focus,textarea:focus{border-color:#4068e8}
+  input::placeholder,textarea::placeholder{color:#3a3f52}
   .pw-wrap{position:relative}
-  .pw-wrap input{padding-right:104px}
-  .pw-btn{position:absolute;top:50%;transform:translateY(-50%);border:none;cursor:pointer;padding:4px 8px;border-radius:6px;font-size:13px;background:none;color:#666;margin:0;width:auto;line-height:1}
-  .pw-btn.eye{right:58px}
-  .pw-btn.paste{right:6px;background:#f0f7ff;color:#007aff;font-weight:600}
-  .remember{margin-top:16px;display:flex;align-items:center;gap:8px;font-size:13px;color:#555;cursor:pointer;font-weight:400}
-  .remember input[type=checkbox]{width:auto;margin:0;cursor:pointer;accent-color:#007aff}
-  button#btn{margin-top:20px;width:100%;background:#007aff;color:#fff;border:none;border-radius:10px;padding:13px;font-size:16px;font-weight:600;cursor:pointer;transition:opacity .15s}
-  button#btn:hover{opacity:.88}
-  button#btn:disabled{opacity:.5;cursor:default}
-  .msg{margin-top:16px;padding:12px 14px;border-radius:10px;font-size:14px;display:none}
-  .msg.ok{background:#e8f5e9;color:#2e7d32}
-  .msg.err{background:#fdecea;color:#c62828}
-  .lock{font-size:13px;color:#999;margin-top:20px;text-align:center}
-  .zc-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid #f0f0f0}
+  .pw-wrap input{padding-right:112px;font-family:'SF Mono',Monaco,Consolas,monospace;font-size:13px;letter-spacing:.02em}
+  .pw-btn{position:absolute;top:50%;transform:translateY(-50%);border:none;cursor:pointer;background:none;color:#6b7280;margin:0;width:auto;line-height:1;padding:4px 6px;border-radius:3px;font-size:13px;transition:color .15s}
+  .pw-btn:hover{color:#c8cdd8;background:#1e2130}
+  .pw-btn.eye{right:66px}
+  .pw-btn.paste{right:8px;background:#1a2040;color:#4068e8;font-weight:600;font-size:11px;padding:3px 9px;border:1px solid #2a3060;border-radius:3px;letter-spacing:.03em}
+  .pw-btn.paste:hover{background:#202860;color:#7090f8}
+  .remember{margin-top:16px;display:flex;align-items:center;gap:8px;font-size:12px;color:#6b7280;cursor:pointer;font-weight:400}
+  .remember input[type=checkbox]{width:auto;margin:0;cursor:pointer;accent-color:#4068e8}
+  button#btn{margin-top:20px;width:100%;background:#4068e8;color:#fff;border:none;border-radius:4px;padding:11px;font-size:14px;font-weight:600;cursor:pointer;letter-spacing:.01em;transition:background .15s}
+  button#btn:hover{background:#3055cc}
+  button#btn:disabled{opacity:.35;cursor:default}
+  .msg{margin-top:12px;padding:10px 12px;border-radius:4px;font-size:13px;display:none;border-left:2px solid}
+  .msg.ok{background:#0a1f15;color:#4ade80;border-color:#16a34a}
+  .msg.err{background:#1f0a0a;color:#f87171;border-color:#dc2626}
+  .zc-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;padding-bottom:18px;border-bottom:1px solid #1e2130}
   .zc-brand{display:flex;align-items:center;gap:8px}
-  .zc-icon{width:28px;height:28px;background:#007aff;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}
-  .zc-name{font-size:14px;font-weight:700;color:#1d1d1f;letter-spacing:-.3px}
-  .zc-badge{font-size:11px;font-weight:500;color:#15803d;background:#dcfce7;padding:3px 8px;border-radius:20px;white-space:nowrap}
-  #done{display:none;text-align:center}
-  #done .icon{font-size:48px;margin-bottom:12px}
-  .field-label{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:500;color:#333;margin-bottom:6px;margin-top:16px}
+  .zc-dot{width:7px;height:7px;background:#4068e8;border-radius:50%;flex-shrink:0}
+  .zc-wordmark{font-size:14px;font-weight:700;color:#e8eaf0;letter-spacing:-.2px}
+  .zc-badge{font-size:10px;font-weight:600;letter-spacing:.08em;color:#4b5268;background:#1a1d2a;border:1px solid #252836;padding:3px 8px;border-radius:3px;text-transform:uppercase}
+  #done{display:none;text-align:center;padding:12px 0}
+  #done .check-icon{width:48px;height:48px;background:#0a1f15;border:1px solid #166534;border-radius:4px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;color:#4ade80;font-size:22px}
+  .lock{font-size:11px;color:#2e3348;margin-top:20px;text-align:center;letter-spacing:.02em}
+  .lock a{color:#2e3348;text-decoration:none}
+  .lock a:hover{color:#6b7280}
+  .field-label{display:flex;align-items:center;justify-content:space-between;font-size:12px;font-weight:500;color:#8892a4;margin-bottom:6px;margin-top:18px;letter-spacing:.03em}
   .field-label:first-of-type{margin-top:0}
-  .level-btn{background:none;border:none;cursor:pointer;padding:0;margin:0;width:auto;font-size:14px;line-height:1;opacity:.7;transition:opacity .15s}
-  .level-btn:hover{opacity:1}
-  .level-info{margin-bottom:8px;padding:10px 12px;border-radius:8px;font-size:12px;line-height:1.5}
-  .level-info-title{font-weight:600;margin-bottom:6px;font-size:13px}
-  .level-table{border-collapse:collapse;width:100%;margin-bottom:6px}
-  .level-table td{padding:2px 0}
-  .level-table td:first-child{color:#666;width:55%}
-  .level-table td:last-child{font-weight:500}
-  .level-desc{color:#555;margin-bottom:6px}
-  .level-link{color:inherit;opacity:.7;font-size:11px;text-decoration:none}
-  .level-link:hover{opacity:1;text-decoration:underline}
+  .level-tag{display:flex;align-items:center;gap:5px;flex-shrink:0}
+  .level-chip{font-size:9px;font-weight:700;letter-spacing:.1em;padding:2px 6px;border-radius:3px;border:1px solid;text-transform:uppercase;white-space:nowrap}
+  .level-btn{background:none;border:none;cursor:pointer;padding:0 2px;margin:0;width:auto;font-size:12px;line-height:1;color:#3a4560;transition:color .15s}
+  .level-btn:hover{color:#8892a4}
+  .level-info{margin-top:6px;margin-bottom:10px;padding:12px 14px;border-radius:4px;font-size:12px;line-height:1.5;border-left:2px solid}
+  .level-info-title{font-weight:700;margin-bottom:8px;font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+  .level-table{border-collapse:collapse;width:100%;margin-bottom:8px}
+  .level-table td{padding:3px 0;font-size:11px}
+  .level-table td:first-child{color:#6b7280;width:55%}
+  .level-table td:last-child{font-weight:600;color:#c8cdd8}
+  .level-desc{color:#6b7280;font-size:11px;line-height:1.5}
 </style>
 </head>
 <body>
 <div class="card">
   <div class="zc-header">
     <div class="zc-brand">
-      <div class="zc-icon">🔐</div>
-      <div class="zc-name">ZeroCreds</div>
+      <div class="zc-dot"></div>
+      <span class="zc-wordmark">ZeroCreds</span>
     </div>
-    <span class="zc-badge">Credentials stay on your machine</span>
+    <span class="zc-badge">Secure Form</span>
   </div>
   <div id="form-view">
     <h1>${escHtml(title)}</h1>
@@ -531,11 +540,11 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
     <div id="msg" class="msg"></div>
   </div>
   <div id="done">
-    <div class="icon">✅</div>
-    <h1>Done!</h1>
+    <div class="check-icon">✓</div>
+    <h1>Done</h1>
     <p class="sub">Credentials saved. You can close this page.</p>
   </div>
-  <p class="lock">🔒 Credentials never reach the AI · One-time link · <a href="/about" style="color:#999">How it works?</a> · <a href="/version" style="color:#999">v${VERSION}</a></p>
+  <p class="lock">Credentials never reach the AI &middot; One-time link &middot; <a href="/about">How it works</a> &middot; <a href="/version">v${VERSION}</a></p>
 </div>
 <script>
 const T = '${token}';
@@ -610,21 +619,25 @@ function connectFormHtml(service, meta, token) {
 <title>Connect ${meta.name} — ZeroCreds</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f7;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
-  .card{background:#fff;border-radius:16px;padding:32px;max-width:480px;width:100%;box-shadow:0 2px 20px rgba(0,0,0,.08)}
-  h1{font-size:20px;font-weight:600;margin-bottom:8px}
-  .sub{color:#666;font-size:14px;margin-bottom:24px;line-height:1.5}
-  .sub a{color:#007aff;text-decoration:none}
-  label{display:block;font-size:13px;font-weight:500;color:#333;margin-bottom:6px}
-  input{width:100%;border:1.5px solid #e0e0e0;border-radius:10px;padding:12px 14px;font-size:15px;font-family:monospace;outline:none;transition:border .15s}
-  input:focus{border-color:#007aff}
-  button{margin-top:16px;width:100%;background:#007aff;color:#fff;border:none;border-radius:10px;padding:13px;font-size:16px;font-weight:600;cursor:pointer;transition:opacity .15s}
-  button:hover{opacity:.88}
-  button:disabled{opacity:.5;cursor:default}
-  .msg{margin-top:16px;padding:12px 14px;border-radius:10px;font-size:14px;display:none}
-  .msg.ok{background:#e8f5e9;color:#2e7d32}
-  .msg.err{background:#fdecea;color:#c62828}
-  .lock{font-size:13px;color:#999;margin-top:20px;text-align:center}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d0f17;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;color:#c8cdd8}
+  .card{background:#161924;border:1px solid #232635;border-radius:6px;padding:32px;max-width:460px;width:100%}
+  h1{font-size:18px;font-weight:600;color:#e8eaf0;margin-bottom:6px;letter-spacing:-.2px}
+  .sub{color:#6b7280;font-size:13.5px;margin-bottom:24px;line-height:1.55}
+  .sub a{color:#4068e8;text-decoration:none}
+  .sub b{color:#a0aab8}
+  label{display:block;font-size:12px;font-weight:500;color:#8892a4;margin-bottom:6px;letter-spacing:.03em}
+  input{width:100%;background:#0d0f17;border:1px solid #232635;border-radius:4px;padding:10px 12px;font-size:13px;font-family:'SF Mono',Monaco,Consolas,monospace;color:#e8eaf0;outline:none;transition:border-color .15s;letter-spacing:.02em}
+  input:focus{border-color:#4068e8}
+  input::placeholder{color:#3a3f52}
+  button{margin-top:16px;width:100%;background:#4068e8;color:#fff;border:none;border-radius:4px;padding:11px;font-size:14px;font-weight:600;cursor:pointer;letter-spacing:.01em;transition:background .15s}
+  button:hover{background:#3055cc}
+  button:disabled{opacity:.35;cursor:default}
+  .msg{margin-top:12px;padding:10px 12px;border-radius:4px;font-size:13px;display:none;border-left:2px solid}
+  .msg.ok{background:#0a1f15;color:#4ade80;border-color:#16a34a}
+  .msg.err{background:#1f0a0a;color:#f87171;border-color:#dc2626}
+  .lock{font-size:11px;color:#2e3348;margin-top:20px;text-align:center;letter-spacing:.02em}
+  .lock a{color:#2e3348;text-decoration:none}
+  .lock a:hover{color:#6b7280}
 </style>
 </head>
 <body>
@@ -635,7 +648,7 @@ function connectFormHtml(service, meta, token) {
   <input id="tok" type="password" placeholder="${meta.placeholder}" autocomplete="off" spellcheck="false">
   <button id="btn" onclick="submit()">Connect</button>
   <div id="msg" class="msg"></div>
-  <p class="lock">🔒 Credentials never reach the AI · One-time link · <a href="/version" style="color:#999">v${VERSION}</a></p>
+  <p class="lock">Credentials never reach the AI &middot; One-time link &middot; <a href="/version">v${VERSION}</a></p>
 </div>
 <script>
 const T = '${token.replace(/'/g, "\\'")}';
