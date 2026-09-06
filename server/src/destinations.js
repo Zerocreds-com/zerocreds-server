@@ -15,7 +15,7 @@ async function saveLocalFile(destination, fields, opts = {}) {
   const { uid, filename } = destination;
   if (!uid || !filename) throw new Error('local_file: missing uid or filename');
   if (!/^[a-zA-Z0-9_-]{1,64}$/.test(filename)) throw new Error('local_file: invalid filename');
-  if (!/^-?\d{1,20}$/.test(String(uid))) throw new Error('local_file: invalid uid');
+  if (!/^-?[a-zA-Z0-9_-]{1,128}$/.test(String(uid))) throw new Error('local_file: invalid uid');
 
   const baseDir = opts.tokensDir || AGENT_TOKENS_DIR;
   const dir = path.join(baseDir, String(uid));

@@ -401,7 +401,7 @@ async function submit() {
       document.getElementById('form-view').style.display = 'none';
       document.getElementById('done').style.display = '';
     } else {
-      showMsg('err', d.error || 'Ошибка сервера');
+      showMsg('err', d.detail ? (d.error + ': ' + d.detail) : (d.error || 'Ошибка сервера'));
       btn.disabled = false; btn.textContent = 'Отправить';
     }
   } catch(e) {
@@ -697,7 +697,7 @@ function createApp(config = {}) {
           if (!pending) return json(res, 403, { error: 'invalid or expired token' });
           if (pending.expires < Date.now()) { deletePending(t); return json(res, 403, { error: 'link expired' }); }
           if (pending.service !== 'nalog') return json(res, 403, { error: 'service mismatch' });
-          if (!/^-?\d{1,20}$/.test(pending.uid)) return json(res, 403, { error: 'invalid uid' });
+          if (!/^-?[a-zA-Z0-9_-]{1,128}$/.test(pending.uid)) return json(res, 403, { error: 'invalid uid' });
 
           deletePending(t);
 
@@ -736,6 +736,13 @@ function createApp(config = {}) {
 
       if (req.method === 'GET') {
         const t = url.searchParams.get('t') || '';
+        if (t && /^[a-f0-9]{32}$/.test(t)) {
+          const p = readPending(t);
+          if (!p || p.expires < Date.now()) {
+            res.writeHead(410, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
+            return;
+          }
+        }
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(connectFormHtml(service, meta, t));
         return;
       }
@@ -752,7 +759,7 @@ function createApp(config = {}) {
         if (!pending) return json(res, 403, { error: 'invalid or expired token' });
         if (pending.expires < Date.now()) { deletePending(t); return json(res, 403, { error: 'link expired' }); }
         if (pending.service !== service) return json(res, 403, { error: 'service mismatch' });
-        if (!/^-?\d{1,20}$/.test(pending.uid)) return json(res, 403, { error: 'invalid uid' });
+        if (!/^-?[a-zA-Z0-9_-]{1,128}$/.test(pending.uid)) return json(res, 403, { error: 'invalid uid' });
 
         const tokensDir = path.join(AGENT_TOKENS_DIR, pending.uid);
         fs.mkdirSync(tokensDir, { recursive: true });
@@ -1049,7 +1056,7 @@ function createApp(config = {}) {
           }
         } catch (e) {
           console.error('[dynamic] save failed:', e.message);
-          return json(res, 500, { error: 'failed to save credentials' });
+          return json(res, 500, { error: 'failed to save credentials', detail: e.message.slice(0, 200) });
         }
 
         deletePending(token);
