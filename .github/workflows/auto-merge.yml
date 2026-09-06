@@ -24,7 +24,7 @@ jobs:
             STATE=$(gh pr view "$PR_URL" --json state --jq '.state')
             if [ "$STATE" = "MERGED" ]; then
               echo "PR merged, dispatching deploy"
-              gh workflow run deploy.yml --ref main
+              gh workflow run deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
               exit 0
             fi
             echo "Waiting for merge... ($((i*5))s)"
