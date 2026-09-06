@@ -141,3 +141,126 @@ test('http_post — upstream returns 500 → form submission fails with 500', as
     await mock.close();
   }
 });
+
+test('vault static token — writes to vault path with X-Vault-Token header', async () => {
+  let loginCalled = false;
+  let writePath;
+  let writeToken;
+
+  const mock = await startMockServer((req, res) => {
+    let data = '';
+    req.on('data', c => data += c);
+    req.on('end', () => {
+      if (req.url === '/v1/auth/approle/login') {
+        loginCalled = true;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ auth: { client_token: 'should-not-be-used' } }));
+      } else {
+        writePath = req.url;
+        writeToken = req.headers['x-vault-token'];
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{}');
+      }
+    });
+  });
+
+  try {
+    const dest = {
+      type: 'vault',
+      address: `http://127.0.0.1:${mock.port}`,
+      path: 'secret/data/myapp',
+      token: 'hvs.statictoken',
+    };
+    const { submitRes } = await createAndSubmit(
+      [{ name: 'apikey', label: 'API Key' }], dest);
+    assert.equal(submitRes.status, 200);
+    assert.equal(loginCalled, false, 'approle login should NOT be called when static token is given');
+    assert.equal(writePath, '/v1/secret/data/myapp');
+    assert.equal(writeToken, 'hvs.statictoken');
+  } finally {
+    await mock.close();
+  }
+});
+
+test('vault AppRole — calls login then writes with returned client_token', async () => {
+  let loginBody;
+  let writePath;
+  let writeToken;
+  let writeBody;
+
+  const mock = await startMockServer((req, res) => {
+    let data = '';
+    req.on('data', c => data += c);
+    req.on('end', () => {
+      if (req.url === '/v1/auth/approle/login') {
+        loginBody = JSON.parse(data);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ auth: { client_token: 'approle-client-token' } }));
+      } else {
+        writePath = req.url;
+        writeToken = req.headers['x-vault-token'];
+        writeBody = JSON.parse(data);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{}');
+      }
+    });
+  });
+
+  try {
+    const dest = {
+      type: 'vault',
+      address: `http://127.0.0.1:${mock.port}`,
+      path: 'secret/data/myapp',
+      role_id: 'my-role-id',
+      secret_id: 'my-secret-id',
+    };
+    const { submitRes } = await createAndSubmit(
+      [{ name: 'apikey', label: 'API Key' }], dest);
+    assert.equal(submitRes.status, 200);
+    assert.deepEqual(loginBody, { role_id: 'my-role-id', secret_id: 'my-secret-id' });
+    assert.equal(writePath, '/v1/secret/data/myapp');
+    assert.equal(writeToken, 'approle-client-token');
+    assert.ok(writeBody?.data?.apikey !== undefined, 'fields should be written under .data');
+  } finally {
+    await mock.close();
+  }
+});
+
+test('vault AppRole — login returns 403 → form submission fails with 500', async () => {
+  const mock = await startMockServer((req, res) => {
+    req.resume();
+    if (req.url === '/v1/auth/approle/login') {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ errors: ['permission denied'] }));
+    } else {
+      res.writeHead(200).end('{}');
+    }
+  });
+
+  try {
+    const dest = {
+      type: 'vault',
+      address: `http://127.0.0.1:${mock.port}`,
+      path: 'secret/data/myapp',
+      role_id: 'bad-role',
+      secret_id: 'bad-secret',
+    };
+    const { submitRes } = await createAndSubmit(
+      [{ name: 'apikey', label: 'API Key' }], dest);
+    assert.equal(submitRes.status, 500);
+  } finally {
+    await mock.close();
+  }
+});
+
+test('vault — missing token and role_id/secret_id → form submission fails with 500', async () => {
+  const dest = {
+    type: 'vault',
+    address: 'http://127.0.0.1:19999',
+    path: 'secret/data/myapp',
+    // no token, no role_id/secret_id
+  };
+  const { submitRes } = await createAndSubmit(
+    [{ name: 'apikey', label: 'API Key' }], dest);
+  assert.equal(submitRes.status, 500);
+});
