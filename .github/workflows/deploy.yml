@@ -12,17 +12,21 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
+    continue-on-error: ${{ !matrix.required }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - name: zerocreds.ru
             host_secret: DEPLOY_HOST_RU
             user_secret: DEPLOY_USER_RU
-            key_secret: DEPLOY_KEY_RU
+            key_secret: DEPLOY_KEY
+            required: true
           - name: zerocreds.com
             host_secret: DEPLOY_HOST_COM
             user_secret: DEPLOY_USER_COM
             key_secret: DEPLOY_KEY_COM
+            required: false
     steps:
       - name: Deploy to ${{ matrix.name }}
         uses: appleboy/ssh-action@v1.2.0
