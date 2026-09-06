@@ -647,7 +647,7 @@ async function submit() {
   const btn = document.getElementById('btn');
   btn.disabled = true; btn.textContent = 'Saving…';
   try {
-    const r = await fetch(location.pathname, {
+    const r = await fetch('/f/' + T, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ t: T, fields }),
