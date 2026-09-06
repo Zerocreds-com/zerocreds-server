@@ -1,0 +1,13 @@
+{
+  "name": "@zerocreds/mcp",
+  "version": "0.1.0",
+  "description": "MCP server for ZeroCreds — credential collection without exposing secrets to the LLM",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  }
+}
