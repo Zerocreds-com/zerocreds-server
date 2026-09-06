@@ -36,13 +36,13 @@ const SERVICE_META = {
   },
   weeek: {
     name: 'Weeek CRM',
-    placeholder: 'Вставьте API токен',
+    placeholder: 'Paste API token',
     hint: 'Weeek → Settings → Integrations → API → Generate token',
   },
   tilda: {
     name: 'Tilda',
-    placeholder: 'Вставьте cookie строку',
-    hint: 'Откройте tilda.ru в браузере → F12 → Application → Cookies → скопируйте всю строку',
+    placeholder: 'Paste cookie string',
+    hint: 'Open tilda.ru in your browser → F12 → Application → Cookies → copy the entire string',
   },
 };
 
@@ -391,22 +391,22 @@ function aboutHtml() {
 }
 
 function expiredHtml() {
-  return `<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ссылка недействительна</title>
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Link expired — ZeroCreds</title>
 <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f7;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}.card{background:#fff;border-radius:16px;padding:32px;max-width:480px;width:100%;box-shadow:0 2px 20px rgba(0,0,0,.08);text-align:center}.icon{font-size:48px;margin-bottom:16px}h1{font-size:20px;font-weight:600;margin-bottom:8px}.sub{color:#666;font-size:14px;line-height:1.5}</style>
-</head><body><div class="card"><div class="icon">⏰</div><h1>Ссылка недействительна</h1><p class="sub">Эта ссылка истекла или уже была использована. Запросите новую у бота.</p></div></body></html>`;
+</head><body><div class="card"><div class="icon">⏰</div><h1>Link expired</h1><p class="sub">This link has expired or has already been used. Request a new one.</p></div></body></html>`;
 }
 
 const LEVEL_META = {
-  secret:     { icon: '🔒', color: '#dc2626', bg: '#fef2f2', label: 'Защищённое хранилище', aiSees: '❌ никогда', logs: '❌ не попадает', desc: 'Данные уходят напрямую в защищённое хранилище. ИИ-ассистент никогда их не видит.' },
-  pii:        { icon: '👤', color: '#d97706', bg: '#fffbeb', label: 'Персональные данные',   aiSees: '✅ для задач', logs: '🔒 анонимно',   desc: 'ИИ может использовать для выполнения задач. В логи в открытом виде не попадает.' },
-  attribute:  { icon: '📋', color: '#2563eb', bg: '#eff6ff', label: 'Настройка',             aiSees: '✅ открыто',   logs: '✅ да',          desc: 'Открытая конфигурация. ИИ использует в каждом запросе.' },
-  credential: { icon: '⏱', color: '#7c3aed', bg: '#f5f3ff', label: 'Временный токен',       aiSees: '✅ сессия',    logs: '❌ не попадает', desc: 'Используется только в текущей сессии. В логи не сохраняется.' },
+  secret:     { icon: '🔒', color: '#dc2626', bg: '#fef2f2', label: 'Secret store',       aiSees: '❌ never',       logs: '❌ never logged', desc: 'Data goes directly to a secret store. The AI assistant never sees it.' },
+  pii:        { icon: '👤', color: '#d97706', bg: '#fffbeb', label: 'Personal data',      aiSees: '✅ for tasks',   logs: '🔒 anonymised',  desc: 'The AI can use this for tasks. Not stored in logs in plain form.' },
+  attribute:  { icon: '📋', color: '#2563eb', bg: '#eff6ff', label: 'Configuration',      aiSees: '✅ openly',      logs: '✅ yes',          desc: 'Open configuration. The AI uses this in every request.' },
+  credential: { icon: '⏱', color: '#7c3aed', bg: '#f5f3ff', label: 'Session credential', aiSees: '✅ this session', logs: '❌ never logged', desc: 'Used only in the current session. Not saved to logs.' },
 };
 
 function dynamicFormHtml(token, pending, savedValues = {}) {
   const fields = pending.fields || [];
-  const title = pending.title || 'Введите данные';
-  const description = pending.description || 'Данные поступают напрямую на сервер — в чат с ботом <b>не попадают</b>.';
+  const title = pending.title || 'Enter your credentials';
+  const description = pending.description || 'Data goes directly to the server — your AI assistant <b>never sees it</b>.';
 
   function escAttr(s) {
     return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
@@ -421,7 +421,7 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
   function levelBadge(f) {
     const lm = LEVEL_META[f.level];
     if (!lm) return '';
-    return `<button type="button" class="level-btn" style="color:${lm.color}" onclick="toggleInfo('${f.name}')" title="Что происходит с этими данными">${lm.icon}</button>`;
+    return `<button type="button" class="level-btn" style="color:${lm.color}" onclick="toggleInfo('${f.name}')" title="What happens to this data">${lm.icon}</button>`;
   }
 
   function levelInfoCard(f) {
@@ -430,12 +430,12 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
     return `<div id="info_${f.name}" class="level-info" style="display:none;border-left:3px solid ${lm.color};background:${lm.bg}">
   <div class="level-info-title" style="color:${lm.color}">${lm.icon} ${lm.label}</div>
   <table class="level-table">
-    <tr><td>ZeroCreds сервер</td><td>✅ получает</td></tr>
-    <tr><td>ИИ-ассистент</td><td>${lm.aiSees}</td></tr>
-    <tr><td>Логи</td><td>${lm.logs}</td></tr>
+    <tr><td>ZeroCreds server</td><td>✅ receives</td></tr>
+    <tr><td>AI assistant</td><td>${lm.aiSees}</td></tr>
+    <tr><td>Logs</td><td>${lm.logs}</td></tr>
   </table>
   <div class="level-desc">${lm.desc}</div>
-  <a href="https://zerocreds.ru/security" target="_blank" class="level-link">→ zerocreds.ru/security</a>
+  <a href="https://zerocreds.com/security" target="_blank" class="level-link">→ zerocreds.com/security</a>
 </div>`;
   }
 
@@ -449,20 +449,20 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
       return `${labelHtml}<textarea id="f_${f.name}" name="${f.name}" placeholder="${ph}" ${req} rows="4">${val}</textarea>`;
     }
     if (type === 'password') {
-      return `${labelHtml}<div class="pw-wrap"><input id="f_${f.name}" name="${f.name}" type="password" placeholder="${ph}" autocomplete="current-password" spellcheck="false" ${req}><button type="button" class="pw-btn eye" onclick="togglePw('f_${f.name}')" title="Показать/скрыть">👁</button><button type="button" class="pw-btn paste" onclick="pastePw('f_${f.name}')">Paste</button></div>`;
+      return `${labelHtml}<div class="pw-wrap"><input id="f_${f.name}" name="${f.name}" type="password" placeholder="${ph}" autocomplete="current-password" spellcheck="false" ${req}><button type="button" class="pw-btn eye" onclick="togglePw('f_${f.name}')" title="Show/hide">👁</button><button type="button" class="pw-btn paste" onclick="pastePw('f_${f.name}')">Paste</button></div>`;
     }
     const val = savedValues[f.name] ? ` value="${escAttr(savedValues[f.name])}"` : '';
     return `${labelHtml}<input id="f_${f.name}" name="${f.name}" type="${type}" placeholder="${ph}" autocomplete="off" spellcheck="false" ${req}${val}>`;
   }).join('\n  ');
 
   const rememberHtml = hasNonPasswordFields
-    ? `<label class="remember"><input type="checkbox" id="save_chk"${hasSavedData ? ' checked' : ''}> Запомнить для следующего раза</label>`
+    ? `<label class="remember"><input type="checkbox" id="save_chk"${hasSavedData ? ' checked' : ''}> Save for next time</label>`
     : '';
 
   const fieldNames = JSON.stringify(fields.map(f => f.name));
 
   return `<!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -527,15 +527,15 @@ function dynamicFormHtml(token, pending, savedValues = {}) {
     <p class="sub">${description}</p>
     ${fieldHtml}
     ${rememberHtml}
-    <button id="btn" onclick="submit()">Отправить</button>
+    <button id="btn" onclick="submit()">Submit</button>
     <div id="msg" class="msg"></div>
   </div>
   <div id="done">
     <div class="icon">✅</div>
-    <h1>Готово!</h1>
-    <p class="sub">Данные сохранены. Можете закрыть эту страницу и вернуться в бот.</p>
+    <h1>Done!</h1>
+    <p class="sub">Credentials saved. You can close this page.</p>
   </div>
-  <p class="lock">🔒 Данные не попадают в LLM · Ссылка одноразовая · <a href="/about" style="color:#999">Как это работает?</a> · <a href="/version" style="color:#999">v${VERSION}</a></p>
+  <p class="lock">🔒 Credentials never reach the AI · One-time link · <a href="/about" style="color:#999">How it works?</a> · <a href="/version" style="color:#999">v${VERSION}</a></p>
 </div>
 <script>
 const T = '${token}';
@@ -553,7 +553,7 @@ async function pastePw(id) {
     const text = await navigator.clipboard.readText();
     document.getElementById(id).value = text.trim();
   } catch {
-    showMsg('err', 'Разрешите доступ к буферу обмена или вставьте вручную (Ctrl+V / ⌘V)');
+    showMsg('err', 'Allow clipboard access or paste manually (Ctrl+V / ⌘V)');
   }
 }
 async function submit() {
@@ -566,10 +566,10 @@ async function submit() {
     const el = document.getElementById('f_' + n);
     return el && el.required && !fields[n];
   });
-  if (empty) { showMsg('err', 'Заполните все обязательные поля'); return; }
+  if (empty) { showMsg('err', 'Please fill in all required fields'); return; }
   const save = document.getElementById('save_chk')?.checked ?? false;
   const btn = document.getElementById('btn');
-  btn.disabled = true; btn.textContent = 'Сохраняю…';
+  btn.disabled = true; btn.textContent = 'Saving…';
   try {
     const r = await fetch(location.pathname, {
       method: 'POST',
@@ -581,12 +581,12 @@ async function submit() {
       document.getElementById('form-view').style.display = 'none';
       document.getElementById('done').style.display = '';
     } else {
-      showMsg('err', d.detail ? (d.error + ': ' + d.detail) : (d.error || 'Ошибка сервера'));
-      btn.disabled = false; btn.textContent = 'Отправить';
+      showMsg('err', d.detail ? (d.error + ': ' + d.detail) : (d.error || 'Server error'));
+      btn.disabled = false; btn.textContent = 'Submit';
     }
   } catch(e) {
-    showMsg('err', 'Сетевая ошибка: ' + e.message);
-    btn.disabled = false; btn.textContent = 'Отправить';
+    showMsg('err', 'Network error: ' + e.message);
+    btn.disabled = false; btn.textContent = 'Submit';
   }
 }
 function showMsg(cls, text) {
@@ -603,11 +603,11 @@ document.addEventListener('keydown', e => {
 
 function connectFormHtml(service, meta, token) {
   return `<!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Подключить ${meta.name}</title>
+<title>Connect ${meta.name} — ZeroCreds</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f7;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
@@ -629,21 +629,21 @@ function connectFormHtml(service, meta, token) {
 </head>
 <body>
 <div class="card">
-  <h1>Подключить ${meta.name}</h1>
-  <p class="sub">Данные для входа поступают напрямую на сервер — в чат с ботом <b>не попадают</b>.<br><br>${meta.hint}</p>
-  <label for="tok">Данные для авторизации</label>
+  <h1>Connect ${meta.name}</h1>
+  <p class="sub">Credentials go directly to the server — your AI assistant <b>never sees them</b>.<br><br>${meta.hint}</p>
+  <label for="tok">Authorization data</label>
   <input id="tok" type="password" placeholder="${meta.placeholder}" autocomplete="off" spellcheck="false">
-  <button id="btn" onclick="submit()">Подключить</button>
+  <button id="btn" onclick="submit()">Connect</button>
   <div id="msg" class="msg"></div>
-  <p class="lock">🔒 Данные не попадают в LLM · Ссылка одноразовая · <a href="/version" style="color:#999">v${VERSION}</a></p>
+  <p class="lock">🔒 Credentials never reach the AI · One-time link · <a href="/version" style="color:#999">v${VERSION}</a></p>
 </div>
 <script>
 const T = '${token.replace(/'/g, "\\'")}';
 async function submit() {
   const v = document.getElementById('tok').value.trim();
-  if (!v) { show('err', 'Введите данные для входа'); return; }
+  if (!v) { show('err', 'Please enter credentials'); return; }
   const btn = document.getElementById('btn');
-  btn.disabled = true; btn.textContent = 'Подключаю…';
+  btn.disabled = true; btn.textContent = 'Connecting…';
   try {
     const r = await fetch(location.pathname, {
       method: 'POST',
@@ -652,16 +652,16 @@ async function submit() {
     });
     const d = await r.json();
     if (d.ok) {
-      show('ok', '✅ Готово! Можете закрыть страницу и вернуться в бот.');
+      show('ok', '✅ Done! You can close this page.');
       btn.style.display = 'none';
       document.getElementById('tok').disabled = true;
     } else {
-      show('err', d.error || 'Ошибка');
-      btn.disabled = false; btn.textContent = 'Подключить';
+      show('err', d.error || 'Error');
+      btn.disabled = false; btn.textContent = 'Connect';
     }
   } catch(e) {
-    show('err', 'Сетевая ошибка: ' + e.message);
-    btn.disabled = false; btn.textContent = 'Подключить';
+    show('err', 'Network error: ' + e.message);
+    btn.disabled = false; btn.textContent = 'Connect';
   }
 }
 function show(cls, text) {
@@ -958,7 +958,7 @@ function createApp(config = {}) {
         if (pending.tg_bot_token) {
           const name = meta.name;
           tgNotify(pending.tg_bot_token, pending.tg_chat_id || pending.uid,
-            `✅ ${name} подключён! Токен сохранён.`);
+            `✅ ${name} connected! Token saved.`);
         }
         return;
       }
@@ -1290,7 +1290,7 @@ function createApp(config = {}) {
 
         if (pending.notify?.tg_bot_token) {
           tgNotify(pending.notify.tg_bot_token, pending.notify.tg_chat_id,
-            `✅ ${pending.title}: данные получены и сохранены.`);
+            `✅ ${pending.title}: credentials received and saved.`);
         }
         return;
       }
