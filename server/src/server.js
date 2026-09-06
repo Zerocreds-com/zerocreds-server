@@ -471,6 +471,10 @@ function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
       case 'gcp_secret_manager': return `GCP Secret Manager · ${escHtml(String(dest.secret || '…'))}`;
       case 'aws_secrets_manager': return `AWS Secrets Manager · ${escHtml(String(dest.secret_id || '…'))}`;
       case 'vault': return `HashiCorp Vault · ${escHtml(String(dest.address || ''))}${escHtml(String(dest.path || ''))}`;
+      case 'macos_keychain': return `macOS Keychain · ${escHtml(String(dest.service || 'zerocreds'))}/${escHtml(String(dest.account || '…'))}`;
+      case 'windows_credential_manager': return `Windows Credential Manager · ${escHtml(String(dest.service || 'zerocreds'))}/${escHtml(String(dest.account || '…'))}`;
+      case 'os_keychain': return `OS Keychain · ${escHtml(String(dest.service || 'zerocreds'))}/${escHtml(String(dest.account || '…'))} (macOS Keychain / Windows Credential Manager / local file)`;
+      case 'http_post': return `HTTP endpoint · ${escHtml(String(dest.url || '…'))}`;
       default: return escHtml(dest.type);
     }
   }
