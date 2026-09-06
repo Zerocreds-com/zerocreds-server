@@ -46,6 +46,15 @@ test('local_file — single destination → file written with fields', async () 
   assert.ok(written.tok || written.value, 'file should contain the submitted field');
 });
 
+test('local_file — alphanumeric uid → accepted', async () => {
+  const uid = 'john_doe-42';
+  const dest = { type: 'local_file', uid, filename: 'creds' };
+  const { submitRes } = await createAndSubmit(
+    [{ name: 'tok', label: 'Token' }], dest);
+  assert.equal(submitRes.status, 200);
+  assert.ok(fs.existsSync(path.join(tokenDir(uid), 'creds')));
+});
+
 test('destinations_by_level — secret+pii → two separate files', async () => {
   const uid = '88002';
   const destSecret = { type: 'local_file', uid, filename: 'creds-secret' };
