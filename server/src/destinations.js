@@ -344,4 +344,12 @@ function httpPost(url, bodyObj, bearerToken, extraHeaders = {}) {
   });
 }
 
-module.exports = { saveToDestination, resolveTemplate };
+// Test a destination by sending a preflight request.
+// For http_post: sends {_zerocreds_preflight: true} through the body template and expects 2xx.
+// Other destination types are skipped (no external service to probe).
+async function testDestination(destination) {
+  if (!destination || destination.type !== 'http_post') return;
+  await saveHttpPost(destination, { _zerocreds_preflight: true });
+}
+
+module.exports = { saveToDestination, testDestination, resolveTemplate };
