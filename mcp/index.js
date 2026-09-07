@@ -41,7 +41,8 @@ server.tool(
       type: z.enum(['text', 'password', 'email', 'tel', 'number', 'textarea', 'url']).optional().describe('Input type (default: text)'),
       placeholder: z.string().optional(),
       required: z.boolean().optional(),
-    })).describe('List of fields to collect'),
+      level: z.enum(['secret', 'pii', 'attribute', 'credential']).describe('Sensitivity badge shown on the form. "secret" = passwords/tokens (never logged, badge: SECRET); "pii" = personal data like username/email/domain (anonymised in logs, badge: PII DATA); "attribute" = open config the AI can see freely (badge: CONFIG); "credential" = session-scoped tokens, used once (never logged, badge: SESSION).'),
+    })).describe('List of fields to collect. level is required for every field.'),
     destination: z.union([
       z.string().describe('Named destination from zerocreds-destinations.json'),
       z.object({

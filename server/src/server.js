@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { startNalogLogin, confirmNalogCode } = require('./nalog-login');
-const { saveToDestination } = require('./destinations');
+const { saveToDestination, testDestination } = require('./destinations');
 
 // ── Module-level pure helpers ──────────────────────────────────────────────────
 
@@ -647,7 +647,7 @@ async function submit() {
   const btn = document.getElementById('btn');
   btn.disabled = true; btn.textContent = 'Saving…';
   try {
-    const r = await fetch(location.pathname, {
+    const r = await fetch('/f/' + T, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ t: T, fields }),
@@ -1177,7 +1177,24 @@ function createApp(config = {}) {
         if (!f.name || !f.label) return json(res, 400, { error: `field missing name or label: ${JSON.stringify(f)}` });
         if (!/^[a-zA-Z0-9_]{1,64}$/.test(f.name)) return json(res, 400, { error: `invalid field name: ${f.name}` });
         if (f.type && !VALID_TYPES.includes(f.type)) return json(res, 400, { error: `invalid field type: ${f.type}` });
-        if (f.level && !VALID_LEVELS.includes(f.level)) return json(res, 400, { error: `invalid field level: ${f.level}` });
+        if (!f.level) return json(res, 400, { error: `field "${f.name}" missing required level (secret|pii|attribute|credential)` });
+        if (!VALID_LEVELS.includes(f.level)) return json(res, 400, { error: `invalid field level: ${f.level}` });
+      }
+
+      // Preflight: test destination reachability before creating the session.
+      // Default: on. Opt-out with test_destination: false in the request.
+      // Only runs for http_post destinations (no external service to probe for others).
+      // Catches misconfigured URLs, wrong auth, and bad network paths before the user sees the form.
+      if (payload.test_destination !== false && destination?.type === 'http_post') {
+        try {
+          await testDestination(destination);
+        } catch (e) {
+          return json(res, 400, {
+            error: 'destination_unreachable',
+            detail: e.message.slice(0, 300),
+            hint: 'Check destination URL and Authorization header. Pass test_destination: false to skip this check.',
+          });
+        }
       }
 
       const integrator_id = integrator?.id || 'admin';
