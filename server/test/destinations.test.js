@@ -128,8 +128,19 @@ test('http_post — upstream returns 200 → form submission succeeds', async ()
 
 test('http_post — upstream returns 500 → form submission fails with 500', async () => {
   const mock = await startMockServer((req, res) => {
-    req.resume();
-    res.writeHead(500).end('Internal Error');
+    let data = '';
+    req.on('data', c => data += c);
+    req.on('end', () => {
+      // Preflight probe (sent at session-create time) must pass so the
+      // session can be created; only the real submission should 500.
+      let body = {};
+      try { body = JSON.parse(data); } catch { /* ignore */ }
+      if (body._zerocreds_preflight) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end('{}');
+      }
+      res.writeHead(500).end('Internal Error');
+    });
   });
 
   try {
