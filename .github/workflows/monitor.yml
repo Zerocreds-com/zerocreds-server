@@ -1,0 +1,24 @@
+name: Public HTTPS monitor
+on:
+  schedule:
+    - cron: '17,47 * * * *'
+  workflow_dispatch:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check both domains and certificate expiration
+        run: python3 scripts/check-public.py
+      - name: Record nginx diagnostics on failure
+        if: failure()
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST_RU }}
+          username: ${{ secrets.DEPLOY_USER_RU }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            sudo -n /usr/sbin/nginx -t 2>&1 || true
+            systemctl is-active nginx zerocreds-server || true
+            sudo -n /usr/bin/journalctl -u nginx --no-pager -n 20 || true

@@ -1,0 +1,10 @@
+#!/bin/sh
+# Root-owned entrypoint: accepts no arguments and never reads repo-owned code.
+set -eu
+[ "$#" -eq 0 ] || exit 2
+/usr/sbin/nginx -t
+if /usr/bin/systemctl is-active --quiet nginx; then
+  /usr/bin/systemctl reload nginx
+else
+  /usr/bin/systemctl start nginx
+fi
