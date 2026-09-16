@@ -28,14 +28,14 @@ jobs:
             set -eu
             cd ~/zerocreds-server
             git fetch origin main
-            git reset --hard origin/main
+            git reset --hard '${{ github.sha }}'
             EXPECTED=$(git rev-parse --short=12 HEAD)
             cd server
             npm ci --omit=dev
             sudo -n /usr/local/sbin/zerocreds-nginx-apply
             sudo -n /usr/bin/systemctl restart zerocreds-server
             for attempt in $(seq 1 15); do
-              LIVE=$(curl -fsS --max-time 3 http://localhost:3456/version | python3 -c "import sys,json; print(json.load(sys.stdin)['commit'])") && [ "$LIVE" = "$EXPECTED" ] && break
+              LIVE=$(curl -fsS --max-time 3 http://localhost:3456/version 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['commit'])" 2>/dev/null) && [ "$LIVE" = "$EXPECTED" ] && break
               sleep 2
             done
             [ "$LIVE" = "$EXPECTED" ]
