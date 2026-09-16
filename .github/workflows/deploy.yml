@@ -54,3 +54,11 @@ jobs:
               exit 1
             fi
             echo "✓ ${{ matrix.name }} deployed: $LIVE"
+            # nginx fronts zerocreds-server on 80/443 but isn't managed by this
+            # deploy — if it died independently (crash, bad reload, OOM) the app
+            # deploys clean while the public domain stays down. Best-effort
+            # restart here so a red nginx doesn't need a separate manual fix.
+            if ! curl -sf -o /dev/null http://localhost/; then
+              echo "⚠️  nginx not responding on :80 — attempting restart"
+              sudo /usr/bin/systemctl restart nginx || echo "⚠️  nginx restart failed (check sudoers/nginx config manually)"
+            fi
