@@ -21,7 +21,9 @@ be delayed by GitHub and are not a hard 30-minute availability SLA.
 
 Certbot's timer renews certificates; its deploy hook validates nginx before reloading or
 starting it. Check `systemctl list-timers certbot.timer` and run `sudo certbot renew
---dry-run --run-deploy-hooks` for renewal validation. Never restart nginx in a retry loop.
+--dry-run --non-interactive` for renewal validation. Test the hook separately with
+`sudo /etc/letsencrypt/renewal-hooks/deploy/zerocreds-nginx`: the installed Certbot
+version does not support `--run-deploy-hooks`. Never restart nginx in a retry loop.
 
 Rollback: restore only the affected files from `/var/backups/zerocreds-nginx.*`, run
 `sudo nginx -t`, then the root-owned helper. To roll back the application, check out the

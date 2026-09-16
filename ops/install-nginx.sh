@@ -9,8 +9,11 @@ chmod 700 "$backup"
 cp -a /etc/nginx/sites-available "$backup/"
 cp -a /etc/nginx/sites-enabled "$backup/"
 restore() {
-  cp -a "$backup/sites-available/." /etc/nginx/sites-available/
   for domain in zerocreds.ru zerocreds.com; do
+    rm -f "/etc/nginx/sites-available/$domain"
+    if [[ -e "$backup/sites-available/$domain" || -L "$backup/sites-available/$domain" ]]; then
+      cp -a "$backup/sites-available/$domain" "/etc/nginx/sites-available/$domain"
+    fi
     rm -f "/etc/nginx/sites-enabled/$domain"
     if [[ -e "$backup/sites-enabled/$domain" || -L "$backup/sites-enabled/$domain" ]]; then
       cp -a "$backup/sites-enabled/$domain" "/etc/nginx/sites-enabled/$domain"
