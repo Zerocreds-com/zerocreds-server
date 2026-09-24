@@ -153,6 +153,34 @@ test('http_post — upstream returns 500 → form submission fails with 500', as
   }
 });
 
+test('http_post — destination preflight carries X-ZeroCreds-Preflight header', async () => {
+  let preflightHeader;
+  let preflightBody;
+  const mock = await startMockServer((req, res) => {
+    let data = '';
+    req.on('data', c => data += c);
+    req.on('end', () => {
+      preflightHeader = req.headers['x-zerocreds-preflight'];
+      try { preflightBody = JSON.parse(data); } catch { /* ignore */ }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{}');
+    });
+  });
+
+  try {
+    const dest = { type: 'http_post', url: `http://127.0.0.1:${mock.port}/collect` };
+    const r = await request(ctx.port, 'POST', '/api/session/create',
+      { title: 'T', fields: [{ name: 'tok', label: 'Token' }], destination: dest }, auth());
+    assert.equal(r.status, 200);
+    // The probe must be identifiable by header alone, so a destination never has to
+    // parse the (templated, possibly nested) body to tell a probe from real data.
+    assert.equal(preflightHeader, 'true');
+    assert.equal(preflightBody?._zerocreds_preflight, true);
+  } finally {
+    await mock.close();
+  }
+});
+
 test('vault static token — writes to vault path with X-Vault-Token header', async () => {
   let loginCalled = false;
   let writePath;

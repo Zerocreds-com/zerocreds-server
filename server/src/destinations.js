@@ -201,12 +201,18 @@ async function saveVault(destination, fields) {
 // url, header values, and body strings all support {field_name} placeholders;
 // {fields_json} is replaced with the full JSON of submitted fields.
 // If body is omitted, posts fields as-is. Times out after 10 seconds.
-async function saveHttpPost(destination, fields) {
+//
+// opts.preflight (used by testDestination) adds an `X-ZeroCreds-Preflight: true`
+// header so the destination can tell a reachability probe from a real submission
+// without relying on the (templated, often nested) body. Without this, a probe can
+// be mistaken for real data — see the trained-assist-agent duplicate-notify incident.
+async function saveHttpPost(destination, fields, opts = {}) {
   const { url: urlTemplate, headers: headersTemplate = {}, body: bodyTemplate } = destination;
   if (!urlTemplate) throw new Error('http_post: missing url');
   const url = applyTemplate(urlTemplate, fields);
   try { new URL(url); } catch { throw new Error('http_post: invalid url'); }
   const resolvedHeaders = applyTemplate(headersTemplate, fields);
+  if (opts.preflight) resolvedHeaders['X-ZeroCreds-Preflight'] = 'true';
   const bodyObj = bodyTemplate ? applyTemplate(bodyTemplate, fields) : fields;
   await httpPost(url, bodyObj, null, resolvedHeaders);
 }
@@ -345,11 +351,12 @@ function httpPost(url, bodyObj, bearerToken, extraHeaders = {}) {
 }
 
 // Test a destination by sending a preflight request.
-// For http_post: sends {_zerocreds_preflight: true} through the body template and expects 2xx.
-// Other destination types are skipped (no external service to probe).
+// For http_post: sends {_zerocreds_preflight: true} through the body template, plus
+// an X-ZeroCreds-Preflight: true header, and expects 2xx. Other destination types are
+// skipped (no external service to probe).
 async function testDestination(destination) {
   if (!destination || destination.type !== 'http_post') return;
-  await saveHttpPost(destination, { _zerocreds_preflight: true });
+  await saveHttpPost(destination, { _zerocreds_preflight: true }, { preflight: true });
 }
 
 module.exports = { saveToDestination, testDestination, resolveTemplate };
