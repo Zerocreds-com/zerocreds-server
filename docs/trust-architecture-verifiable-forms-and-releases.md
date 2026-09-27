@@ -118,7 +118,7 @@ The strongest guarantee: the server **cannot** read what it relays.
 
 | # | Item | Size |
 |---|---|---|
-| Z0 | CI/CD guard: protect `main` (done), make auto-merge wait for checks, tests on Node 22+, lint/gitleaks, `npm audit` | S |
+| Z0 | CI/CD guard: protect `main` (done), remove auto-merge, `production` environment approval, SHA-pinned actions, tests on Node 22+, lint/gitleaks, `npm audit` | S |
 | Z1 | Submission manifest: build, canonicalize, sign, show in the form, bind to submit, signed receipt | M |
 | Z2 | Destination hardening: no inline in prod, integrator registration, `http_post` allowlist + SSRF block | M |
 | Z3 | Transparency log + external anchoring repo + verifier script | M |

@@ -29,6 +29,9 @@
 - [реализовано] #50 nalog: убраны скриншоты в /tmp и логирование текста страниц
 - [планируется] Rate limit на создание/сабмит сессий; индекс вместо полного скана pending для pretty URL (#50 audit, medium — вне scope)
 
+- [реализовано] Z0 CI/CD guard (#51) — удалён auto-merge.yml; deploy через GitHub Environment `production` (required reviewer) только с `main` после `test` на том же sha; `npm ci` + lockfile для server и mcp; Node 22; `npm audit --omit=dev`; gitleaks; syntax lint; actions запинены по SHA; README: исправлены утверждения про telemetry и /version
+- [реализовано] Z8 (#59) Дизайн формы /f/: светлая/тёмная тема (по умолчанию prefers-color-scheme, переключатель, выбор в localStorage, без вспышки), mobile-first (16px инпуты, крупные тап-таргеты, sticky Submit), без inline-обработчиков и style-атрибутов (готово к строгому CSP); скриншоты — `server/scripts/form-screenshots.js` → docs/screenshots/. Всегда видимый блок «Where this goes» — в рамках #50
+
 ## Планируется
 
 - [планируется] Landing page zerocreds.ru — на русском, с объяснением концепции

@@ -3,7 +3,7 @@
 **Open-Source credential collection server for AI agents. Credentials never reach the LLM — the agent only sees `{ status: "ok" }`.**
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D18-green.svg)](https://nodejs.org)
+[![Node.js](https://img.shields.io/badge/node-22%2B-green.svg)](https://nodejs.org)
 
 ---
 
@@ -44,7 +44,7 @@ Agent                    ZeroCreds Server             User
 ```bash
 git clone https://github.com/Zerocreds-com/zerocreds-server
 cd zerocreds-server/server
-npm install
+npm ci
 npx playwright install chromium --with-deps   # only needed for nalog.ru
 
 export ZEROCREDS_ADMIN_TOKEN=your-secret-token   # required — the server refuses to start without it
@@ -250,7 +250,7 @@ Returns `{ "status": "pending" | "done" | "expired" }`. An integrator only sees 
 
 ### GET /version
 
-Returns the commit the server process started from. It is the server's own claim — useful for checking a deploy, not proof of what code is running.
+Returns the git commit the server process reports it is running. This is self-reported by the server: it tells you which revision the operator says is deployed, not proof that the running code is unmodified (see [trust architecture](docs/trust-architecture-verifiable-forms-and-releases.md) for the planned signed-release verification).
 
 ---
 
@@ -355,8 +355,9 @@ The form the user sees has a few conveniences:
 - **Admin-approved destinations** — in the default configuration a session can only target destinations the admin configured; the form shows the exact destination and requester
 - **Write-only stores where possible** — GCP/AWS/Vault can be set up so ZeroCreds cannot read back; files, keychains and `http_post` are readable by their owner (see the table above)
 - **Escaping and CSP** — all session metadata (title, description, labels, placeholders) is HTML-escaped; pages send a strict nonce-based Content-Security-Policy, `frame-ancestors 'none'`, `Referrer-Policy: no-referrer` and `Cache-Control: no-store`
-- **You trust the operator** — on a hosted instance the server sees the values in transit. `GET /version` reports the commit the process started from; it is not a cryptographic attestation
-- **Outbound traffic** — besides the configured destination, the server contacts Telegram only when a session asks for `notify`
+- **You trust the operator** — on a hosted instance the server sees the values in transit
+- **Version reporting** — `GET /version` returns the git commit the server reports it runs. It is self-reported, so it does **not** prove the deployed code is unmodified; verifiable signed releases are planned (see [trust architecture](docs/trust-architecture-verifiable-forms-and-releases.md))
+- **No analytics or telemetry** — the server sends no usage data to us or any third party. Outbound connections are only: the configured destination (secret store / `http_post` URL), the Telegram Bot API when `notify` is set, and the target sites of the legacy built-in services (e.g. nalog.ru via Playwright)
 
 ---
 
@@ -432,3 +433,11 @@ nginx (443/80)
 Server: `178.212.14.192` (Hostland RU VM)
 Service: `zerocreds-server.service`
 Landing: `/home/vova/zerocreds-landing/`
+
+### CI/CD
+
+- `main` is protected: PR + required `test` check, enforced for admins. There is no auto-merge — a human merges.
+- `test.yml` (job `test`, the required check): gitleaks over full history (pinned binary, sha256-verified) → `npm ci` in `server/` and `mcp/` (lockfiles are mandatory) → `npm audit --omit=dev` → syntax lint (`node --check`) → `node --test`. Node 22.
+- `deploy.yml`: runs on push to `main` (or manual dispatch from `main` only), re-runs `test` on that exact sha, then the `deploy` job waits for approval in the GitHub Environment `production` (required reviewer) before SSHing to the server.
+- All third-party actions are pinned by full commit SHA (tag in a trailing comment). When bumping, resolve the new SHA with `git ls-remote https://github.com/<owner>/<repo> refs/tags/<tag>`.
+- Changing dependencies: update `package.json` and commit the regenerated `package-lock.json`; CI fails on lockfile drift.
