@@ -7,6 +7,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { startNalogLogin, confirmNalogCode } = require('./nalog-login');
 const { saveToDestination, testDestination, validateDestination, resolveTemplate } = require('./destinations');
+const { canonicalJson, sha256Hex, loadSigningKey, signPayload } = require('./receipts');
 
 // ── Module-level pure helpers ──────────────────────────────────────────────────
 
@@ -501,6 +502,43 @@ const FORM_THEME_DARK = [
 
 const FIELD_TYPES = ['text', 'password', 'email', 'number', 'tel', 'textarea', 'url'];
 
+// Form specs (POST /api/forms): the credential kind picks the default fields.
+const FORM_KINDS = {
+  token: [{ name: 'token', label: 'Token', type: 'password' }],
+  ssh: [{ name: 'private_key', label: 'SSH private key', type: 'textarea' }],
+  login: [{ name: 'username', label: 'Username' }, { name: 'password', label: 'Password', type: 'password' }],
+};
+// The handle is not a secret: cred:<name> in the owner's space.
+const HANDLE_NAME_RE = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
+const SUBMIT_TOKEN_RE = /^zcs_[a-f0-9]{48}$/;
+
+// Values for {{placeholders}} in destination configs.
+function templateContext(pending) {
+  return { uid: pending.uid, service: pending.service_slug ?? pending.form?.name, name: pending.form?.name };
+}
+
+function envVarName(formName, fieldName) {
+  return `${formName}_${fieldName}`.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+}
+
+// "Copy as API request": the machine equivalent of a form, with placeholders instead of
+// values. Everything interpolated here is validated (hex ids, [a-z0-9_.-] names).
+function formApiSnippets(formId, pending, baseUrl) {
+  const { form, fields } = pending;
+  const args = fields.map(f => `--arg ${f.name} "$${envVarName(form.name, f.name)}"`).join(' ');
+  const obj = fields.map(f => `${f.name}: $${f.name}`).join(', ');
+  const curl = [
+    `curl -sS -X POST '${baseUrl}/api/forms/${formId}/submit' \\`,
+    `  -H "Authorization: Bearer $ZEROCREDS_SUBMIT_TOKEN" \\`,
+    `  -H 'Content-Type: application/json' \\`,
+    `  -d "$(jq -n ${args} '{manifest_id: "${form.manifest_id}", fields: {${obj}}}')"`,
+  ].join('\n');
+  const sar = fields.length === 1
+    ? `sar cred put ${form.name} --kind ${form.kind} --from-env ${envVarName(form.name, fields[0].name)}`
+    : `sar cred put ${form.name} --kind ${form.kind} --from-file ./${form.name}.json   # {${fields.map(f => `"${f.name}": "…"`).join(', ')}}`;
+  return { curl, sar };
+}
+
 // Sessions created by an integrator write local files under their own subtree.
 function integratorSubdir(integratorId) {
   return !integratorId || integratorId === 'admin' ? '' : path.join('_integrators', integratorId);
@@ -519,7 +557,7 @@ const WRITE_ONLY_NOTE = 'ZeroCreds is only given write access to this store (whe
 // Plain-text summary of where values go: { kind, target, note }. Callers escape it.
 function describeDestination(dest, pending) {
   if (!dest || typeof dest !== 'object') return { kind: 'Not stored', target: '', note: '' };
-  const ctx = { uid: pending.uid, service: pending.service_slug };
+  const ctx = templateContext(pending);
   switch (dest.type) {
     case 'local_file': {
       const sub = integratorSubdir(pending.integrator_id);
@@ -553,7 +591,7 @@ function requesterLabel(pending) {
   return pending.requester ? `${pending.requester} (integrator ${pending.integrator_id})` : `Integrator ${pending.integrator_id}`;
 }
 
-function dynamicFormHtml(token, pending, host, nonce) {
+function dynamicFormHtml(token, pending, host, nonce, api = null) {
   const fields = Array.isArray(pending.fields) ? pending.fields : [];
   const title = pending.title || 'Enter your credentials';
   const description = pending.description || 'Values go directly from this page to ZeroCreds, not through the AI chat.';
@@ -612,10 +650,22 @@ function dynamicFormHtml(token, pending, host, nonce) {
     const k = destGroups.length > 1 ? `${escHtml(g.labels.join(', '))} →` : 'Sent to';
     return `<div class="dest-row"><span class="dest-k">${k}</span><span class="dest-v">${escHtml(g.kind)}${g.target ? `<code class="dest-target">${escHtml(g.target)}</code>` : ''}${g.note ? `<span class="dest-note">${escHtml(g.note)}</span>` : ''}</span></div>`;
   }).join('');
+  const handleRow = pending.form ? `<div class="dest-row"><span class="dest-k">Saved as</span><span class="dest-v"><code class="dest-target">${escHtml(pending.form.handle)}</code></span></div>` : '';
   const destBox = `<div class="dest-box" id="zc-destination">
       <div class="dest-row"><span class="dest-k">Requested by</span><span class="dest-v">${escHtml(requesterLabel(pending))}</span></div>
       ${destRows}
+      ${handleRow}
     </div>`;
+
+  const apiHtml = api ? `<div class="where-wrap">
+  <button type="button" class="where-btn" data-action="toggle-where" data-target="api-info" aria-controls="api-info" aria-expanded="false">Copy as API request ▾</button>
+  <div id="api-info" class="where-info" hidden>
+    <div class="wb"><div class="wb-note">Same form from a script: values come from env variables, never from this page. Use the owner key or the one-time submit token as <code>ZEROCREDS_SUBMIT_TOKEN</code>.</div></div>
+    <div class="wb"><div class="api-head"><span class="wb-fields">curl</span><button type="button" class="copy-btn" data-action="copy" data-target="api-curl">Copy</button></div><pre class="api-code"><code id="api-curl">${escHtml(api.curl)}</code></pre></div>
+    <div class="wb-sep"></div>
+    <div class="wb"><div class="api-head"><span class="wb-fields">sar CLI</span><button type="button" class="copy-btn" data-action="copy" data-target="api-sar">Copy</button></div><pre class="api-code"><code id="api-sar">${escHtml(api.sar)}</code></pre></div>
+  </div>
+</div>` : '';
 
   const LEVEL_BEHAVIOR = {
     secret:     { note: 'Handled as a secret: ZeroCreds does not log submitted values.' },
@@ -744,6 +794,10 @@ function dynamicFormHtml(token, pending, host, nonce) {
   .level-table td:first-child{color:var(--muted);width:55%}
   .level-table td:last-child{font-weight:600;color:var(--text)}
   .level-desc{color:var(--muted);font-size:13px;line-height:1.5}
+  .api-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+  .copy-btn{min-height:36px;padding:0 12px;border-radius:8px;border:1px solid var(--border);background:var(--chip-bg);color:var(--text);font-size:13px;font-weight:600;font-family:inherit;cursor:pointer}
+  .copy-btn:hover{background:var(--chip-hover)}
+  .api-code{margin:0;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--card);font-family:ui-monospace,'SF Mono',Monaco,Consolas,monospace;font-size:12px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
   @media (max-width:560px){
     body{padding:0;align-items:stretch}
     .card{max-width:none;min-height:100vh;min-height:100dvh;border:none;border-radius:0;box-shadow:none;padding:16px 16px 24px}
@@ -798,6 +852,17 @@ async function pastePw(id) {
     showMsg('err', 'Allow clipboard access or paste manually (Ctrl+V / ⌘V)');
   }
 }
+async function copyText(id, btn) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  try {
+    await navigator.clipboard.writeText(el.textContent);
+    btn.textContent = 'Copied';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+  } catch {
+    showMsg('err', 'Allow clipboard access or select the text and copy it manually');
+  }
+}
 async function submit() {
   const fields = {};
   for (const name of FIELD_NAMES) {
@@ -844,6 +909,7 @@ document.addEventListener('click', e => {
     case 'paste': pastePw(target); break;
     case 'toggle-info':
     case 'toggle-where': toggleHidden(target, b); break;
+    case 'copy': copyText(target, b); break;
     case 'submit': submit(); break;
   }
 });
@@ -897,6 +963,7 @@ document.addEventListener('DOMContentLoaded', () => {
     <p class="sub">Credentials saved. You can close this page.</p>
   </div>
   <p class="lock"><span id="zc-timer"></span> &middot; One-time link &middot; <a href="https://github.com/Zerocreds-com/zerocreds-server" target="_blank" rel="noopener">v${VERSION}</a></p>
+  ${apiHtml}
   ${whereHtml}
 </main>
 </body>
@@ -1039,6 +1106,7 @@ function createApp(config = {}) {
   const DESTINATIONS_FILE = config.destinationsFile ?? process.env.ZEROCREDS_DESTINATIONS_FILE ?? path.join(os.homedir(), 'zerocreds-destinations.json');
   const INTEGRATORS_FILE = config.integratorsFile ?? process.env.ZEROCREDS_INTEGRATORS_FILE ?? path.join(os.homedir(), 'zerocreds-integrators.json');
   const BASE_URL = config.baseUrl ?? process.env.ZEROCREDS_BASE_URL ?? 'https://zerocreds.ru';
+  const SIGNING_KEY_FILE = config.signingKeyFile ?? process.env.ZEROCREDS_SIGNING_KEY_FILE ?? path.join(os.homedir(), 'zerocreds-signing-key.pem');
   // Unsafe-by-design conveniences for local/dev setups — all off unless explicitly enabled.
   const ALLOW_INLINE_DESTINATIONS = config.allowInlineDestinations ?? envFlag('ZEROCREDS_ALLOW_INLINE_DESTINATIONS');
   const DEST_OPTS = {
@@ -1065,6 +1133,9 @@ function createApp(config = {}) {
     }
   }
   loadNamedDestinations();
+
+  // Ed25519 key for form manifests and submission receipts (created on first start).
+  const SIGNING_KEY = loadSigningKey(SIGNING_KEY_FILE);
 
   // Integrators registry: sha256(token) → record. A Map, so no prototype keys can match.
   const INTEGRATORS = new Map();
@@ -1226,13 +1297,166 @@ function createApp(config = {}) {
     return {
       ...DEST_OPTS,
       tokensDir: path.join(AGENT_TOKENS_DIR, sub),
-      context: { uid: pending.uid, service: pending.service_slug },
+      context: templateContext(pending),
     };
   }
 
   function renderDynamicForm(res, req, token, pending) {
     const nonce = newNonce();
-    sendHtml(res, 200, dynamicFormHtml(token, pending, String(req.headers.host || ''), nonce), nonce);
+    const api = pending.form ? formApiSnippets(token, pending, BASE_URL) : null;
+    sendHtml(res, 200, dynamicFormHtml(token, pending, String(req.headers.host || ''), nonce, api), nonce);
+  }
+
+  // Probes an http_post destination before a session/form is created. Returns an error
+  // response body, or null. The upstream response body is never returned — only the status.
+  async function preflightDestination(dest, payload) {
+    if (payload.test_destination === false || dest?.type !== 'http_post') return null;
+    try {
+      await testDestination(dest, DEST_OPTS);
+      return null;
+    } catch (e) {
+      const detail = /^HTTP \d{3}$/.test(e.message) ? e.message
+        : e.code === 'EDESTBLOCKED' ? 'destination address is not allowed'
+        : 'request failed';
+      return {
+        error: 'destination_unreachable',
+        detail,
+        hint: 'Check destination URL and Authorization header. Pass test_destination: false to skip this check.',
+      };
+    }
+  }
+
+  function signedManifest(formId, pending) {
+    const { form } = pending;
+    const manifest = {
+      v: 1,
+      type: 'zerocreds.form_manifest',
+      form_id: formId,
+      handle: form.handle,
+      kind: form.kind,
+      owner: pending.integrator_id,
+      requester: requesterLabel(pending),
+      fields: pending.fields.map(f => ({ name: f.name, label: f.label, type: f.type || 'text', required: f.required !== false })),
+      destination: describeDestination(pending.destination, pending),
+      submit: {
+        method: 'POST',
+        url: `${BASE_URL}/api/forms/${formId}/submit`,
+        auth: 'Bearer <owner key> or Bearer <one-time submit token>',
+        body: { manifest_id: '<manifest_id>', fields: Object.fromEntries(pending.fields.map(f => [f.name, `<${f.name}>`])) },
+      },
+      human_url: `${BASE_URL}/f/${formId}`,
+      expires_at: new Date(pending.expires).toISOString(),
+      server: { version: VERSION, commit: COMMIT },
+    };
+    return { manifest_id: sha256Hex(canonicalJson(manifest)), ...signPayload(SIGNING_KEY, manifest) };
+  }
+
+  // Validates submitted values against the session, saves them and marks the link used.
+  // Shared by the human form (POST /f/:token) and machine submit (POST /api/forms/:id/submit).
+  // Returns { status, body }.
+  async function submitPending(token, pending, submitted, via) {
+    if (!submitted || typeof submitted !== 'object' || Array.isArray(submitted)) {
+      return { status: 400, body: { error: 'missing fields' } };
+    }
+    // Only keep declared field names — strip anything extra
+    const clean = Object.create(null);
+    for (const f of pending.fields) {
+      if (!Object.hasOwn(submitted, f.name)) continue;
+      const v = submitted[f.name];
+      if (!['string', 'number', 'boolean'].includes(typeof v)) return { status: 400, body: { error: `invalid value for field: ${f.name}` } };
+      clean[f.name] = String(v);
+    }
+
+    // Validate all required fields are present
+    for (const f of pending.fields) {
+      if (f.required !== false && !clean[f.name]) {
+        return { status: 400, body: { error: `missing required field: ${f.name}` } };
+      }
+    }
+
+    // Validate url fields
+    for (const f of pending.fields) {
+      if (f.type === 'url' && clean[f.name]) {
+        try {
+          const u = new URL(clean[f.name]);
+          if (!['http:', 'https:'].includes(u.protocol)) throw new Error();
+        } catch { return { status: 400, body: { error: `invalid URL for field: ${f.name}` } }; }
+      }
+    }
+
+    // One-time link: claim it before saving so concurrent submissions cannot both succeed.
+    if (!claimPending(token)) return { status: 403, body: { error: 'invalid or expired token' } };
+
+    let saveResult;
+    try {
+      const saveOpts = saveOptsFor(pending);
+      if (pending.destinations_by_level) {
+        // Group fields by level, route each group to its destination
+        const groups = {};
+        for (const f of pending.fields) {
+          const level = f.level || 'default';
+          if (!groups[level]) groups[level] = {};
+          if (clean[f.name] !== undefined) groups[level][f.name] = clean[f.name];
+        }
+        const secretIds = {};
+        for (const [level, groupFields] of Object.entries(groups)) {
+          if (Object.keys(groupFields).length === 0) continue;
+          const dest = destinationForField(pending, { level });
+          if (!dest) {
+            console.warn(`[dynamic] no destination for level "${level}", skipping:`, Object.keys(groupFields));
+            continue;
+          }
+          const r = await saveToDestination(dest, groupFields, saveOpts);
+          if (r?.secret_id) secretIds[level] = r.secret_id;
+        }
+        saveResult = { secret_ids: secretIds };
+      } else {
+        saveResult = await saveToDestination(pending.destination, { ...clean }, saveOpts);
+      }
+    } catch (e) {
+      // Let the user retry with the same link; never echo upstream details back.
+      releaseClaim(token);
+      console.error('[dynamic] save failed:', e.message);
+      return { status: 500, body: { error: 'failed to save credentials' } };
+    }
+
+    dropClaim(token);
+
+    // Forms get a signed receipt with the handle: what was saved and where, never the values.
+    let formResult = null;
+    if (pending.form) {
+      const receipt = signPayload(SIGNING_KEY, {
+        v: 1,
+        type: 'zerocreds.receipt',
+        form_id: token,
+        handle: pending.form.handle,
+        kind: pending.form.kind,
+        owner: pending.integrator_id,
+        manifest_id: pending.form.manifest_id,
+        fields: pending.fields.map(f => f.name).filter(n => clean[n] !== undefined),
+        destination: describeDestination(pending.destination, pending),
+        destination_ref: typeof saveResult?.secret_id === 'string' ? saveResult.secret_id : null,
+        submitted_via: via,
+        submitted_at: new Date().toISOString(),
+        server: { version: VERSION, commit: COMMIT },
+      });
+      formResult = { handle: pending.form.handle, receipt };
+    }
+
+    // .done file stores destination references — never the credentials themselves
+    try {
+      fs.writeFileSync(
+        pendingPath(token, 'done'),
+        JSON.stringify({ ...(saveResult || {}), ...(formResult || {}), _integrator_id: pending.integrator_id }),
+        { mode: 0o600 },
+      );
+    } catch {}
+
+    if (pending.notify?.tg_bot_token) {
+      tgNotify(pending.notify.tg_bot_token, pending.notify.tg_chat_id,
+        `✅ ${pending.title}: credentials received and saved.`);
+    }
+    return { status: 200, body: { ok: true, ...(formResult || {}) } };
   }
 
   async function handle(req, res) {
@@ -1559,20 +1783,8 @@ function createApp(config = {}) {
       // Default: on. Opt-out with test_destination: false in the request.
       // Only runs for http_post destinations (no external service to probe for others).
       // The upstream response body is never returned — only the HTTP status.
-      if (payload.test_destination !== false && resolvedDest?.type === 'http_post') {
-        try {
-          await testDestination(resolvedDest, DEST_OPTS);
-        } catch (e) {
-          const detail = /^HTTP \d{3}$/.test(e.message) ? e.message
-            : e.code === 'EDESTBLOCKED' ? 'destination address is not allowed'
-            : 'request failed';
-          return json(res, 400, {
-            error: 'destination_unreachable',
-            detail,
-            hint: 'Check destination URL and Authorization header. Pass test_destination: false to skip this check.',
-          });
-        }
-      }
+      const preflightError = await preflightDestination(resolvedDest, payload);
+      if (preflightError) return json(res, 400, preflightError);
 
       const integrator_id = integrator?.id || 'admin';
 
@@ -1624,6 +1836,109 @@ function createApp(config = {}) {
         url: url_out,
         expires_at: new Date(expires).toISOString(),
       });
+    }
+
+    // ── GET /.well-known/zerocreds-signing-key ─────────────────────────────────
+    // Public key that verifies form manifests and submission receipts.
+    if (req.method === 'GET' && url.pathname === '/.well-known/zerocreds-signing-key') {
+      return json(res, 200, { alg: 'Ed25519', key_id: SIGNING_KEY.keyId, public_key_pem: SIGNING_KEY.publicKeyPem });
+    }
+
+    // ── POST /api/forms — form spec ────────────────────────────────────────────
+    // One spec, two ways in: the human URL (/f/{form_id}) and the machine endpoint
+    // (/api/forms/{form_id}/submit). Same auth, validation and destination rules as sessions.
+    if (req.method === 'POST' && url.pathname === '/api/forms') {
+      const { isAdmin, integrator } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin && !integrator) return json(res, 401, { error: 'unauthorized' });
+      const payload = await readJson(req);
+      if (!payload) return json(res, 400, { error: 'bad json' });
+
+      const { name, kind = 'token', title, description, destination, ttl_minutes = 30 } = payload;
+      if (typeof name !== 'string' || !HANDLE_NAME_RE.test(name)) {
+        return json(res, 400, { error: 'name must match [a-z0-9][a-z0-9_.-]{0,63} (it becomes the handle cred:<name>)' });
+      }
+      if (typeof kind !== 'string' || !Object.hasOwn(FORM_KINDS, kind)) {
+        return json(res, 400, { error: `kind must be one of: ${Object.keys(FORM_KINDS).join(', ')}` });
+      }
+      if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 200)) {
+        return json(res, 400, { error: 'title must be a non-empty string (max 200 chars)' });
+      }
+      if (description != null && (typeof description !== 'string' || description.length > 2000)) {
+        return json(res, 400, { error: 'description must be a string (max 2000 chars)' });
+      }
+      const validated = validateFields(payload.fields === undefined ? FORM_KINDS[kind] : payload.fields);
+      if (validated.error) return json(res, 400, { error: validated.error });
+      if (destination === undefined || destination === null || destination === '') {
+        return json(res, 400, { error: 'missing destination' });
+      }
+      if (typeof ttl_minutes !== 'number' || !Number.isFinite(ttl_minutes)) {
+        return json(res, 400, { error: 'ttl_minutes must be a number' });
+      }
+      const r = resolveDestination(destination, integrator, isAdmin);
+      const destErr = r.error || validateDestination(r.dest, DEST_OPTS);
+      if (destErr) return json(res, 400, { error: destErr });
+      const preflightError = await preflightDestination(r.dest, payload);
+      if (preflightError) return json(res, 400, preflightError);
+
+      const formId = crypto.randomBytes(16).toString('hex');
+      const submitToken = 'zcs_' + crypto.randomBytes(24).toString('hex');
+      const pending = {
+        token: formId,
+        title: title || `Save ${name}`,
+        description: description || '',
+        fields: validated.fields,
+        destination: r.dest,
+        destinations_by_level: null,
+        expires: Date.now() + Math.min(Math.max(ttl_minutes, 1), 1440) * 60 * 1000,
+        notify: null,
+        integrator_id: integrator?.id || 'admin',
+        requester: integrator ? String(integrator.name || integrator.id).slice(0, 100) : null,
+        uid: null,
+        form: { name, kind, handle: `cred:${name}`, submit_token_hash: tokenHash(submitToken).toString('hex') },
+      };
+      const manifest = signedManifest(formId, pending);
+      pending.form.manifest_id = manifest.manifest_id;
+      fs.mkdirSync(CONNECT_PENDING_DIR, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(pendingPath(formId), JSON.stringify(pending), { mode: 0o600 });
+
+      return json(res, 200, {
+        form_id: formId,
+        handle: pending.form.handle,
+        url: `${BASE_URL}/f/${formId}`,
+        submit_url: `${BASE_URL}/api/forms/${formId}/submit`,
+        status_url: `${BASE_URL}/api/session/${formId}/status`,
+        submit_token: submitToken,
+        expires_at: new Date(pending.expires).toISOString(),
+        manifest,
+        api_example: formApiSnippets(formId, pending, BASE_URL),
+      });
+    }
+
+    // ── POST /api/forms/:id/submit — machine submit ────────────────────────────
+    // Auth: the owner's key (the integrator that created the form, or admin) or the
+    // form's one-time submit token. Returns the same signed receipt as the human form.
+    const formSubmitMatch = url.pathname.match(/^\/api\/forms\/([a-f0-9]{32})\/submit$/);
+    if (formSubmitMatch && req.method === 'POST') {
+      const formId = formSubmitMatch[1];
+      const pending = readPending(formId);
+      if (!pending?.form || !Array.isArray(pending.fields)) return json(res, 404, { error: 'invalid or expired form' });
+
+      const authHeader = req.headers['authorization'];
+      const bearer = typeof authHeader === 'string' && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+      const { isAdmin, integrator } = resolveAuth(authHeader);
+      const isOwner = isAdmin || (integrator !== null && integrator.id === pending.integrator_id);
+      const hasSubmitToken = SUBMIT_TOKEN_RE.test(bearer) &&
+        crypto.timingSafeEqual(tokenHash(bearer), Buffer.from(String(pending.form.submit_token_hash), 'hex'));
+      if (!isOwner && !hasSubmitToken) return json(res, 401, { error: 'owner key or submit token required' });
+
+      if (pending.expires < Date.now()) { deletePending(formId); return json(res, 404, { error: 'invalid or expired form' }); }
+      const payload = await readJson(req);
+      if (!payload) return json(res, 400, { error: 'bad json' });
+      if (payload.manifest_id !== undefined && payload.manifest_id !== pending.form.manifest_id) {
+        return json(res, 409, { error: 'manifest_id does not match this form' });
+      }
+      const result = await submitPending(formId, pending, payload.fields, 'api');
+      return json(res, result.status, result.body);
     }
 
     // ── GET /api/session/:token/status ─────────────────────────────────────────
@@ -1696,85 +2011,8 @@ function createApp(config = {}) {
         if (!pending || !Array.isArray(pending.fields)) return json(res, 403, { error: 'invalid or expired token' });
         if (pending.expires < Date.now()) { deletePending(token); return json(res, 403, { error: 'link expired' }); }
 
-        // Only keep declared field names — strip anything extra
-        const clean = Object.create(null);
-        for (const f of pending.fields) {
-          if (!Object.hasOwn(submitted, f.name)) continue;
-          const v = submitted[f.name];
-          if (!['string', 'number', 'boolean'].includes(typeof v)) return json(res, 400, { error: `invalid value for field: ${f.name}` });
-          clean[f.name] = String(v);
-        }
-
-        // Validate all required fields are present
-        for (const f of pending.fields) {
-          if (f.required !== false && !clean[f.name]) {
-            return json(res, 400, { error: `missing required field: ${f.name}` });
-          }
-        }
-
-        // Validate url fields
-        for (const f of pending.fields) {
-          if (f.type === 'url' && clean[f.name]) {
-            try {
-              const u = new URL(clean[f.name]);
-              if (!['http:', 'https:'].includes(u.protocol)) throw new Error();
-            } catch { return json(res, 400, { error: `invalid URL for field: ${f.name}` }); }
-          }
-        }
-
-        // One-time link: claim it before saving so concurrent submissions cannot both succeed.
-        if (!claimPending(token)) return json(res, 403, { error: 'invalid or expired token' });
-
-        let saveResult;
-        try {
-          const saveOpts = saveOptsFor(pending);
-          if (pending.destinations_by_level) {
-            // Group fields by level, route each group to its destination
-            const groups = {};
-            for (const f of pending.fields) {
-              const level = f.level || 'default';
-              if (!groups[level]) groups[level] = {};
-              if (clean[f.name] !== undefined) groups[level][f.name] = clean[f.name];
-            }
-            const secretIds = {};
-            for (const [level, groupFields] of Object.entries(groups)) {
-              if (Object.keys(groupFields).length === 0) continue;
-              const dest = destinationForField(pending, { level });
-              if (!dest) {
-                console.warn(`[dynamic] no destination for level "${level}", skipping:`, Object.keys(groupFields));
-                continue;
-              }
-              const r = await saveToDestination(dest, groupFields, saveOpts);
-              if (r?.secret_id) secretIds[level] = r.secret_id;
-            }
-            saveResult = { secret_ids: secretIds };
-          } else {
-            saveResult = await saveToDestination(pending.destination, { ...clean }, saveOpts);
-          }
-        } catch (e) {
-          // Let the user retry with the same link; never echo upstream details back.
-          releaseClaim(token);
-          console.error('[dynamic] save failed:', e.message);
-          return json(res, 500, { error: 'failed to save credentials' });
-        }
-
-        dropClaim(token);
-        // .done file stores destination references — never the credentials themselves
-        try {
-          fs.writeFileSync(
-            pendingPath(token, 'done'),
-            JSON.stringify({ ...(saveResult || {}), _integrator_id: pending.integrator_id }),
-            { mode: 0o600 },
-          );
-        } catch {}
-
-        json(res, 200, { ok: true });
-
-        if (pending.notify?.tg_bot_token) {
-          tgNotify(pending.notify.tg_bot_token, pending.notify.tg_chat_id,
-            `✅ ${pending.title}: credentials received and saved.`);
-        }
-        return;
+        const r = await submitPending(token, pending, submitted, 'form');
+        return json(res, r.status, r.body);
       }
 
       res.writeHead(405).end(); return;

@@ -238,6 +238,40 @@ Limits: `title` ≤ 200 chars, `description` ≤ 2000 chars (rendered as plain t
 
 Returns `{ "status": "pending" | "done" | "expired" }`. An integrator only sees its own sessions — anyone else's token reports `expired`. `done` markers are kept for 24 hours.
 
+### API-friendly forms (handles and signed receipts)
+
+A form spec is one form with two ways in: a URL for a human and a machine endpoint with the same schema. Both return the same signed receipt with a **handle** — `cred:<name>` in the owner's space. The handle is not a secret: pass it to runs, prompts and logs instead of the value.
+
+```http
+POST /api/forms
+Authorization: Bearer {integrator or admin token}
+
+{ "name": "cloudflare", "kind": "token", "destination": "prod-vault" }
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | Handle name, `[a-z0-9][a-z0-9_.-]{0,63}` → `cred:<name>`. Also available as `{{name}}` in `local_file` destination templates |
+| `kind` | string | no | `token` (default: one password field `token`) · `ssh` (`private_key`) · `login` (`username`, `password`) |
+| `fields` | array | no | Overrides the kind's default fields (same rules as sessions) |
+| `destination` | string or object | yes | Same rules as sessions: named destinations only unless inline is enabled; `http_post` allowlist applies |
+| `title`, `description`, `ttl_minutes`, `test_destination` | | no | As for sessions (`title` defaults to `Save <name>`) |
+
+Response: `form_id`, `handle`, `url` (human form, `/f/{form_id}`), `submit_url`, `status_url`, a one-time `submit_token` (returned once, stored only as a hash), `expires_at`, a signed `manifest` (`manifest_id` = sha256 of the canonical manifest: fields, destination, exact submit request, owner, server version) and `api_example` (`curl` and `sar cred put` with placeholders).
+
+```http
+POST /api/forms/{form_id}/submit
+Authorization: Bearer {owner key | submit_token}
+
+{ "manifest_id": "…", "fields": { "token": "…" } }
+```
+
+→ `{ ok, handle, receipt }`. Only the owner (the integrator that created the form, or the admin) or the form's submit token may submit; `manifest_id` is optional and must match if sent (409 otherwise). A form is one-time: after either the human or the machine submit it is closed. The human form (`POST /f/{form_id}`) returns the same receipt with `submitted_via: "form"`, and `GET /api/session/{form_id}/status` returns it to the owner once `done`.
+
+The receipt is `{ payload, alg: "Ed25519", key_id, signature }`; `signature` is base64url over the canonical JSON (sorted keys, no whitespace) of `payload`, which holds `handle`, `form_id`, `owner`, `manifest_id`, submitted field names, destination and `destination_ref`, `submitted_via`, `submitted_at` and the server version. It never contains values. The public key is at `GET /.well-known/zerocreds-signing-key`.
+
+The human form shows the handle next to the destination and has a **Copy as API request** block with the same request as `curl` (values read from env variables via `jq`) and `sar cred put …`; it never shows the submit token.
+
 ### Integrator management (admin token)
 
 | Endpoint | Body | Effect |
@@ -332,6 +366,7 @@ The form always shows, above the Submit button, who requested the data and the e
 | `ZEROCREDS_ALLOW_INLINE_DESTINATIONS` | off | `1` accepts inline destination objects and lets integrators add their own destinations. Local/dev only. |
 | `ZEROCREDS_ALLOW_PRIVATE_DESTINATIONS` | off | `1` allows `http://` and private/loopback addresses for `http_post` and `vault`. Local/dev only. |
 | `ZEROCREDS_PENDING_DIR`, `ZEROCREDS_TOKENS_DIR` | `~/connect-pending`, `~/agent-tokens` | Storage (created 0700). Expired session files are swept every 10 minutes. |
+| `ZEROCREDS_SIGNING_KEY_FILE` | `~/zerocreds-signing-key.pem` | Ed25519 key (PKCS#8 PEM) that signs form manifests and receipts. Created 0600 on first start; back it up — a new key means old receipts verify only against the old public key. |
 | `ZEROCREDS_DESTINATIONS_FILE`, `ZEROCREDS_INTEGRATORS_FILE` | `~/zerocreds-destinations.json`, `~/zerocreds-integrators.json` | Named destinations and integrator registry. |
 
 Integrator records created by the old open `/api/register` (they carry an `email` but no `status`) are treated as pending until approved.
@@ -426,7 +461,10 @@ nginx (443/80)
 ~/agent-tokens/             ← server writes (local_file destination; integrators under _integrators/{id}/)
 ~/zerocreds-destinations.json ← named destination configs (server reads at startup)
 ~/zerocreds-integrators.json  ← integrator registry (tokens, status, per-integrator destinations)
+~/zerocreds-signing-key.pem   ← Ed25519 key for form manifests and receipts (created on first start)
 ```
+
+Forms (`POST /api/forms`) are stored as pending sessions with a `form` block (`name`, `kind`, `handle`, `manifest_id`, `submit_token_hash`), so `/f/{form_id}`, status polling, one-time claiming and the sweeper work unchanged. Human and machine submits share `submitPending()` in `server/src/server.js`; signing lives in `server/src/receipts.js`.
 
 ### Deployment
 

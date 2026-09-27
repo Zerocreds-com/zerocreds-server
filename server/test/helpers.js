@@ -25,8 +25,9 @@ async function startServer(opts = {}) {
     allowPrivateDestinations: true,
     httpPostAllowedHosts: ['127.0.0.1'],
   };
+  const signingKeyFile = path.join(tmpDir, 'signing-key.pem');
   const server = createApp({
-    adminToken, pendingDir, tokensDir, destinationsFile, integratorsFile, baseUrl: 'http://test.local',
+    adminToken, pendingDir, tokensDir, destinationsFile, integratorsFile, signingKeyFile, baseUrl: 'http://test.local',
     ...relaxed,
     ...(opts.app || {}),
   });
@@ -39,7 +40,7 @@ async function startServer(opts = {}) {
   const port = server.address().port;
 
   return {
-    port, adminToken, tmpDir, pendingDir, tokensDir, integratorsFile, destinationsFile, server,
+    port, adminToken, tmpDir, pendingDir, tokensDir, integratorsFile, destinationsFile, signingKeyFile, server,
     async stop() {
       http.globalAgent.destroy();
       server.closeAllConnections();

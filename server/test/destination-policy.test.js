@@ -130,3 +130,32 @@ test('upstream response bodies are never returned to the caller', async () => {
     await mock.close();
   }
 });
+
+test('strict mode — POST /api/forms keeps the destination rules', async () => {
+  const srv = await startServer({
+    strict: true,
+    namedDestinations: {
+      local: { type: 'local_file', uid: '1', filename: 'n' },
+      hook: { type: 'http_post', url: 'https://not-allowed.example/hook' },
+    },
+    integrators: { tok_forms_strict: { id: 'fs1', name: 'F', status: 'active' } },
+  });
+  try {
+    const admin = { Authorization: `Bearer ${srv.adminToken}` };
+    const integ = { Authorization: 'Bearer tok_forms_strict' };
+    const inline = await request(srv.port, 'POST', '/api/forms',
+      { name: 'x', destination: { type: 'local_file', uid: '1', filename: 'x' } }, admin);
+    assert.equal(inline.status, 400);
+    assert.match(inline.body.error, /inline destinations are disabled/);
+    const hook = await request(srv.port, 'POST', '/api/forms', { name: 'x', destination: 'hook' }, admin);
+    assert.equal(hook.status, 400);
+    assert.match(hook.body.error, /allowlist|disabled/);
+    const pending = await request(srv.port, 'POST', '/api/forms', { name: 'x', destination: 'local' },
+      { Authorization: 'Bearer tok_unknown' });
+    assert.equal(pending.status, 401);
+    const named = await request(srv.port, 'POST', '/api/forms', { name: 'x', destination: 'local' }, integ);
+    assert.equal(named.status, 200);
+  } finally {
+    await srv.stop();
+  }
+});
