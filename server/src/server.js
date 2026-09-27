@@ -401,11 +401,48 @@ function expiredHtml() {
 }
 
 const LEVEL_META = {
-  secret:     { tag: 'SECRET',   color: '#6b3535', bg: '#160d0d', border: '#2a1818', label: 'Secret store',       aiSees: 'Never',          logs: 'Never logged', desc: 'Data goes directly to a secret store. The AI assistant never sees it.' },
-  pii:        { tag: 'PII DATA', color: '#6b5530', bg: '#151000', border: '#2a2010', label: 'Personal data',      aiSees: 'For tasks only', logs: 'Anonymised',   desc: 'The AI can use this for tasks. Not stored in logs in plain form.' },
-  attribute:  { tag: 'CONFIG',   color: '#3d4f6a', bg: '#0c1018', border: '#1a2030', label: 'Configuration',      aiSees: 'Openly',         logs: 'Yes',          desc: 'Open configuration. The AI uses this in every request.' },
-  credential: { tag: 'SESSION',  color: '#4a3a6a', bg: '#0f0c18', border: '#221838', label: 'Session credential', aiSees: 'This session',   logs: 'Never logged', desc: 'Used only in the current session. Not saved to logs.' },
+  secret:     { tag: 'SECRET',   label: 'Secret store',       aiSees: 'Never',          logs: 'Never logged', desc: 'Data goes directly to a secret store. The AI assistant never sees it.' },
+  pii:        { tag: 'PII DATA', label: 'Personal data',      aiSees: 'For tasks only', logs: 'Anonymised',   desc: 'The AI can use this for tasks. Not stored in logs in plain form.' },
+  attribute:  { tag: 'CONFIG',   label: 'Configuration',      aiSees: 'Openly',         logs: 'Yes',          desc: 'Open configuration. The AI uses this in every request.' },
+  credential: { tag: 'SESSION',  label: 'Session credential', aiSees: 'This session',   logs: 'Never logged', desc: 'Used only in the current session. Not saved to logs.' },
 };
+
+// Design tokens for the dynamic form (/f/:token). Light is the default; dark applies via
+// prefers-color-scheme or an explicit data-theme="dark" on <html> (user toggle, persisted).
+const FORM_THEME_LIGHT = [
+  'color-scheme:light',
+  '--bg:#eef2f9', '--glow:radial-gradient(1100px 520px at 50% -12%,rgba(99,102,241,.20),transparent 62%)',
+  '--card:#ffffff', '--border:#dde3ee', '--shadow:0 1px 2px rgba(16,24,40,.05),0 18px 40px -12px rgba(30,41,90,.18)',
+  '--text:#141b2d', '--muted:#4f5a70', '--faint:#626c82', '--link:#4338ca',
+  '--input-bg:#f7f9fc', '--input-border:#c9d2e1', '--placeholder:#8d97aa',
+  '--chip-bg:#eef1f7', '--chip-hover:#e2e7f0',
+  '--accent:#4f46e5', '--accent-2:#0ea5e9', '--accent-hover:#4338ca', '--accent-text:#ffffff',
+  '--ring:rgba(79,70,229,.28)', '--ring-strong:rgba(79,70,229,.6)', '--sticky-shadow:rgba(30,41,90,.25)',
+  '--ok:#067647', '--ok-bg:#ecfdf3', '--ok-border:#abefc6',
+  '--err:#b42318', '--err-bg:#fef3f2', '--err-border:#fecdca',
+  '--secret-fg:#b42318', '--secret-bg:#fef3f2', '--secret-border:#fda29b',
+  '--pii-fg:#a15c07', '--pii-bg:#fffaeb', '--pii-border:#fec84b',
+  '--attr-fg:#175cd3', '--attr-bg:#eff8ff', '--attr-border:#84caff',
+  '--cred-fg:#6941c6', '--cred-bg:#f9f5ff', '--cred-border:#d6bbfb',
+  '--show-sun:none', '--show-moon:block',
+].join(';');
+const FORM_THEME_DARK = [
+  'color-scheme:dark',
+  '--bg:#0a0d16', '--glow:radial-gradient(1100px 520px at 50% -12%,rgba(129,140,248,.16),transparent 62%)',
+  '--card:#131826', '--border:#262e42', '--shadow:0 1px 2px rgba(0,0,0,.4),0 18px 40px -12px rgba(0,0,0,.6)',
+  '--text:#e9edf5', '--muted:#a6afc2', '--faint:#8d96ab', '--link:#a5b4fc',
+  '--input-bg:#0e1320', '--input-border:#313a52', '--placeholder:#5f6880',
+  '--chip-bg:#1c2233', '--chip-hover:#252c40',
+  '--accent:#818cf8', '--accent-2:#22d3ee', '--accent-hover:#a5b4fc', '--accent-text:#0a0d16',
+  '--ring:rgba(129,140,248,.30)', '--ring-strong:rgba(165,180,252,.7)', '--sticky-shadow:rgba(0,0,0,.6)',
+  '--ok:#75e0a7', '--ok-bg:#0b2419', '--ok-border:#17553a',
+  '--err:#fda29b', '--err-bg:#2a1215', '--err-border:#6a2424',
+  '--secret-fg:#fda29b', '--secret-bg:#2a1215', '--secret-border:#6a2424',
+  '--pii-fg:#fec84b', '--pii-bg:#261c08', '--pii-border:#5c4412',
+  '--attr-fg:#84caff', '--attr-bg:#0c1c31', '--attr-border:#1f4470',
+  '--cred-fg:#d6bbfb', '--cred-bg:#1d1431', '--cred-border:#47307a',
+  '--show-sun:block', '--show-moon:none',
+].join(';');
 
 function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
   const fields = pending.fields || [];
@@ -423,14 +460,14 @@ function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
   function levelBadge(f) {
     const lm = LEVEL_META[f.level];
     if (!lm) return '';
-    return `<div class="level-tag"><span class="level-chip" style="color:${lm.color};background:${lm.bg};border-color:${lm.border}">${lm.tag}</span><button type="button" class="level-btn" onclick="toggleInfo('${f.name}')" title="What happens to this data?">ⓘ</button></div>`;
+    return `<div class="level-tag"><span class="level-chip lvl-${f.level}">${lm.tag}</span><button type="button" class="level-btn" data-action="toggle-info" data-target="info_${f.name}" aria-controls="info_${f.name}" aria-expanded="false" title="What happens to this data?" aria-label="What happens to this data?">ⓘ</button></div>`;
   }
 
   function levelInfoCard(f) {
     const lm = LEVEL_META[f.level];
     if (!lm) return '';
-    return `<div id="info_${f.name}" class="level-info" style="display:none;border-left-color:${lm.border};background:${lm.bg}">
-  <div class="level-info-title" style="color:${lm.color}">${lm.tag} — ${lm.label}</div>
+    return `<div id="info_${f.name}" class="level-info lvl-${f.level}" hidden>
+  <div class="level-info-title">${lm.tag} — ${lm.label}</div>
   <table class="level-table">
     <tr><td>ZeroCreds server</td><td>Receives</td></tr>
     <tr><td>AI assistant</td><td>${lm.aiSees}</td></tr>
@@ -450,7 +487,7 @@ function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
       return `${labelHtml}<textarea id="f_${f.name}" name="${f.name}" placeholder="${ph}" ${req} rows="4">${val}</textarea>`;
     }
     if (type === 'password') {
-      return `${labelHtml}<div class="pw-wrap"><input id="f_${f.name}" name="${f.name}" type="password" placeholder="${ph}" autocomplete="current-password" spellcheck="false" ${req}><button type="button" class="pw-btn eye" onclick="togglePw('f_${f.name}')" title="Show/hide">👁</button><button type="button" class="pw-btn paste" onclick="pastePw('f_${f.name}')">Paste</button></div>`;
+      return `${labelHtml}<div class="pw-wrap"><input id="f_${f.name}" name="${f.name}" type="password" placeholder="${ph}" autocomplete="current-password" spellcheck="false" ${req}><button type="button" class="pw-btn eye" data-action="toggle-pw" data-target="f_${f.name}" title="Show/hide" aria-label="Show or hide">👁</button><button type="button" class="pw-btn paste" data-action="paste" data-target="f_${f.name}">Paste</button></div>`;
     }
     const val = savedValues[f.name] ? ` value="${escAttr(savedValues[f.name])}"` : '';
     return `${labelHtml}<input id="f_${f.name}" name="${f.name}" type="${type}" placeholder="${ph}" autocomplete="off" spellcheck="false" ${req}${val}>`;
@@ -508,7 +545,7 @@ function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
     const fieldNames_ = group.map(f => escHtml(f.label)).join(', ');
 
     let html = `<div class="wb">`;
-    if (lm) html += `<div class="wb-head"><span class="wl-chip" style="color:${lm.color};background:${lm.bg};border:1px solid ${lm.border}">${lm.tag}</span><span class="wb-fields">${fieldNames_}</span></div>`;
+    if (lm) html += `<div class="wb-head"><span class="wl-chip lvl-${lvl}">${lm.tag}</span><span class="wb-fields">${fieldNames_}</span></div>`;
     else     html += `<div class="wb-head"><span class="wb-fields">${fieldNames_}</span></div>`;
     if (store) html += `<div class="wb-dest">Stored in: ${store}</div>`;
     if (behavior) html += `<div class="wb-note">${behavior.note}</div>`;
@@ -517,113 +554,141 @@ function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
   }
 
   const whereHtml = whereBlocks.length ? `<div class="where-wrap">
-  <button type="button" class="where-btn" onclick="toggleWhere()">How is this data handled? ▾</button>
-  <div id="where-info" class="where-info" style="display:none">${whereBlocks.join('<div class="wb-sep"></div>')}</div>
+  <button type="button" class="where-btn" data-action="toggle-where" data-target="where-info" aria-controls="where-info" aria-expanded="false">How is this data handled? ▾</button>
+  <div id="where-info" class="where-info" hidden>${whereBlocks.join('<div class="wb-sep"></div>')}</div>
 </div>` : '';
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
 <title>${escHtml(title)}</title>
 <style>
+  :root{${FORM_THEME_LIGHT}}
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){${FORM_THEME_DARK}}}
+  :root[data-theme="dark"]{${FORM_THEME_DARK}}
+  .lvl-secret{--lvl-fg:var(--secret-fg);--lvl-bg:var(--secret-bg);--lvl-border:var(--secret-border)}
+  .lvl-pii{--lvl-fg:var(--pii-fg);--lvl-bg:var(--pii-bg);--lvl-border:var(--pii-border)}
+  .lvl-attribute{--lvl-fg:var(--attr-fg);--lvl-bg:var(--attr-bg);--lvl-border:var(--attr-border)}
+  .lvl-credential{--lvl-fg:var(--cred-fg);--lvl-bg:var(--cred-bg);--lvl-border:var(--cred-border)}
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#111316;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;color:#9aa0b0}
-  .card{background:#18191f;border:1px solid #26282f;border-radius:5px;padding:32px;max-width:460px;width:100%}
-  h1{font-size:18px;font-weight:600;color:#dde0e8;margin-bottom:6px;letter-spacing:-.2px}
-  .sub{color:#5a606f;font-size:13.5px;margin-bottom:24px;line-height:1.55}
-  .sub b{color:#8a909f}
-  label{display:block;font-size:12px;font-weight:500;color:#6a707f;margin-bottom:6px;margin-top:18px;letter-spacing:.03em}
-  label:first-of-type{margin-top:0}
-  input,textarea{width:100%;background:#111316;border:1px solid #26282f;border-radius:4px;padding:10px 12px;font-size:14px;font-family:inherit;color:#dde0e8;outline:none;transition:border-color .15s;resize:vertical}
-  input:focus,textarea:focus{border-color:#4a505e}
-  input::placeholder,textarea::placeholder{color:#32353d}
+  [hidden]{display:none!important}
+  html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+  body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:16px;line-height:1.5;background:var(--glow),var(--bg);background-attachment:fixed;color:var(--text);display:flex;align-items:center;justify-content:center;min-height:100vh;min-height:100dvh;padding:40px 16px}
+  a{color:var(--link)}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:28px 32px 24px;max-width:480px;width:100%;box-shadow:var(--shadow)}
+  .zc-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:24px;padding-bottom:18px;border-bottom:1px solid var(--border)}
+  .zc-brand{display:flex;align-items:center;gap:10px;min-width:0}
+  .zc-dot{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,var(--accent),var(--accent-2));display:grid;place-items:center;flex-shrink:0;box-shadow:0 2px 8px -2px var(--ring)}
+  .zc-dot svg{width:16px;height:16px;color:#fff}
+  .zc-wordmark{font-size:16px;font-weight:700;color:var(--text);letter-spacing:-.2px}
+  .zc-tools{display:flex;align-items:center;gap:10px;min-width:0}
+  .zc-badge{font-size:12px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .zc-badge a{color:var(--faint);text-decoration-color:var(--border)}
+  .theme-btn{width:40px;height:40px;flex-shrink:0;border-radius:10px;border:1px solid var(--border);background:var(--input-bg);color:var(--muted);display:grid;place-items:center;cursor:pointer;transition:background .15s,color .15s}
+  .theme-btn:hover{color:var(--text);background:var(--chip-bg)}
+  .theme-btn svg{width:18px;height:18px}
+  .theme-btn .i-sun{display:var(--show-sun)}
+  .theme-btn .i-moon{display:var(--show-moon)}
+  h1{font-size:22px;line-height:1.3;font-weight:700;color:var(--text);margin-bottom:6px;letter-spacing:-.3px}
+  .sub{color:var(--muted);font-size:15px;margin-bottom:24px;line-height:1.55}
+  .sub b{color:var(--text)}
+  label,.field-label{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:14px;font-weight:600;color:var(--text);margin-bottom:8px;margin-top:20px}
+  #form-view > label:first-of-type{margin-top:0}
+  input,textarea{width:100%;min-height:48px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:10px;padding:12px 14px;font-size:16px;font-family:inherit;color:var(--text);outline:none;transition:border-color .15s,box-shadow .15s;resize:vertical}
+  input:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 4px var(--ring)}
+  input::placeholder,textarea::placeholder{color:var(--placeholder)}
   .pw-wrap{position:relative}
-  .pw-wrap input{padding-right:108px;font-family:'SF Mono',Monaco,Consolas,monospace;font-size:13px;letter-spacing:.02em}
-  .pw-btn{position:absolute;top:50%;transform:translateY(-50%);border:none;cursor:pointer;background:none;color:#505560;margin:0;width:auto;line-height:1;padding:4px 6px;border-radius:3px;font-size:13px;transition:color .15s}
-  .pw-btn:hover{color:#9aa0b0;background:#22242c}
-  .pw-btn.eye{right:62px}
-  .pw-btn.paste{right:8px;background:#22242c;color:#7a8090;font-weight:600;font-size:11px;padding:3px 9px;border:1px solid #2e3038;border-radius:3px;letter-spacing:.03em}
-  .pw-btn.paste:hover{background:#2a2c35;color:#9aa0b0}
-  button#btn{margin-top:20px;width:100%;background:#dde0e8;color:#111316;border:none;border-radius:4px;padding:11px;font-size:14px;font-weight:600;cursor:pointer;letter-spacing:.01em;transition:background .15s}
-  button#btn:hover{background:#eef0f5}
-  button#btn:disabled{opacity:.3;cursor:default}
-  .msg{margin-top:12px;padding:10px 12px;border-radius:4px;font-size:13px;display:none;border-left:2px solid}
-  .msg.ok{background:#0d1a12;color:#6bcf8a;border-color:#2a5c3a}
-  .msg.err{background:#1a0e0e;color:#cf6b6b;border-color:#5c2a2a}
-  .zc-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;padding-bottom:18px;border-bottom:1px solid #22242c}
-  .zc-brand{display:flex;align-items:center;gap:8px}
-  .zc-wordmark{font-size:14px;font-weight:700;color:#dde0e8;letter-spacing:-.2px}
-  .zc-badge{font-size:11px;font-weight:400;color:#3d4255;background:none;border:none;padding:0;letter-spacing:0}
-  .zc-badge a{color:#3d4255;text-decoration:none;border-bottom:1px solid #2e3040}
-  .zc-badge a:hover{color:#6a707f}
-  #done{display:none;text-align:center;padding:12px 0}
-  #done .check-icon{width:48px;height:48px;background:#0d1a12;border:1px solid #2a5c3a;border-radius:4px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;color:#6bcf8a;font-size:22px}
-  .lock{font-size:11px;color:#2a2d35;margin-top:20px;text-align:center;letter-spacing:.02em}
-  .lock a{color:#2a2d35;text-decoration:none}
-  .lock a:hover{color:#5a606f}
-  #zc-timer{color:#3d4255}
-  .where-wrap{margin-top:18px;padding-top:16px;border-top:1px solid #22242c}
-  .where-btn{background:none;border:none;cursor:pointer;font-size:11px;color:#3d4255;letter-spacing:.02em;padding:0;text-decoration:underline;text-underline-offset:3px;text-decoration-color:#2e3040;width:auto;display:block;margin:0 auto}
-  .where-btn:hover{color:#6a707f}
-  .where-info{margin-top:14px;font-size:12px}
+  .pw-wrap input{padding-right:128px;font-family:ui-monospace,'SF Mono',Monaco,Consolas,monospace;letter-spacing:.02em}
+  .pw-btn{position:absolute;top:50%;transform:translateY(-50%);height:36px;min-width:36px;border:1px solid transparent;cursor:pointer;background:none;color:var(--muted);line-height:1;padding:0 8px;border-radius:8px;font-size:15px;font-family:inherit;transition:color .15s,background .15s}
+  .pw-btn:hover{color:var(--text);background:var(--chip-bg)}
+  .pw-btn.eye{right:74px}
+  .pw-btn.paste{right:6px;background:var(--chip-bg);border-color:var(--border);color:var(--text);font-weight:600;font-size:13px;padding:0 12px}
+  .pw-btn.paste:hover{background:var(--chip-hover)}
+  .actions{margin-top:24px}
+  button#btn{width:100%;min-height:52px;background:var(--accent);color:var(--accent-text);border:none;border-radius:12px;padding:12px;font-size:16px;font-weight:700;font-family:inherit;cursor:pointer;letter-spacing:.01em;box-shadow:0 6px 16px -6px var(--ring);transition:background .15s,transform .05s}
+  button#btn:hover{background:var(--accent-hover)}
+  button#btn:active{transform:translateY(1px)}
+  button#btn:disabled{opacity:.55;cursor:default}
+  button:focus-visible,a:focus-visible{outline:3px solid var(--ring-strong);outline-offset:2px}
+  .msg{margin-top:12px;padding:10px 14px;border-radius:10px;font-size:14px;border:1px solid;border-left-width:4px}
+  .msg.ok{background:var(--ok-bg);color:var(--ok);border-color:var(--ok-border)}
+  .msg.err{background:var(--err-bg);color:var(--err);border-color:var(--err-border)}
+  #done{text-align:center;padding:12px 0}
+  #done .check-icon{width:56px;height:56px;background:var(--ok-bg);border:1px solid var(--ok-border);border-radius:50%;display:grid;place-items:center;margin:0 auto 16px;color:var(--ok);font-size:26px;font-weight:700}
+  .lock{font-size:12px;color:var(--faint);margin-top:20px;text-align:center;letter-spacing:.01em}
+  .lock a{color:var(--faint)}
+  .lock a:hover,.zc-badge a:hover{color:var(--text)}
+  #zc-timer{font-variant-numeric:tabular-nums}
+  #zc-timer.expired{color:var(--err);font-weight:600}
+  .where-wrap{margin-top:16px;padding-top:12px;border-top:1px solid var(--border)}
+  .where-btn{background:none;border:none;cursor:pointer;font-size:13px;font-family:inherit;color:var(--muted);padding:10px 8px;text-decoration:underline;text-underline-offset:3px;text-decoration-color:var(--border);display:block;margin:0 auto;border-radius:8px}
+  .where-btn:hover{color:var(--text)}
+  .where-info{margin-top:8px;padding:4px 14px;font-size:13px;background:var(--input-bg);border:1px solid var(--border);border-radius:12px}
   .wb{padding:10px 0}
-  .wb-sep{border-top:1px solid #1e2028;margin:2px 0}
-  .wb-head{display:flex;align-items:center;gap:8px;margin-bottom:5px}
-  .wb-fields{font-size:12px;color:#6a707f}
-  .wb-dest{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:10px;color:#3d4255;margin-bottom:4px;padding-left:1px}
-  .wb-note{font-size:11px;color:#4a5060;line-height:1.5}
-  .wl-chip{font-size:9px;font-weight:700;letter-spacing:.08em;padding:1px 5px;border-radius:3px;flex-shrink:0}
-  .field-label{display:flex;align-items:center;justify-content:space-between;font-size:12px;font-weight:500;color:#6a707f;margin-bottom:6px;margin-top:18px;letter-spacing:.03em}
-  .field-label:first-of-type{margin-top:0}
-  .level-tag{display:flex;align-items:center;gap:5px;flex-shrink:0}
-  .level-chip{font-size:9px;font-weight:700;letter-spacing:.1em;padding:2px 6px;border-radius:3px;border:1px solid;text-transform:uppercase;white-space:nowrap}
-  .level-btn{background:none;border:none;cursor:pointer;padding:0 2px;margin:0;width:auto;font-size:12px;line-height:1;color:#30333c;transition:color .15s}
-  .level-btn:hover{color:#6a707f}
-  .level-info{margin-top:6px;margin-bottom:10px;padding:12px 14px;border-radius:4px;font-size:12px;line-height:1.5;border-left:2px solid}
-  .level-info-title{font-weight:700;margin-bottom:8px;font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+  .wb-sep{border-top:1px solid var(--border)}
+  .wb-head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+  .wb-fields{font-size:14px;font-weight:600;color:var(--text)}
+  .wb-dest{font-family:ui-monospace,'SF Mono',Monaco,Consolas,monospace;font-size:12px;color:var(--muted);margin-bottom:4px;overflow-wrap:anywhere}
+  .wb-note{font-size:13px;color:var(--muted);line-height:1.5}
+  .level-tag{display:flex;align-items:center;gap:4px;flex-shrink:0}
+  .level-chip,.wl-chip{font-size:10px;font-weight:700;letter-spacing:.08em;padding:3px 7px;border-radius:6px;text-transform:uppercase;white-space:nowrap;flex-shrink:0;color:var(--lvl-fg);background:var(--lvl-bg);border:1px solid var(--lvl-border)}
+  .level-btn{background:none;border:none;cursor:pointer;width:32px;height:32px;border-radius:8px;font-size:15px;line-height:1;color:var(--faint);transition:color .15s,background .15s}
+  .level-btn:hover{color:var(--text);background:var(--chip-bg)}
+  .level-info{margin-top:-2px;margin-bottom:10px;padding:12px 14px;border-radius:10px;font-size:13px;line-height:1.5;background:var(--lvl-bg);border:1px solid var(--lvl-border);border-left-width:4px}
+  .level-info-title{font-weight:700;margin-bottom:8px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--lvl-fg)}
   .level-table{border-collapse:collapse;width:100%;margin-bottom:8px}
-  .level-table td{padding:3px 0;font-size:11px}
-  .level-table td:first-child{color:#505560;width:55%}
-  .level-table td:last-child{font-weight:600;color:#9aa0b0}
-  .level-desc{color:#505560;font-size:11px;line-height:1.5}
+  .level-table td{padding:3px 0;font-size:13px}
+  .level-table td:first-child{color:var(--muted);width:55%}
+  .level-table td:last-child{font-weight:600;color:var(--text)}
+  .level-desc{color:var(--muted);font-size:13px;line-height:1.5}
+  @media (max-width:560px){
+    body{padding:0;align-items:stretch}
+    .card{max-width:none;min-height:100vh;min-height:100dvh;border:none;border-radius:0;box-shadow:none;padding:16px 16px 24px}
+    .zc-header{margin-bottom:20px;padding-bottom:14px}
+    input,textarea{min-height:52px}
+    .pw-btn{height:40px;min-width:40px}
+    .pw-btn.eye{right:78px}
+    .actions{position:sticky;bottom:0;z-index:5;margin:20px -16px 0;padding:12px 16px calc(12px + env(safe-area-inset-bottom));background:var(--card);border-top:1px solid var(--border);box-shadow:0 -8px 24px -12px var(--sticky-shadow)}
+    .level-btn{width:40px;height:40px}
+  }
 </style>
-</head>
-<body>
-<div class="card">
-  <div class="zc-header">
-    <div class="zc-brand">
-      <div class="zc-dot"></div>
-      <span class="zc-wordmark">ZeroCreds</span>
-    </div>
-    <span class="zc-badge">${hostBadge}</span>
-  </div>
-  <div id="form-view">
-    <h1>${escHtml(title)}</h1>
-    <p class="sub">${description}</p>
-    ${fieldHtml}
-    <button id="btn" onclick="submit()">Submit</button>
-    <div id="msg" class="msg"></div>
-  </div>
-  <div id="done">
-    <div class="check-icon">✓</div>
-    <h1>Done</h1>
-    <p class="sub">Credentials saved. You can close this page.</p>
-  </div>
-  <p class="lock"><span id="zc-timer"></span> &middot; One-time link &middot; <a href="https://github.com/Zerocreds-com/zerocreds-server" target="_blank" rel="noopener">v${VERSION}</a></p>
-  ${whereHtml}
-</div>
 <script>
+(function(){try{var t=localStorage.getItem('zc-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
 const T = '${token}';
 const FIELD_NAMES = ${fieldNames};
+const EXPIRES = ${pending.expires};
+function currentTheme() {
+  const t = document.documentElement.getAttribute('data-theme');
+  if (t) return t;
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+function syncThemeBtn() {
+  const b = document.getElementById('theme-btn');
+  if (!b) return;
+  const dark = currentTheme() === 'dark';
+  const label = dark ? 'Switch to light theme' : 'Switch to dark theme';
+  b.setAttribute('aria-pressed', String(dark));
+  b.setAttribute('aria-label', label);
+  b.title = label;
+}
+function toggleTheme() {
+  const next = currentTheme() === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  try { localStorage.setItem('zc-theme', next); } catch {}
+  syncThemeBtn();
+}
 function togglePw(id) {
   const el = document.getElementById(id);
-  el.type = el.type === 'password' ? 'text' : 'password';
+  if (el) el.type = el.type === 'password' ? 'text' : 'password';
 }
-function toggleInfo(name) {
-  const el = document.getElementById('info_' + name);
-  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+function toggleHidden(id, btn) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.hidden = !el.hidden;
+  btn.setAttribute('aria-expanded', String(!el.hidden));
 }
 async function pastePw(id) {
   try {
@@ -654,8 +719,8 @@ async function submit() {
     });
     const d = await r.json();
     if (d.ok) {
-      document.getElementById('form-view').style.display = 'none';
-      document.getElementById('done').style.display = '';
+      document.getElementById('form-view').hidden = true;
+      document.getElementById('done').hidden = false;
     } else {
       showMsg('err', d.detail ? (d.error + ': ' + d.detail) : (d.error || 'Server error'));
       btn.disabled = false; btn.textContent = 'Submit';
@@ -667,30 +732,72 @@ async function submit() {
 }
 function showMsg(cls, text) {
   const el = document.getElementById('msg');
-  el.className = 'msg ' + cls; el.textContent = text; el.style.display = 'block';
+  el.className = 'msg ' + cls; el.textContent = text; el.hidden = false;
 }
+document.addEventListener('click', e => {
+  const b = e.target.closest && e.target.closest('[data-action]');
+  if (!b) return;
+  const target = b.getAttribute('data-target');
+  switch (b.getAttribute('data-action')) {
+    case 'theme': toggleTheme(); break;
+    case 'toggle-pw': togglePw(target); break;
+    case 'paste': pastePw(target); break;
+    case 'toggle-info':
+    case 'toggle-where': toggleHidden(target, b); break;
+    case 'submit': submit(); break;
+  }
+});
 document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.target.tagName === 'INPUT') submit();
 });
-function toggleWhere() {
-  const el = document.getElementById('where-info');
-  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
-}
-(function() {
-  const exp = ${pending.expires};
+document.addEventListener('DOMContentLoaded', () => {
+  syncThemeBtn();
   const el = document.getElementById('zc-timer');
   if (!el) return;
   function tick() {
-    const left = Math.max(0, exp - Date.now());
+    const left = Math.max(0, EXPIRES - Date.now());
     const m = Math.floor(left / 60000);
     const s = Math.floor((left % 60000) / 1000);
     el.textContent = m + ':' + String(s).padStart(2, '0') + ' remaining';
     if (left > 0) setTimeout(tick, 1000);
-    else { el.textContent = 'link expired'; el.style.color = '#cf6b6b'; }
+    else { el.textContent = 'link expired'; el.classList.add('expired'); }
   }
   tick();
-})();
+});
 </script>
+</head>
+<body>
+<main class="card">
+  <div class="zc-header">
+    <div class="zc-brand">
+      <div class="zc-dot" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></div>
+      <span class="zc-wordmark">ZeroCreds</span>
+    </div>
+    <div class="zc-tools">
+      <span class="zc-badge">${hostBadge}</span>
+      <button type="button" id="theme-btn" class="theme-btn" data-action="theme" aria-label="Toggle color theme" title="Toggle color theme">
+        <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      </button>
+    </div>
+  </div>
+  <div id="form-view">
+    <h1>${escHtml(title)}</h1>
+    <p class="sub">${description}</p>
+    ${fieldHtml}
+    <div class="actions">
+      <button id="btn" type="button" data-action="submit">Submit</button>
+      <div id="msg" class="msg" role="alert" hidden></div>
+    </div>
+  </div>
+  <div id="done" hidden>
+    <div class="check-icon" aria-hidden="true">✓</div>
+    <h1>Done</h1>
+    <p class="sub">Credentials saved. You can close this page.</p>
+  </div>
+  <p class="lock"><span id="zc-timer"></span> &middot; One-time link &middot; <a href="https://github.com/Zerocreds-com/zerocreds-server" target="_blank" rel="noopener">v${VERSION}</a></p>
+  ${whereHtml}
+</main>
 </body>
 </html>`;
 }
