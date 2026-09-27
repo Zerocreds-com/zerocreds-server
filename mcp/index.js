@@ -44,12 +44,12 @@ server.tool(
       level: z.enum(['secret', 'pii', 'attribute', 'credential']).optional().describe('Sensitivity badge shown on the form. "secret" = passwords/tokens (never logged, badge: SECRET); "pii" = personal data like username/email/domain (anonymised in logs, badge: PII DATA); "attribute" = open config the AI can see freely (badge: CONFIG); "credential" = session-scoped tokens, used once (never logged, badge: SESSION). Omit to fall back to "default" grouping.'),
     })).describe('List of fields to collect. level is optional — fields without it fall back to "default" grouping in destinations_by_level.'),
     destination: z.union([
-      z.string().describe('Named destination from zerocreds-destinations.json'),
+      z.string().describe('Named destination configured by the server admin (the default and, on production servers, the only option)'),
       z.object({
         type: z.enum(['local_file', 'gcp_secret_manager', 'aws_secrets_manager', 'vault']),
         uid: z.string().optional(),
         filename: z.string().optional(),
-      }).passthrough().describe('Inline destination config'),
+      }).passthrough().describe('Inline destination config — only accepted when the server sets ZEROCREDS_ALLOW_INLINE_DESTINATIONS=1'),
     ]).describe('Where to save the credentials'),
     ttl_minutes: z.number().int().min(1).max(1440).optional().describe('Link expiry in minutes (default: 30)'),
     notify: z.object({

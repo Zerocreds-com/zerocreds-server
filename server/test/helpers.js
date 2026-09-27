@@ -9,10 +9,6 @@ async function startServer(opts = {}) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zc-test-'));
   const pendingDir = path.join(tmpDir, 'pending');
   const tokensDir = path.join(tmpDir, 'tokens');
-  const savedDir = path.join(tmpDir, 'saved');
-  fs.mkdirSync(pendingDir);
-  fs.mkdirSync(tokensDir);
-  fs.mkdirSync(savedDir);
 
   const adminToken = opts.adminToken ?? ('test-' + crypto.randomBytes(8).toString('hex'));
   const destinationsFile = path.join(tmpDir, 'destinations.json');
@@ -21,7 +17,19 @@ async function startServer(opts = {}) {
   fs.writeFileSync(integratorsFile, JSON.stringify(opts.integrators || {}));
 
   const { createApp } = require('../src/server');
-  const server = createApp({ adminToken, pendingDir, tokensDir, savedDir, destinationsFile, integratorsFile, baseUrl: 'http://test.local' });
+  // Most suites talk to loopback mock servers over plain http and use inline
+  // destinations, so they opt into the dev-only relaxations. Security suites pass
+  // `strict: true` to get the production defaults.
+  const relaxed = opts.strict ? {} : {
+    allowInlineDestinations: true,
+    allowPrivateDestinations: true,
+    httpPostAllowedHosts: ['127.0.0.1'],
+  };
+  const server = createApp({
+    adminToken, pendingDir, tokensDir, destinationsFile, integratorsFile, baseUrl: 'http://test.local',
+    ...relaxed,
+    ...(opts.app || {}),
+  });
 
   await new Promise((resolve, reject) => {
     server.listen(0, '127.0.0.1', resolve);
@@ -31,7 +39,7 @@ async function startServer(opts = {}) {
   const port = server.address().port;
 
   return {
-    port, adminToken, tmpDir, pendingDir, tokensDir, savedDir, integratorsFile, destinationsFile, server,
+    port, adminToken, tmpDir, pendingDir, tokensDir, integratorsFile, destinationsFile, server,
     async stop() {
       http.globalAgent.destroy();
       server.closeAllConnections();

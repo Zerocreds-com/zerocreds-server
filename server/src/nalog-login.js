@@ -131,21 +131,11 @@ async function startNalogLogin(userId, login, password, opts = {}) {
       return { error: 'Не удалось найти кнопку "Войти через Госуслуги"' };
     }
 
-    console.log('[nalog-login] on ESIA, filling credentials, url=%s', page.url());
+    console.log('[nalog-login] on ESIA, filling credentials, url=%s', page.url().split('?')[0]);
 
     // Wait for any input to appear (ESIA SPA takes time to render)
     await page.waitForSelector('input', { state: 'visible', timeout: 25000 }).catch(() => {});
-    // Log full page state for debugging
-    const esiaState = await page.evaluate(() => ({
-      url: location.href,
-      inputs: Array.from(document.querySelectorAll('input')).map(el => `${el.type}#${el.id}[${el.name}]ac=${el.autocomplete}`).join(' | '),
-      buttons: Array.from(document.querySelectorAll('button')).map(b => `${b.type}:"${b.textContent.trim().slice(0, 20)}"[${b.className.slice(0, 40)}]`).join(' | '),
-      bodyText: document.body?.innerText?.slice(0, 200) || '',
-    }));
-    console.log('[nalog-login] ESIA state: url=%s inputs=%s buttons=%s text=%s',
-      esiaState.url, esiaState.inputs, esiaState.buttons, esiaState.bodyText.replace(/\n/g, ' '));
-    // Save screenshot for debugging
-    await page.screenshot({ path: `/tmp/esia-${Date.now()}.png`, fullPage: true }).catch(() => {});
+    // No screenshots or page text are recorded: ESIA pages contain personal data.
 
     // Wait for the form to fully render before touching anything
     const loginInput = page.locator('#login, input[name="login"], input[autocomplete="username"]').first();
@@ -154,14 +144,6 @@ async function startNalogLogin(userId, login, password, opts = {}) {
     const pwInput = page.locator('#password, input[name="password"], input[type="password"]').first();
     // Check if password field is also visible right now (single-step form)
     const pwAlreadyVisible = await pwInput.isVisible({ timeout: 3000 }).catch(() => false);
-
-    // Log what's on the page for debugging
-    const pageState = await page.evaluate(() => ({
-      buttons: Array.from(document.querySelectorAll('button'))
-        .map(b => `${b.type}:"${b.textContent.trim().slice(0, 25)}"[${b.className.slice(0, 40)}]`)
-        .join(' | '),
-    }));
-    console.log('[nalog-login] ESIA buttons: %s', pageState.buttons);
 
     await loginInput.fill(login);
     await page.waitForTimeout(300);
@@ -179,7 +161,7 @@ async function startNalogLogin(userId, login, password, opts = {}) {
         if (btn) { btn.click(); return btn.textContent.trim().slice(0, 30); }
         return null;
       });
-      console.log('[nalog-login] ESIA two-step next clicked: %s', clicked);
+      console.log('[nalog-login] ESIA two-step next clicked: %s', clicked ? 'yes' : 'no');
       try {
         await pwInput.waitFor({ state: 'visible', timeout: 15000 });
       } catch {
@@ -203,16 +185,7 @@ async function startNalogLogin(userId, login, password, opts = {}) {
     });
 
     console.log('[nalog-login] credentials submitted, waiting for outcome');
-    // Screenshot immediately after clicking Войти — shows what ESIA does next
     await page.waitForTimeout(2000);
-    await page.screenshot({ path: `/tmp/esia-after-${Date.now()}.png`, fullPage: true }).catch(() => {});
-    const afterState = await page.evaluate(() => ({
-      url: location.href,
-      bodyText: document.body?.innerText?.slice(0, 300).replace(/\n/g, ' ') || '',
-      inputs: Array.from(document.querySelectorAll('input')).map(el => `${el.type}#${el.id}`).join(' | '),
-    }));
-    console.log('[nalog-login] after-submit state: url=%s inputs=%s text=%s',
-      afterState.url, afterState.inputs, afterState.bodyText);
 
     const outcome = await Promise.race([
       // Success: back on nalog.ru (not on /auth/ sub-path)
@@ -235,17 +208,12 @@ async function startNalogLogin(userId, login, password, opts = {}) {
     if (outcome === 'need_code') {
       const sessionId = crypto.randomBytes(16).toString('hex');
       pendingSessions.set(sessionId, { browser, page, context, userId, tgBotToken: opts.tgBotToken, expires: Date.now() + SESSION_TTL_MS });
-      console.log('[nalog-login] 2FA required, sessionId=%s', sessionId);
+      console.log('[nalog-login] 2FA required');
       return { status: 'need_code', sessionId };
     }
 
-    // Timeout — snapshot what the page looks like and any error text
-    const timeoutSnap = await page.evaluate(() => ({
-      url: location.href,
-      text: document.body?.innerText?.slice(0, 400).replace(/\n/g, ' ') || '',
-    })).catch(() => ({ url: '?', text: '' }));
-    await page.screenshot({ path: `/tmp/esia-timeout-${Date.now()}.png`, fullPage: true }).catch(() => {});
-    console.log('[nalog-login] timeout: url=%s text=%s', timeoutSnap.url, timeoutSnap.text);
+    // Timeout — surface ESIA's own error text to the user (not to the logs)
+    console.log('[nalog-login] timeout waiting for ESIA outcome');
     const errEl = await page.$('.form__error, .error-text, [class*="error"], .esia-input__error-text');
     const errText = errEl ? (await errEl.textContent() || '').trim().slice(0, 200) : '';
     await browser.close();
@@ -303,7 +271,7 @@ async function extractAndSave(page, browser, userId) {
     if (!tokens.auth_token) return { error: 'Вошли, но auth.token не появился в sessionStorage' };
 
     const dir = path.join(os.homedir(), 'agent-tokens', String(userId));
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     fs.writeFileSync(path.join(dir, 'nalog'), JSON.stringify(tokens, null, 2), { mode: 0o600 });
     console.log('[nalog-login] token saved, userId=%s, expires=%s', userId, tokens.expires);
 
