@@ -56,3 +56,52 @@ test('description with HTML tags — rendered as-is (trusted content)', async ()
   const html = await getFormHtml(undefined, 'Test', 'Enter your <b>token</b> below.');
   assert.ok(html.includes('<b>token</b>'), 'description HTML should pass through unescaped');
 });
+
+// ── Z8 form design: CSP-friendly markup, theming, mobile ──
+
+const designFields = [
+  { name: 'user', label: 'User', level: 'attribute' },
+  { name: 'pw', label: 'Password', type: 'password', level: 'secret' },
+];
+
+test('form markup has no inline event handlers and no inline style attributes', async () => {
+  const html = await getFormHtml(designFields);
+  assert.ok(!/<[^>]+\son[a-z]+\s*=/i.test(html), 'no on*= handler attributes (strict CSP)');
+  assert.ok(!/<[^>]+\sstyle\s*=/i.test(html), 'no style= attributes (strict CSP)');
+  assert.equal((html.match(/<script\b/g) || []).length, 1, 'exactly one inline script block');
+  assert.ok(!/<script[^>]+src=/.test(html), 'no external scripts');
+  assert.ok(!/<link[^>]+stylesheet/.test(html), 'no external stylesheets/fonts');
+});
+
+test('interactive controls are wired via data-action (show/hide, paste, info, submit, theme)', async () => {
+  const html = await getFormHtml(designFields);
+  for (const a of ['toggle-pw', 'paste', 'toggle-info', 'toggle-where', 'submit', 'theme']) {
+    assert.ok(html.includes(`data-action="${a}"`), `data-action="${a}" present`);
+  }
+  assert.ok(html.includes('data-target="f_pw"'), 'password buttons target the password input');
+});
+
+test('light/dark theme: prefers-color-scheme default, explicit override, persisted choice', async () => {
+  const html = await getFormHtml(designFields);
+  assert.ok(html.includes('@media (prefers-color-scheme:dark){:root:not([data-theme="light"])'), 'dark default follows system');
+  assert.ok(html.includes(':root[data-theme="dark"]'), 'explicit dark override');
+  assert.ok(html.includes('<meta name="color-scheme" content="light dark">'));
+  assert.ok(html.includes("localStorage.getItem('zc-theme')"), 'stored choice read');
+  assert.ok(html.includes("localStorage.setItem('zc-theme'"), 'choice persisted');
+  assert.ok(html.indexOf('<script') < html.indexOf('<body'), 'theme applied in <head> before first paint (no flash)');
+  assert.ok(html.includes('id="theme-btn"'), 'toggle button rendered');
+});
+
+test('mobile: 16px inputs (no iOS zoom) and sticky submit on small screens', async () => {
+  const html = await getFormHtml(designFields);
+  assert.match(html, /input,textarea\{[^}]*font-size:16px/);
+  assert.match(html, /@media \(max-width:560px\)\{[\s\S]*\.actions\{position:sticky;bottom:0/);
+  assert.ok(html.includes('<div class="actions">'), 'submit wrapped in sticky actions bar');
+});
+
+test('level chips use theme classes, not inline colours', async () => {
+  const html = await getFormHtml(designFields);
+  assert.ok(html.includes('class="level-chip lvl-secret"'));
+  assert.ok(html.includes('class="level-info lvl-secret" hidden'));
+  assert.ok(html.includes('class="wl-chip lvl-attribute"'));
+});

@@ -21,6 +21,7 @@
 - [реализовано] Remember me — cookie `zc_uid` (UUID, HttpOnly, 365 дней) идентифицирует браузер; не-пароли сохраняются в `~/zerocreds-saved/{uid}.json` и предзаполняются при следующем визите; checkbox "Запомнить для следующего раза" на форме (предвыбран если данные уже есть); show/hide toggle (👁) и кнопка Paste для полей type=password
 
 - [реализовано] Z0 CI/CD guard (#51) — удалён auto-merge.yml; deploy через GitHub Environment `production` (required reviewer) только с `main` после `test` на том же sha; `npm ci` + lockfile для server и mcp; Node 22; `npm audit --omit=dev`; gitleaks; syntax lint; actions запинены по SHA; README: исправлены утверждения про telemetry и /version
+- [реализовано] Z8 (#59) Дизайн формы /f/: светлая/тёмная тема (по умолчанию prefers-color-scheme, переключатель, выбор в localStorage, без вспышки), mobile-first (16px инпуты, крупные тап-таргеты, sticky Submit), без inline-обработчиков и style-атрибутов (готово к строгому CSP); скриншоты — `server/scripts/form-screenshots.js` → docs/screenshots/. Всегда видимый блок «Where this goes» — в рамках #50
 
 ## Планируется
 
