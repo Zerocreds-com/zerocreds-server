@@ -3,7 +3,7 @@
 // Renders the dynamic form (/f/:token) in Playwright Chromium and saves screenshots:
 // desktop + 375px mobile, light + dark (via prefers-color-scheme emulation).
 // Usage: node scripts/form-screenshots.js [outDir] [prefix]
-//   (needs a browser: npx playwright install chromium)
+//   (needs a browser: npx playwright install chromium, or PW_CHANNEL=chrome to use installed Chrome)
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -47,7 +47,7 @@ async function main() {
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
   fs.mkdirSync(outDir, { recursive: true });
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(process.env.PW_CHANNEL ? { channel: process.env.PW_CHANNEL } : {});
   try {
     for (const shot of SHOTS) {
       // One-time links: a fresh session per screenshot.
