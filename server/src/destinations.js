@@ -5,15 +5,95 @@ const path = require('path');
 const os = require('os');
 const http = require('http');
 const https = require('https');
+const dns = require('dns');
+const net = require('net');
 
 const AGENT_TOKENS_DIR = path.join(os.homedir(), 'agent-tokens');
+
+// ── outbound request policy ───────────────────────────────────────────────────
+// Destinations that make network requests (http_post, vault) must not be usable to
+// reach the server's own network. By default: https only, and every resolved address
+// is checked at connect time (so a DNS answer that changes between check and connect
+// cannot slip through). opts.allowPrivate relaxes both — for local/dev setups only.
+
+const BLOCKED_ADDRESSES = new net.BlockList();
+for (const [addr, prefix] of [
+  ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8],
+  ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.0.2.0', 24],
+  ['192.168.0.0', 16], ['198.18.0.0', 15], ['198.51.100.0', 24], ['203.0.113.0', 24],
+  ['224.0.0.0', 4], ['240.0.0.0', 4],
+]) BLOCKED_ADDRESSES.addSubnet(addr, prefix, 'ipv4');
+for (const [addr, prefix] of [
+  ['::', 96], ['64:ff9b::', 96], ['100::', 64], ['2001:db8::', 32], ['2002::', 16],
+  ['fc00::', 7], ['fe80::', 10], ['fec0::', 10], ['ff00::', 8],
+]) BLOCKED_ADDRESSES.addSubnet(addr, prefix, 'ipv6');
+
+// IPv4-mapped IPv6 (::ffff:a.b.c.d) → the embedded IPv4 address, else null.
+function mappedIpv4(addr) {
+  let norm;
+  try { norm = new URL(`http://[${addr}]/`).hostname.slice(1, -1).toLowerCase(); } catch { return null; }
+  const m = norm.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (!m) return null;
+  const hi = parseInt(m[1], 16), lo = parseInt(m[2], 16);
+  return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+}
+
+// True if addr is not a public unicast address (or not an IP at all).
+function isBlockedAddress(addr) {
+  const a = String(addr || '').replace(/^\[|\]$/g, '');
+  const family = net.isIP(a);
+  if (family === 4) return BLOCKED_ADDRESSES.check(a, 'ipv4');
+  if (family === 6) {
+    const v4 = mappedIpv4(a);
+    return v4 ? BLOCKED_ADDRESSES.check(v4, 'ipv4') : BLOCKED_ADDRESSES.check(a, 'ipv6');
+  }
+  return true;
+}
+
+// dns.lookup replacement for http(s).request: refuses private/loopback/link-local answers.
+function safeLookup(hostname, options, callback) {
+  if (typeof options === 'function') { callback = options; options = {}; }
+  if (typeof options === 'number') options = { family: options };
+  dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
+    if (err) return callback(err);
+    if (!addresses.length || addresses.some(a => isBlockedAddress(a.address))) {
+      const e = new Error('destination address is not allowed');
+      e.code = 'EDESTBLOCKED';
+      return callback(e);
+    }
+    if (options.all) return callback(null, addresses);
+    callback(null, addresses[0].address, addresses[0].family);
+  });
+}
+
+// Parses and checks an outbound URL; throws on scheme / literal-address violations.
+function checkOutboundUrl(urlStr, opts = {}, label = 'destination') {
+  let u;
+  try { u = new URL(urlStr); } catch { throw new Error(`${label}: invalid url`); }
+  const allowed = opts.allowPrivate ? ['https:', 'http:'] : ['https:'];
+  if (!allowed.includes(u.protocol)) throw new Error(`${label}: url must use https`);
+  if (u.username || u.password) throw new Error(`${label}: credentials in url are not allowed`);
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  if (!opts.allowPrivate && net.isIP(host) && isBlockedAddress(host)) {
+    throw new Error(`${label}: destination address is not allowed`);
+  }
+  return u;
+}
+
+// http_post may only reach hosts the operator allowlisted (ZEROCREDS_HTTP_POST_ALLOWED_HOSTS).
+function checkHttpPostHost(u, opts = {}) {
+  const allowed = (opts.httpPostAllowedHosts || []).map(h => String(h).toLowerCase());
+  if (!allowed.includes(u.hostname.toLowerCase())) {
+    throw new Error('http_post: destination host is not on the server allowlist');
+  }
+}
 
 // ── template resolution ───────────────────────────────────────────────────────
 // Resolves {{variable}} placeholders in a string using ctx.
 // Unknown keys are left as-is ({{key}}).
 function resolveTemplate(str, ctx) {
   if (!str || typeof str !== 'string') return str;
-  return str.replace(/\{\{([a-zA-Z0-9_]+)\}\}/g, (_, k) => ctx[k] !== undefined ? String(ctx[k]) : '{{' + k + '}}');
+  return str.replace(/\{\{([a-zA-Z0-9_]+)\}\}/g, (_, k) => Object.hasOwn(ctx, k) && ctx[k] != null ? String(ctx[k]) : '{{' + k + '}}');
 }
 
 // ── local_file ────────────────────────────────────────────────────────────────
@@ -30,7 +110,7 @@ async function saveLocalFile(destination, fields, opts = {}) {
 
   const baseDir = opts.tokensDir || AGENT_TOKENS_DIR;
   const dir = path.join(baseDir, String(uid));
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const data = Object.keys(fields).length === 1 && fields[Object.keys(fields)[0]] !== undefined
     ? { value: fields[Object.keys(fields)[0]], ...fields }
     : fields;
@@ -87,7 +167,7 @@ function getGcpAccessToken(keyJson) {
       res.on('end', () => {
         try {
           const d = JSON.parse(data);
-          if (!d.access_token) return reject(new Error('GCP auth failed: ' + data));
+          if (!d.access_token) return reject(new Error(`GCP auth failed (HTTP ${res.statusCode})`));
           resolve(d.access_token);
         } catch (e) { reject(e); }
       });
@@ -107,6 +187,7 @@ async function saveAwsSecret(destination, fields) {
   if (!secret_id || !region || !access_key_id || !secret_access_key) {
     throw new Error('aws_secrets_manager: missing required fields');
   }
+  if (!/^[a-z0-9-]{1,32}$/.test(String(region))) throw new Error('aws_secrets_manager: invalid region');
   const { createHmac, createHash } = require('crypto');
 
   const body = JSON.stringify({ SecretId: secret_id, SecretString: JSON.stringify(fields) });
@@ -149,9 +230,9 @@ async function saveAwsSecret(destination, fields) {
 
 // Authenticates via Vault AppRole and returns a client token.
 // Uses raw http.request (same pattern as getGcpAccessToken) — no SDK.
-function vaultAppRoleLogin(address, roleId, secretId) {
+function vaultAppRoleLogin(address, roleId, secretId, opts = {}) {
   return new Promise((resolve, reject) => {
-    const parsed = new URL(`${address}/v1/auth/approle/login`);
+    const parsed = checkOutboundUrl(`${address}/v1/auth/approle/login`, opts, 'vault');
     const isHttps = parsed.protocol === 'https:';
     const transport = isHttps ? https : http;
     const body = JSON.stringify({ role_id: roleId, secret_id: secretId });
@@ -162,12 +243,14 @@ function vaultAppRoleLogin(address, roleId, secretId) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
       agent: false,
+      ...(opts.allowPrivate ? {} : { lookup: safeLookup }),
     }, (res) => {
       let data = '';
       res.on('data', c => data += c);
       res.on('end', () => {
         try {
-          if (res.statusCode >= 400) return reject(new Error('vault approle login failed: ' + data));
+          // Never propagate the upstream body — it would reach the caller / the form.
+          if (res.statusCode >= 400) return reject(new Error(`vault approle login failed (HTTP ${res.statusCode})`));
           const d = JSON.parse(data);
           if (!d?.auth?.client_token) return reject(new Error('vault approle: no client_token in response'));
           resolve(d.auth.client_token);
@@ -180,17 +263,19 @@ function vaultAppRoleLogin(address, roleId, secretId) {
   });
 }
 
-async function saveVault(destination, fields) {
+async function saveVault(destination, fields, opts = {}) {
   const { address, path: vaultPath, token: vaultToken, role_id, secret_id } = destination;
   if (!address || !vaultPath) throw new Error('vault: missing address or path');
   if (!vaultToken && (!role_id || !secret_id)) throw new Error('vault: provide token or role_id+secret_id');
+  checkOutboundUrl(String(address), opts, 'vault');
 
-  const clientToken = vaultToken || await vaultAppRoleLogin(address, role_id, secret_id);
+  const clientToken = vaultToken || await vaultAppRoleLogin(address, role_id, secret_id, opts);
   await httpPost(
-    `${address}/v1/${vaultPath.replace(/^\//, '')}`,
+    `${address}/v1/${String(vaultPath).replace(/^\//, '')}`,
     { data: fields },
     null,
     { 'X-Vault-Token': clientToken },
+    opts,
   );
 }
 
@@ -210,18 +295,19 @@ async function saveHttpPost(destination, fields, opts = {}) {
   const { url: urlTemplate, headers: headersTemplate = {}, body: bodyTemplate } = destination;
   if (!urlTemplate) throw new Error('http_post: missing url');
   const url = applyTemplate(urlTemplate, fields);
-  try { new URL(url); } catch { throw new Error('http_post: invalid url'); }
+  // Checked after templating: the host actually contacted must be allowlisted.
+  checkHttpPostHost(checkOutboundUrl(url, opts, 'http_post'), opts);
   const resolvedHeaders = applyTemplate(headersTemplate, fields);
   if (opts.preflight) resolvedHeaders['X-ZeroCreds-Preflight'] = 'true';
   const bodyObj = bodyTemplate ? applyTemplate(bodyTemplate, fields) : fields;
-  await httpPost(url, bodyObj, null, resolvedHeaders);
+  await httpPost(url, bodyObj, null, resolvedHeaders, opts);
 }
 
 function applyTemplate(template, fields) {
   if (typeof template === 'string') {
     return template.replace(/\{([a-zA-Z0-9_]+)\}/g, (_, k) => {
       if (k === 'fields_json') return JSON.stringify(fields);
-      return fields[k] !== undefined ? fields[k] : `{${k}}`;
+      return Object.hasOwn(fields, k) && fields[k] !== undefined ? fields[k] : `{${k}}`;
     });
   }
   if (Array.isArray(template)) return template.map(v => applyTemplate(v, fields));
@@ -305,8 +391,8 @@ async function saveToDestination(destination, fields, opts = {}) {
     case 'local_file':                  return saveLocalFile(destination, fields, opts);
     case 'gcp_secret_manager':          return saveGcpSecret(destination, fields);
     case 'aws_secrets_manager':         return saveAwsSecret(destination, fields);
-    case 'vault':                       return saveVault(destination, fields);
-    case 'http_post':                   return saveHttpPost(destination, fields);
+    case 'vault':                       return saveVault(destination, fields, opts);
+    case 'http_post':                   return saveHttpPost(destination, fields, opts);
     case 'macos_keychain':              return saveMacosKeychain(destination, fields);
     case 'windows_credential_manager':  return saveWindowsCredentialManager(destination, fields);
     case 'os_keychain':                 return saveOsKeychain(destination, fields, opts);
@@ -315,10 +401,10 @@ async function saveToDestination(destination, fields, opts = {}) {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
-function httpPost(url, bodyObj, bearerToken, extraHeaders = {}) {
+function httpPost(url, bodyObj, bearerToken, extraHeaders = {}, opts = {}) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(bodyObj);
-    const parsed = new URL(url);
+    const parsed = checkOutboundUrl(url, opts);
     const isHttps = parsed.protocol === 'https:';
     const transport = isHttps ? https : http;
     const defaultPort = isHttps ? 443 : 80;
@@ -336,12 +422,14 @@ function httpPost(url, bodyObj, bearerToken, extraHeaders = {}) {
       method: 'POST',
       headers,
       agent: false,
+      ...(opts.allowPrivate ? {} : { lookup: safeLookup }),
     }, (res) => {
-      let data = '';
-      res.on('data', c => data += c);
+      // The upstream body is never read into errors or results: it could carry data
+      // from a service the caller should not be able to see.
+      res.resume();
       res.on('end', () => {
-        if (res.statusCode >= 400) return reject(new Error(`HTTP ${res.statusCode}: ${data}`));
-        resolve(data);
+        if (res.statusCode >= 400) return reject(new Error(`HTTP ${res.statusCode}`));
+        resolve();
       });
     });
     req.on('error', reject);
@@ -354,9 +442,40 @@ function httpPost(url, bodyObj, bearerToken, extraHeaders = {}) {
 // For http_post: sends {_zerocreds_preflight: true} through the body template, plus
 // an X-ZeroCreds-Preflight: true header, and expects 2xx. Other destination types are
 // skipped (no external service to probe).
-async function testDestination(destination) {
+async function testDestination(destination, opts = {}) {
   if (!destination || destination.type !== 'http_post') return;
-  await saveHttpPost(destination, { _zerocreds_preflight: true }, { preflight: true });
+  await saveHttpPost(destination, { _zerocreds_preflight: true }, { ...opts, preflight: true });
 }
 
-module.exports = { saveToDestination, testDestination, resolveTemplate };
+const DESTINATION_TYPES = ['local_file', 'gcp_secret_manager', 'aws_secrets_manager', 'vault',
+  'http_post', 'macos_keychain', 'windows_credential_manager', 'os_keychain'];
+
+// Static validation of a destination config at session-create / registration time.
+// Returns an error string, or null if the config is acceptable under opts.
+function validateDestination(destination, opts = {}) {
+  if (!destination || typeof destination !== 'object' || Array.isArray(destination)) return 'destination.type is required';
+  if (!DESTINATION_TYPES.includes(destination.type)) return `unknown destination type: ${String(destination.type).slice(0, 64)}`;
+  try {
+    if (destination.type === 'http_post') {
+      if (typeof destination.url !== 'string') return 'http_post: missing url';
+      if (destination.headers !== undefined && (typeof destination.headers !== 'object' || destination.headers === null || Array.isArray(destination.headers))) {
+        return 'http_post: headers must be an object';
+      }
+      const u = checkOutboundUrl(destination.url, opts, 'http_post');
+      if (/[{}]|%7B|%7D/i.test(u.host)) return 'http_post: url host must not be templated';
+      checkHttpPostHost(u, opts);
+    }
+    if (destination.type === 'vault') {
+      if (typeof destination.address !== 'string') return 'vault: missing address';
+      checkOutboundUrl(destination.address, opts, 'vault');
+    }
+    if (destination.type === 'aws_secrets_manager' && !/^[a-z0-9-]{1,32}$/.test(String(destination.region))) {
+      return 'aws_secrets_manager: invalid region';
+    }
+  } catch (e) {
+    return e.message;
+  }
+  return null;
+}
+
+module.exports = { saveToDestination, testDestination, validateDestination, resolveTemplate, isBlockedAddress, DESTINATION_TYPES };

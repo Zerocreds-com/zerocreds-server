@@ -47,9 +47,11 @@ cd zerocreds-server/server
 npm ci
 npx playwright install chromium --with-deps   # only needed for nalog.ru
 
-export ZEROCREDS_ADMIN_TOKEN=your-secret-token
+export ZEROCREDS_ADMIN_TOKEN=your-secret-token   # required — the server refuses to start without it
 PORT=3456 npm start
 ```
+
+For a purely local setup (inline destinations, http:// or localhost targets) see [Configuration](#configuration).
 
 ---
 
@@ -70,7 +72,7 @@ The fastest way to give any agent access to ZeroCreds is via the MCP server in `
 
 ### Setup (2 minutes)
 
-**1. Get your integrator token** — create one via `POST /api/integrator/register` or ask the server admin.
+**1. Get your integrator token** — ask the server admin (`POST /admin/integrators/create`), or request one via `POST /api/register`. Self-registered tokens stay inactive until the admin approves them (`POST /admin/integrators/approve`).
 
 **2. Add to your agent's config:**
 
@@ -166,7 +168,7 @@ Content-Type: application/json
     { "name": "username", "label": "GitHub Username", "type": "text",     "required": true },
     { "name": "token",    "label": "Personal Access Token", "type": "password", "required": true }
   ],
-  "destination": "prod-gcp",           // named (recommended) — OR inline object (see below)
+  "destination": "prod-gcp",           // named destination configured by the server admin
   "ttl_minutes": 30,
   "notify": {
     "tg_bot_token": "...",
@@ -219,13 +221,14 @@ Poll every 5–10 seconds. When `done`, credentials are in the secret store — 
 | `destination` | string or object | yes | Where to save credentials |
 | `ttl_minutes` | number | no | Link expiry (default: 30, max: 1440) |
 | `notify` | object | no | `{ tg_bot_token, tg_chat_id }` — sends the link via Telegram |
-| `allow_save` | boolean | no | Allow browser to remember non-password fields (default: `true`). Set `false` for ephemeral sessions like OTPs. |
+
+Limits: `title` ≤ 200 chars, `description` ≤ 2000 chars (rendered as plain text), at most 50 fields. `allow_save` is accepted for compatibility and ignored — the form never stores submitted values for pre-filling.
 
 ### Field definition
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | yes | Key in the saved JSON (`[a-zA-Z0-9_]`, max 64) |
+| `name` | string | yes | Key in the saved JSON (`[a-zA-Z0-9_]`, max 64, unique) |
 | `label` | string | yes | Label shown on the form |
 | `type` | string | no | `text` · `password` · `email` · `tel` · `number` · `textarea` · `url` (default: `text`) |
 | `placeholder` | string | no | Input placeholder |
@@ -233,7 +236,51 @@ Poll every 5–10 seconds. When `done`, credentials are in the secret store — 
 
 ### GET /api/session/{token}/status
 
-Returns `{ "status": "pending" | "done" | "expired" }`.
+Returns `{ "status": "pending" | "done" | "expired" }`. An integrator only sees its own sessions — anyone else's token reports `expired`. `done` markers are kept for 24 hours.
+
+### API-friendly forms (handles and signed receipts)
+
+A form spec is one form with two ways in: a URL for a human and a machine endpoint with the same schema. Both return the same signed receipt with a **handle** — `cred:<name>` in the owner's space. The handle is not a secret: pass it to runs, prompts and logs instead of the value.
+
+```http
+POST /api/forms
+Authorization: Bearer {integrator or admin token}
+
+{ "name": "cloudflare", "kind": "token", "destination": "prod-vault" }
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | Handle name, `[a-z0-9][a-z0-9_.-]{0,63}` → `cred:<name>`. Also available as `{{name}}` in `local_file` destination templates |
+| `kind` | string | no | `token` (default: one password field `token`) · `ssh` (`private_key`) · `login` (`username`, `password`) |
+| `fields` | array | no | Overrides the kind's default fields (same rules as sessions) |
+| `destination` | string or object | yes | Same rules as sessions: named destinations only unless inline is enabled; `http_post` allowlist applies |
+| `title`, `description`, `ttl_minutes`, `test_destination` | | no | As for sessions (`title` defaults to `Save <name>`) |
+
+Response: `form_id`, `handle`, `url` (human form, `/f/{form_id}`), `submit_url`, `status_url`, a one-time `submit_token` (returned once, stored only as a hash), `expires_at`, a signed `manifest` (`manifest_id` = sha256 of the canonical manifest: fields, destination, exact submit request, owner, server version) and `api_example` (`curl` and `sar cred put` with placeholders).
+
+```http
+POST /api/forms/{form_id}/submit
+Authorization: Bearer {owner key | submit_token}
+
+{ "manifest_id": "…", "fields": { "token": "…" } }
+```
+
+→ `{ ok, handle, receipt }`. Only the owner (the integrator that created the form, or the admin) or the form's submit token may submit; `manifest_id` is optional and must match if sent (409 otherwise). A form is one-time: after either the human or the machine submit it is closed. The human form (`POST /f/{form_id}`) returns the same receipt with `submitted_via: "form"`, and `GET /api/session/{form_id}/status` returns it to the owner once `done`.
+
+The receipt is `{ payload, alg: "Ed25519", key_id, signature }`; `signature` is base64url over the canonical JSON (sorted keys, no whitespace) of `payload`, which holds `handle`, `form_id`, `owner`, `manifest_id`, submitted field names, destination and `destination_ref`, `submitted_via`, `submitted_at` and the server version. It never contains values. The public key is at `GET /.well-known/zerocreds-signing-key`.
+
+The human form shows the handle next to the destination and has a **Copy as API request** block with the same request as `curl` (values read from env variables via `jq`) and `sar cred put …`; it never shows the submit token.
+
+### Integrator management (admin token)
+
+| Endpoint | Body | Effect |
+|----------|------|--------|
+| `POST /admin/integrators/create` | `{ id, name }` | Creates an active integrator, returns its token |
+| `POST /admin/integrators/approve` | `{ id }` | Activates a self-registered integrator |
+| `POST /api/destinations` | `{ name, destination, integrator_id? }` | Adds a named destination — server-wide, or for one integrator |
+
+`POST /api/register` (`{ email, category, website? }`, rate-limited per client IP) returns a token with `status: "pending_approval"`; it cannot be used until approved.
 
 ### GET /version
 
@@ -243,11 +290,16 @@ Returns the git commit the server process reports it is running. This is self-re
 
 ## Destinations
 
-Two ways to pass `destination` in the API:
+**Named destinations only (default).** The admin configures destinations once — in `~/zerocreds-destinations.json` (or `ZEROCREDS_DESTINATIONS_FILE`), or via `POST /api/destinations` with the admin token — and callers reference them by name. An integrator can use server-wide destinations and the ones the admin attached to it (`integrator_id`). SA keys never travel through API requests, and whoever creates a session cannot choose an arbitrary target.
 
-**Named (recommended)** — configure once in `~/zerocreds-destinations.json` (or `ZEROCREDS_DESTINATIONS_FILE`), reference by name. SA keys never travel through API requests.
+**Inline objects (dev only)** — passing the destination config in the API call, and integrators adding their own destinations, are disabled unless `ZEROCREDS_ALLOW_INLINE_DESTINATIONS=1`. Even then, server-local types (`local_file`, keychains) stay admin-only.
 
-**Inline object** — pass the destination config directly in the API call. Simpler for local/dev setups, but means credentials are in the request body.
+**Destination rules** (enforced at session creation and again when saving):
+
+- `http_post` — `https://` only, and the host must be listed in `ZEROCREDS_HTTP_POST_ALLOWED_HOSTS`. With no allowlist, `http_post` is disabled. `{field}` placeholders are allowed in the path/query, not in the host.
+- `http_post` and `vault` never connect to private, loopback, link-local or metadata addresses; every resolved address is checked at connect time.
+- `local_file` from an integrator's session is written under `~/agent-tokens/_integrators/{integrator_id}/{uid}/{filename}`; only admin sessions write to `~/agent-tokens/{uid}/`.
+- Error responses never include the upstream service's response body — only the HTTP status.
 
 **Named destinations file** (`~/zerocreds-destinations.json`):
 
@@ -279,7 +331,7 @@ Two ways to pass `destination` in the API:
 }
 ```
 
-**Inline destination** (pass directly in API call — simpler for dev/local, but config travels in the request):
+**Inline destination** (only with `ZEROCREDS_ALLOW_INLINE_DESTINATIONS=1`):
 
 ```json
 {
@@ -291,14 +343,33 @@ Two ways to pass `destination` in the API:
 }
 ```
 
-### Write-only by design
+### Who can read what
 
 | Destination | Mechanism | Guarantee |
 |-------------|-----------|-----------|
 | GCP Secret Manager | `roles/secretmanager.secretVersionAdder` | IAM: ZeroCreds can add but cannot read versions |
 | AWS Secrets Manager | `secretsmanager:PutSecretValue` only | IAM policy: `GetSecretValue` not granted |
 | HashiCorp Vault | `capabilities = ["create", "update"]` | Policy: `read` not listed = denied |
-| Local file | `~/agent-tokens/{uid}/{name}` (0600) | Filesystem permissions |
+| Local file / keychain | file 0600 in a 0700 directory on the server | Readable by the server operator's processes — **not** write-only |
+| `http_post` | HTTPS POST to an allowlisted host | The endpoint owner receives the values in readable form — **not** write-only |
+
+The form always shows, above the Submit button, who requested the data and the exact destination (type and host/path or file path) for each group of fields.
+
+---
+
+## Configuration
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `ZEROCREDS_ADMIN_TOKEN` | — (required) | Admin bearer token. The server refuses to start without it. |
+| `ZEROCREDS_HTTP_POST_ALLOWED_HOSTS` | empty (http_post disabled) | Comma-separated hostnames `http_post` may send to. |
+| `ZEROCREDS_ALLOW_INLINE_DESTINATIONS` | off | `1` accepts inline destination objects and lets integrators add their own destinations. Local/dev only. |
+| `ZEROCREDS_ALLOW_PRIVATE_DESTINATIONS` | off | `1` allows `http://` and private/loopback addresses for `http_post` and `vault`. Local/dev only. |
+| `ZEROCREDS_PENDING_DIR`, `ZEROCREDS_TOKENS_DIR` | `~/connect-pending`, `~/agent-tokens` | Storage (created 0700). Expired session files are swept every 10 minutes. |
+| `ZEROCREDS_SIGNING_KEY_FILE` | `~/zerocreds-signing-key.pem` | Ed25519 key (PKCS#8 PEM) that signs form manifests and receipts. Created 0600 on first start; back it up — a new key means old receipts verify only against the old public key. |
+| `ZEROCREDS_DESTINATIONS_FILE`, `ZEROCREDS_INTEGRATORS_FILE` | `~/zerocreds-destinations.json`, `~/zerocreds-integrators.json` | Named destinations and integrator registry. |
+
+Integrator records created by the old open `/api/register` (they carry an `email` but no `status`) are treated as pending until approved.
 
 ---
 
@@ -307,16 +378,19 @@ Two ways to pass `destination` in the API:
 The form the user sees has a few conveniences:
 
 - **Password fields** — show/hide toggle (👁) and a **Paste** button that reads the clipboard, since most passwords are copy-pasted
-- **Remember me** — a "Save for next time" checkbox. When checked, non-password fields (email, username, etc.) are stored server-side, keyed to a browser cookie (`zc_uid`). On the next visit from the same browser, those fields are pre-filled. Passwords are never saved. Set `allow_save: false` in the session to disable this entirely.
+- **Destination box** — always visible above Submit: who requested the data and where each field goes
+- No cookies and no "remember me": submitted values are never kept for pre-filling
 
 ---
 
 ## Security model
 
 - **Credentials bypass LLM context** — the form posts directly to ZeroCreds, never through the agent
-- **One-time links** — tokens expire (default 30 min) and are deleted after use
-- **Write-only destinations** — ZeroCreds can write to secret stores but not read from them (IAM/policy enforced)
-- **Input escaping** — all user-supplied session metadata (title, field labels) is HTML-escaped before rendering
+- **One-time links** — tokens expire (default 30 min); a link is claimed atomically on submit, so it can succeed only once
+- **Admin-approved destinations** — in the default configuration a session can only target destinations the admin configured; the form shows the exact destination and requester
+- **Write-only stores where possible** — GCP/AWS/Vault can be set up so ZeroCreds cannot read back; files, keychains and `http_post` are readable by their owner (see the table above)
+- **Escaping and CSP** — all session metadata (title, description, labels, placeholders) is HTML-escaped; pages send a strict nonce-based Content-Security-Policy, `frame-ancestors 'none'`, `Referrer-Policy: no-referrer` and `Cache-Control: no-store`
+- **You trust the operator** — on a hosted instance the server sees the values in transit
 - **Version reporting** — `GET /version` returns the git commit the server reports it runs. It is self-reported, so it does **not** prove the deployed code is unmodified; verifiable signed releases are planned (see [trust architecture](docs/trust-architecture-verifiable-forms-and-releases.md))
 - **No analytics or telemetry** — the server sends no usage data to us or any third party. Outbound connections are only: the configured destination (secret store / `http_post` URL), the Telegram Bot API when `notify` is set, and the target sites of the legacy built-in services (e.g. nalog.ru via Playwright)
 
@@ -336,6 +410,7 @@ ExecStart=/usr/bin/node src/server.js
 Restart=always
 Environment=PORT=3456
 Environment=ZEROCREDS_ADMIN_TOKEN=your-token
+Environment=ZEROCREDS_HTTP_POST_ALLOWED_HOSTS=hooks.example.com
 User=vova
 
 [Install]
@@ -383,10 +458,13 @@ nginx (443/80)
   └── /                      → /home/vova/zerocreds-landing/ (static)
 
 ~/connect-pending/          ← agent writes (legacy) or server creates (dynamic API)
-~/agent-tokens/             ← server writes (local_file destination)
-~/zerocreds-saved/          ← server writes non-password field values per browser uid
+~/agent-tokens/             ← server writes (local_file destination; integrators under _integrators/{id}/)
 ~/zerocreds-destinations.json ← named destination configs (server reads at startup)
+~/zerocreds-integrators.json  ← integrator registry (tokens, status, per-integrator destinations)
+~/zerocreds-signing-key.pem   ← Ed25519 key for form manifests and receipts (created on first start)
 ```
+
+Forms (`POST /api/forms`) are stored as pending sessions with a `form` block (`name`, `kind`, `handle`, `manifest_id`, `submit_token_hash`), so `/f/{form_id}`, status polling, one-time claiming and the sweeper work unchanged. Human and machine submits share `submitPending()` in `server/src/server.js`; signing lives in `server/src/receipts.js`.
 
 ### Deployment
 
