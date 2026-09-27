@@ -6,13 +6,51 @@ on:
   pull_request:
   workflow_call:
 
+permissions:
+  contents: read
+
+# Third-party actions are pinned by full commit SHA (tag in the trailing comment).
+# Everything below runs in the single `test` job because that is the required
+# status check on `main` — a separate job would not block merges.
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          node-version: 20
-      - run: cd server && npm install
-      - run: cd server && node --test test/*.test.js
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Secret scan (gitleaks, full history)
+        run: |
+          curl -fsSL -o gitleaks.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tgz" | sha256sum -c -
+          tar -xzf gitleaks.tgz gitleaks
+          ./gitleaks git . --no-banner --redact --exit-code 1
+          rm -f gitleaks gitleaks.tgz
+
+      - name: Install (lockfile enforced)
+        run: |
+          cd server && npm ci
+          cd ../mcp && npm ci
+
+      - name: Audit production dependencies
+        run: |
+          cd server && npm audit --omit=dev --audit-level=moderate
+          cd ../mcp && npm audit --omit=dev --audit-level=moderate
+
+      - name: Lint (syntax check)
+        run: |
+          find server/src server/test mcp -name '*.js' -not -path '*/node_modules/*' -print0 \
+            | xargs -0 -n1 node --check
+          python3 -m py_compile scripts/check-public.py
+
+      - name: Unit tests
+        run: cd server && node --test test/*.test.js

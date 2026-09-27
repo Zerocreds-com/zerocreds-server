@@ -3,7 +3,7 @@
 **Open-Source credential collection server for AI agents. Credentials never reach the LLM — the agent only sees `{ status: "ok" }`.**
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D18-green.svg)](https://nodejs.org)
+[![Node.js](https://img.shields.io/badge/node-22%2B-green.svg)](https://nodejs.org)
 
 ---
 
@@ -44,7 +44,7 @@ Agent                    ZeroCreds Server             User
 ```bash
 git clone https://github.com/Zerocreds-com/zerocreds-server
 cd zerocreds-server/server
-npm install
+npm ci
 npx playwright install chromium --with-deps   # only needed for nalog.ru
 
 export ZEROCREDS_ADMIN_TOKEN=your-secret-token
@@ -237,7 +237,7 @@ Returns `{ "status": "pending" | "done" | "expired" }`.
 
 ### GET /version
 
-Returns the running git commit hash. Compare it to this repo for security audits.
+Returns the git commit the server process reports it is running. This is self-reported by the server: it tells you which revision the operator says is deployed, not proof that the running code is unmodified (see [trust architecture](docs/trust-architecture-verifiable-forms-and-releases.md) for the planned signed-release verification).
 
 ---
 
@@ -317,8 +317,8 @@ The form the user sees has a few conveniences:
 - **One-time links** — tokens expire (default 30 min) and are deleted after use
 - **Write-only destinations** — ZeroCreds can write to secret stores but not read from them (IAM/policy enforced)
 - **Input escaping** — all user-supplied session metadata (title, field labels) is HTML-escaped before rendering
-- **Auditable** — `GET /version` returns the running git commit hash; compare to this repo to verify no modifications
-- **No telemetry** — nothing leaves your machine except to the configured secret store
+- **Version reporting** — `GET /version` returns the git commit the server reports it runs. It is self-reported, so it does **not** prove the deployed code is unmodified; verifiable signed releases are planned (see [trust architecture](docs/trust-architecture-verifiable-forms-and-releases.md))
+- **No analytics or telemetry** — the server sends no usage data to us or any third party. Outbound connections are only: the configured destination (secret store / `http_post` URL), the Telegram Bot API when `notify` is set, and the target sites of the legacy built-in services (e.g. nalog.ru via Playwright)
 
 ---
 
@@ -393,3 +393,11 @@ nginx (443/80)
 Server: `178.212.14.192` (Hostland RU VM)
 Service: `zerocreds-server.service`
 Landing: `/home/vova/zerocreds-landing/`
+
+### CI/CD
+
+- `main` is protected: PR + required `test` check, enforced for admins. There is no auto-merge — a human merges.
+- `test.yml` (job `test`, the required check): gitleaks over full history (pinned binary, sha256-verified) → `npm ci` in `server/` and `mcp/` (lockfiles are mandatory) → `npm audit --omit=dev` → syntax lint (`node --check`) → `node --test`. Node 22.
+- `deploy.yml`: runs on push to `main` (or manual dispatch from `main` only), re-runs `test` on that exact sha, then the `deploy` job waits for approval in the GitHub Environment `production` (required reviewer) before SSHing to the server.
+- All third-party actions are pinned by full commit SHA (tag in a trailing comment). When bumping, resolve the new SHA with `git ls-remote https://github.com/<owner>/<repo> refs/tags/<tag>`.
+- Changing dependencies: update `package.json` and commit the regenerated `package-lock.json`; CI fails on lockfile drift.

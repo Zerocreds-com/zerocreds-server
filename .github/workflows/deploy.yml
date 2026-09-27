@@ -9,17 +9,30 @@ concurrency:
   group: production-deploy
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
+# Deploy only from main, only after `test` passed on this exact sha
+# (the reusable workflow runs against github.sha), and only after a required
+# reviewer approves the `production` environment.
 jobs:
   test:
+    if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/test.yml
 
   deploy:
     needs: test
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://zerocreds.ru
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Deploy shared RU backend for both domains
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
         with:
           host: ${{ secrets.DEPLOY_HOST_RU }}
           username: ${{ secrets.DEPLOY_USER_RU }}
@@ -47,7 +60,7 @@ jobs:
           python3 scripts/check-public.py
       - name: Record nginx diagnostics on failure
         if: failure()
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
         with:
           host: ${{ secrets.DEPLOY_HOST_RU }}
           username: ${{ secrets.DEPLOY_USER_RU }}
