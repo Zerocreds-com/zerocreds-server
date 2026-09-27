@@ -465,6 +465,40 @@ function httpPost(url, bodyObj, bearerToken, extraHeaders = {}, opts = {}) {
   });
 }
 
+function vaultJsonRequest(url, method, token, body, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const parsed = checkOutboundUrl(url, opts, 'vault');
+    const payload = body === undefined ? null : JSON.stringify(body);
+    const req = (parsed.protocol === 'https:' ? https : http).request({
+      hostname: parsed.hostname,
+      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+      path: parsed.pathname + parsed.search,
+      method,
+      headers: {
+        'X-Vault-Token': token,
+        ...(payload === null ? {} : { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }),
+      },
+      agent: false,
+      ...(opts.allowPrivate ? {} : { lookup: safeLookup }),
+    }, res => {
+      let data = '';
+      res.on('data', chunk => {
+        data += chunk;
+        if (data.length > 65_536) req.destroy(new Error('vault: response too large'));
+      });
+      res.on('end', () => {
+        if (res.statusCode >= 400) return reject(new Error(`HTTP ${res.statusCode}`));
+        if (!data) return resolve(null);
+        try { resolve(JSON.parse(data)); }
+        catch { reject(new Error('vault: invalid response')); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(10_000, () => req.destroy(new Error('vault: request timeout')));
+    req.end(payload);
+  });
+}
+
 // OpenBao KV-v2 probe uses a dedicated owner-scoped probe path. The metadata
 // identity can read/delete probe metadata, but must have no access to real data.
 async function testVaultDestination(destination, fields, opts = {}) {
@@ -494,15 +528,8 @@ async function testVaultDestination(destination, fields, opts = {}) {
   let writerToken;
   try {
     writerToken = destination.token || await vaultAppRoleLogin(address, destination.role_id, destination.secret_id, opts);
-    const capabilitiesResponse = await fetch(`${origin}/v1/sys/capabilities-self`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Vault-Token': writerToken },
-      body: JSON.stringify({ paths: [targetPath] }),
-      signal: AbortSignal.timeout(10_000),
-      redirect: 'error',
-    });
-    if (!capabilitiesResponse.ok) throw new Error();
-    const capabilityBody = await capabilitiesResponse.json();
+    const capabilityBody = await vaultJsonRequest(`${origin}/v1/sys/capabilities-self`,
+      'POST', writerToken, { paths: [targetPath] }, opts);
     const capabilities = capabilityBody.capabilities || capabilityBody.data?.capabilities;
     if (!Array.isArray(capabilities) ||
         !capabilities.includes('create') || !capabilities.includes('update')) throw new Error();
@@ -511,16 +538,12 @@ async function testVaultDestination(destination, fields, opts = {}) {
   }
 
   async function metadataRequest(method) {
-    const res = await fetch(`${origin}/v1/${metadataPath}`, {
-      method,
-      headers: { 'X-Vault-Token': metadataToken },
-      signal: AbortSignal.timeout(10_000),
-      redirect: 'error',
-    });
-    if (!res.ok) throw new Error(`openbao_preflight_metadata_${method.toLowerCase()}_failed`);
+    let result;
+    try { result = await vaultJsonRequest(`${origin}/v1/${metadataPath}`, method, metadataToken, undefined, opts); }
+    catch { throw new Error(`openbao_preflight_metadata_${method.toLowerCase()}_failed`); }
     if (method === 'GET') {
-      try { return await res.json(); }
-      catch { throw new Error('openbao_preflight_metadata_invalid'); }
+      if (!result || typeof result !== 'object') throw new Error('openbao_preflight_metadata_invalid');
+      return result;
     }
   }
 

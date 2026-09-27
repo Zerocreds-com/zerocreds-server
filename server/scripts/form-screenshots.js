@@ -43,6 +43,7 @@ async function main() {
     pendingDir: path.join(tmp, 'pending'), tokensDir: path.join(tmp, 'tokens'),
     allowInlineDestinations: true, // local demo session with an inline local_file destination
     destinationsFile: path.join(tmp, 'destinations.json'), integratorsFile: path.join(tmp, 'integrators.json'),
+    signingKeyFile: path.join(tmp, 'signing-key.pem'),
     baseUrl: 'http://localhost',
   });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
