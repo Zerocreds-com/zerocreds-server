@@ -7,6 +7,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { startNalogLogin, confirmNalogCode } = require('./nalog-login');
 const { saveToDestination, testDestination } = require('./destinations');
+const { destinationDisclosureHtml } = require('./destination-disclosure');
 
 // ── Module-level pure helpers ──────────────────────────────────────────────────
 
@@ -558,6 +559,9 @@ function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
   <div id="where-info" class="where-info" hidden>${whereBlocks.join('<div class="wb-sep"></div>')}</div>
 </div>` : '';
 
+  // Collapsible "where will your secrets go" block (addresses only, credentials masked)
+  const disclosureHtml = destinationDisclosureHtml(pending);
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -644,6 +648,23 @@ function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
   .level-table td:first-child{color:var(--muted);width:55%}
   .level-table td:last-child{font-weight:600;color:var(--text)}
   .level-desc{color:var(--muted);font-size:13px;line-height:1.5}
+  .dest-dd{margin:0 0 16px;border:1px solid var(--border);border-radius:12px;background:var(--input-bg)}
+  .dest-dd>summary{display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:pointer;list-style:none;padding:12px 14px;font-size:13px;font-weight:600;color:var(--muted);transition:color .15s}
+  .dest-dd>summary::-webkit-details-marker{display:none}
+  .dest-dd>summary:hover{color:var(--text)}
+  .dest-dd[open]>summary{color:var(--text);border-bottom:1px solid var(--border)}
+  .dest-dd-chev{flex-shrink:0;color:var(--faint);transition:transform .15s}
+  .dest-dd[open] .dest-dd-chev{transform:rotate(180deg)}
+  .dest-dd-body{padding:8px 14px 12px;font-size:13px}
+  .dest-ent+.dest-ent{margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
+  .dest-ent-hd{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:4px 0 6px}
+  .dest-ent-t{font-family:ui-monospace,'SF Mono',Monaco,Consolas,monospace;font-size:12px;font-weight:700;color:var(--text)}
+  .dest-ent-lvl{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+  .dest-row{display:flex;gap:10px;align-items:baseline;padding:3px 0}
+  .dest-k{flex-shrink:0;color:var(--muted)}
+  .dest-v{flex:1;min-width:0;font-family:ui-monospace,'SF Mono',Monaco,Consolas,monospace;font-size:12px;color:var(--text);overflow-wrap:anywhere}
+  .dest-curl{margin:8px 0 2px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--card);font-family:ui-monospace,'SF Mono',Monaco,Consolas,monospace;font-size:12px;line-height:1.55;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
+  .dest-note{margin-top:8px;font-size:12px;color:var(--faint);line-height:1.5}
   @media (max-width:560px){
     body{padding:0;align-items:stretch}
     .card{max-width:none;min-height:100vh;min-height:100dvh;border:none;border-radius:0;box-shadow:none;padding:16px 16px 24px}
@@ -784,6 +805,7 @@ document.addEventListener('DOMContentLoaded', () => {
   <div id="form-view">
     <h1>${escHtml(title)}</h1>
     <p class="sub">${description}</p>
+    ${disclosureHtml}
     ${fieldHtml}
     <div class="actions">
       <button id="btn" type="button" data-action="submit">Submit</button>
