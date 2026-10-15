@@ -1259,9 +1259,8 @@ function createApp(config = {}) {
 
   // New self-registrations have an explicit pending status. Records created before
   // approval existed have no status and must retain their previously issued access.
-  function isActiveIntegrator(rec) {
-    return !Object.hasOwn(rec, 'status') || rec.status === 'active';
-  }
+  function isLegacyIntegrator(rec) { return !!rec && !Object.hasOwn(rec, 'status'); }
+  function isActiveIntegrator(rec) { return isLegacyIntegrator(rec) || rec.status === 'active'; }
 
   // Rate limit for self-serve registration: max 3 per client IP per hour
   const registerRateLimit = new Map();
@@ -1292,17 +1291,18 @@ function createApp(config = {}) {
 
   // Resolve destination: name → config (integrator's own first), or an inline object
   // when the server allows it. Returns { dest } or { error }.
-  function resolveDestination(destination, integrator, isAdmin) {
+  function resolveDestination(destination, integrator, isAdmin, legacySession = false) {
     if (typeof destination === 'string') {
       if (integrator && Object.hasOwn(integrator.destinations, destination)) return { dest: integrator.destinations[destination] };
       if (Object.hasOwn(NAMED_DESTINATIONS, destination)) return { dest: NAMED_DESTINATIONS[destination] };
       return { error: `unknown named destination: ${destination.slice(0, 64)}` };
     }
-    if (!ALLOW_INLINE_DESTINATIONS) {
+    const legacyInline = legacySession && isLegacyIntegrator(integrator);
+    if (!ALLOW_INLINE_DESTINATIONS && !legacyInline) {
       return { error: 'inline destinations are disabled on this server — use a named destination configured by the admin' };
     }
     if (!destination || typeof destination !== 'object' || Array.isArray(destination)) return { error: 'destination.type is required' };
-    if (!isAdmin && SERVER_LOCAL_TYPES.has(destination.type)) {
+    if (!isAdmin && !legacyInline && SERVER_LOCAL_TYPES.has(destination.type)) {
       return { error: `inline ${destination.type} destinations are only available to the admin` };
     }
     return { dest: destination };
@@ -1897,13 +1897,13 @@ function createApp(config = {}) {
     if (req.method === 'POST' && url.pathname === '/api/destinations') {
       const { isAdmin, integrator } = resolveAuth(req.headers['authorization']);
       if (!isAdmin && !integrator) return json(res, 401, { error: 'unauthorized' });
-      if (!isAdmin && !ALLOW_INLINE_DESTINATIONS) return json(res, 403, { error: 'destinations are managed by the server admin' });
+      if (!isAdmin && !ALLOW_INLINE_DESTINATIONS && !isLegacyIntegrator(integrator)) return json(res, 403, { error: 'destinations are managed by the server admin' });
       const payload = await readJson(req);
       if (!payload) return json(res, 400, { error: 'bad json' });
       const { name, destination, integrator_id } = payload;
       if (!name || !destination?.type) return json(res, 400, { error: 'missing name or destination.type' });
       if (!isSafeKey(name)) return json(res, 400, { error: 'invalid name' });
-      if (!isAdmin && SERVER_LOCAL_TYPES.has(destination.type)) {
+      if (!isAdmin && !isLegacyIntegrator(integrator) && SERVER_LOCAL_TYPES.has(destination.type)) {
         return json(res, 403, { error: `${destination.type} destinations can only be added by the admin` });
       }
       const invalid = validateDestination(destination, DEST_OPTS);
@@ -1964,7 +1964,7 @@ function createApp(config = {}) {
         resolvedByLevel = {};
         for (const [level, dest] of Object.entries(destinations_by_level)) {
           if (level !== 'default' && !FIELD_LEVELS.includes(level)) return json(res, 400, { error: `invalid level: ${level.slice(0, 32)}` });
-          const r = resolveDestination(dest, integrator, isAdmin);
+          const r = resolveDestination(dest, integrator, isAdmin, true);
           const err = r.error || validateDestination(r.dest, DEST_OPTS);
           if (err) return json(res, 400, { error: `${err} (level "${level}")` });
           if (r.dest.type === 'vault' && r.dest.preflight_path_prefix) return json(res, 400, { error: 'openbao_preflight_requires_single_destination' });
@@ -1978,7 +1978,7 @@ function createApp(config = {}) {
       let resolvedDest = null;
       if (destination) {
         if (typeof destination !== 'string' && destination.type === 'vault' && destination.preflight_path_prefix) return json(res, 400, { error: 'openbao_preflight_requires_named_destination' });
-        const r = resolveDestination(destination, integrator, isAdmin);
+        const r = resolveDestination(destination, integrator, isAdmin, true);
         const err = r.error || validateDestination(r.dest, DEST_OPTS);
         if (err) return json(res, 400, { error: err });
         resolvedDest = r.dest;

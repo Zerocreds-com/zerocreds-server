@@ -391,7 +391,7 @@ The form always shows, above the Submit button, who requested the data and the e
 | `ZEROCREDS_SIGNING_KEY_FILE` | `~/zerocreds-signing-key.pem` | Ed25519 key (PKCS#8 PEM) that signs form manifests and receipts. Created 0600 on first start; back it up — a new key means old receipts verify only against the old public key. |
 | `ZEROCREDS_DESTINATIONS_FILE`, `ZEROCREDS_INTEGRATORS_FILE` | `~/zerocreds-destinations.json`, `~/zerocreds-integrators.json` | Named destinations and integrator registry. |
 
-Integrator records created by the old open `/api/register` (they carry an `email` but no `status`) are treated as pending until approved.
+Status-less integrator records issued before approval existed retain access to legacy session creation and destination registration, including inline local-file destinations. New self-registrations are explicitly pending until approved; newly active integrators and the new `/api/forms` endpoint require named destinations. Legacy network destinations still require the current HTTPS and host-allowlist checks. Rotate old keys to explicit active records after migrating their destinations.
 
 ---
 
