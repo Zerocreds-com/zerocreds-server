@@ -148,6 +148,10 @@ token
 
 ---
 
+For ServerlessAgence developer-run credentials, see the [owner-scoped intake and runner binding contract](docs/serverlessagence-runner-credential-intake.md). It separates ZeroCreds write-only collection from the runner broker that authorizes credential use per run.
+
+---
+
 ## Agent Integration (HTTP API)
 
 Three steps from the agent's side:
