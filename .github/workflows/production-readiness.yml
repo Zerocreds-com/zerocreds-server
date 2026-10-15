@@ -95,4 +95,37 @@ jobs:
                 print(f'access_log_session_create_counts={dict(counts)}')
             except OSError:
                 print('access_log=unreadable')
+            try:
+                sessions = collections.Counter()
+                seen_integrators = set()
+                now = datetime.now(timezone.utc)
+                for file in (Path.home() / 'connect-pending').glob('*.json'):
+                    sessions['all_files'] += 1
+                    try:
+                        age = now - datetime.fromtimestamp(file.stat().st_mtime, timezone.utc)
+                        if not timedelta(0) <= age <= timedelta(days=30):
+                            continue
+                        entry = json.loads(file.read_text())
+                        if not isinstance(entry, dict):
+                            sessions['invalid'] += 1
+                            continue
+                        owner = entry.get('integrator_id')
+                        owner_kind = 'anonymous_or_admin' if owner == 'admin' else 'integrator' if isinstance(owner, str) else 'unknown'
+                        destination = entry.get('destination')
+                        levels = entry.get('destinations_by_level')
+                        inline = isinstance(destination, dict) or isinstance(levels, dict) and any(isinstance(v, dict) for v in levels.values())
+                        kind = 'inline' if inline else 'named' if isinstance(destination, str) else 'other'
+                        sessions[f'30d_{owner_kind}'] += 1
+                        sessions[f'30d_{kind}'] += 1
+                        if owner_kind == 'integrator':
+                            seen_integrators.add(owner)
+                        if age <= timedelta(days=7):
+                            sessions[f'7d_{owner_kind}'] += 1
+                            sessions[f'7d_{kind}'] += 1
+                    except (OSError, ValueError, TypeError):
+                        sessions['invalid'] += 1
+                print(f'pending_session_counts={dict(sessions)}')
+                print(f'pending_session_distinct_integrators_30d={len(seen_integrators)}')
+            except OSError:
+                print('pending_sessions=unreadable')
             PY
