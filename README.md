@@ -148,7 +148,7 @@ token
 
 ---
 
-For the planned ServerlessAgence D1 wallet, see the [task-driven MCP form, destination preflight and owner/profile disclosure contract](docs/serverlessagence-runner-credential-intake.md). The current ZeroCreds server does not yet store form sessions or credentials in D1.
+For the planned ServerlessAgence wallet, see the [task-driven MCP form, OpenBao preflight and owner/profile disclosure contract](docs/serverlessagence-runner-credential-intake.md). OpenBao will store secret values; D1 will hold non-secret form and connection metadata. The current end-to-end integration is not deployed.
 
 ---
 
@@ -294,6 +294,23 @@ Two ways to pass `destination` in the API:
   }
 }
 ```
+
+For a named OpenBao KV-v2 destination, `vault` remains the compatible destination type. An optional preflight configuration checks the writer's `create/update` capability on the exact target path, writes a synthetic value to an owner-scoped `probes/` path, verifies the returned version through the metadata endpoint, and deletes the probe metadata before returning the form link. This path currently accepts one named destination, not `destinations_by_level` or an inline destination. The writer identity needs `create/update` on its owner's `connections/` and `probes/` data paths plus access to `sys/capabilities-self`, but no data `read`; `preflight_metadata_token` needs metadata `read/delete` only for that owner's `probes/` path. A failed or skipped cleanup blocks form creation. `test_destination: false` cannot bypass this configured OpenBao probe.
+
+```json
+{
+  "owner-a-openbao": {
+    "type": "vault",
+    "address": "https://openbao.example.com",
+    "path": "secret/data/owners/owner-a/connections/connection-a",
+    "token": "<scoped-writer-token>",
+    "preflight_path_prefix": "secret/data/owners/owner-a/probes",
+    "preflight_metadata_token": "<probe-metadata-only-token>"
+  }
+}
+```
+
+This probe verifies the configured OpenBao write path and returns no credential value. It does not establish authenticated wallet ownership, D1 metadata, a signed form manifest, a runner read broker, or a production OpenBao deployment; those remain part of the [ServerlessAgence integration contract](docs/serverlessagence-runner-credential-intake.md).
 
 ### Write-only by design
 

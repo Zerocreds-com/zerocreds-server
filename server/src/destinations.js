@@ -5,6 +5,7 @@ const path = require('path');
 const os = require('os');
 const http = require('http');
 const https = require('https');
+const crypto = require('crypto');
 
 const AGENT_TOKENS_DIR = path.join(os.homedir(), 'agent-tokens');
 
@@ -167,7 +168,7 @@ function vaultAppRoleLogin(address, roleId, secretId) {
       res.on('data', c => data += c);
       res.on('end', () => {
         try {
-          if (res.statusCode >= 400) return reject(new Error('vault approle login failed: ' + data));
+          if (res.statusCode >= 400) return reject(new Error('vault approle login failed'));
           const d = JSON.parse(data);
           if (!d?.auth?.client_token) return reject(new Error('vault approle: no client_token in response'));
           resolve(d.auth.client_token);
@@ -186,12 +187,25 @@ async function saveVault(destination, fields) {
   if (!vaultToken && (!role_id || !secret_id)) throw new Error('vault: provide token or role_id+secret_id');
 
   const clientToken = vaultToken || await vaultAppRoleLogin(address, role_id, secret_id);
-  await httpPost(
-    `${address}/v1/${vaultPath.replace(/^\//, '')}`,
-    { data: fields },
-    null,
-    { 'X-Vault-Token': clientToken },
-  );
+  let response;
+  try {
+    response = await httpPost(
+      `${address}/v1/${vaultPath.replace(/^\//, '')}`,
+      { data: fields },
+      null,
+      { 'X-Vault-Token': clientToken },
+    );
+  } catch {
+    throw new Error('vault: write failed');
+  }
+  let version;
+  try {
+    const parsed = JSON.parse(response);
+    if (Number.isInteger(parsed?.data?.version) && parsed.data.version > 0) {
+      version = parsed.data.version;
+    }
+  } catch { /* Existing Vault-compatible backends may return an empty body. */ }
+  return { secret_id: vaultPath, ...(version ? { version } : {}) };
 }
 
 // ── http_post ─────────────────────────────────────────────────────────────────
@@ -350,13 +364,96 @@ function httpPost(url, bodyObj, bearerToken, extraHeaders = {}) {
   });
 }
 
+// OpenBao KV-v2 probe uses a dedicated owner-scoped probe path. The metadata
+// identity can read/delete probe metadata, but must have no access to real data.
+async function testVaultDestination(destination, fields) {
+  const { address, path: targetPath, preflight_path_prefix: prefix,
+    preflight_metadata_token: metadataToken } = destination;
+  if (!address || !targetPath || !prefix || !metadataToken) {
+    throw new Error('openbao_preflight_not_configured');
+  }
+  let origin;
+  try {
+    const url = new URL(address);
+    const localTest = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
+    if ((url.protocol !== 'https:' && !(localTest && url.protocol === 'http:')) ||
+        url.username || url.password || url.search || url.hash || url.pathname !== '/') throw new Error();
+    origin = url.origin;
+  } catch {
+    throw new Error('openbao_preflight_invalid_origin');
+  }
+  const target = /^([^/]+)\/data\/owners\/([^/]+)\/connections\/[^/]+$/.exec(targetPath);
+  if (!target || prefix !== `${target[1]}/data/owners/${target[2]}/probes`) {
+    throw new Error('openbao_preflight_path_mismatch');
+  }
+  const probePath = `${prefix}/${crypto.randomUUID()}`;
+  const metadataPath = probePath.replace('/data/', '/metadata/');
+  const probeFields = Object.fromEntries((fields || []).map(f => [f.name, '__zerocreds_probe__']));
+  if (Object.keys(probeFields).length === 0) throw new Error('openbao_preflight_fields_missing');
+  let writerToken;
+  try {
+    writerToken = destination.token || await vaultAppRoleLogin(address, destination.role_id, destination.secret_id);
+    const capabilitiesResponse = await fetch(`${origin}/v1/sys/capabilities-self`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Vault-Token': writerToken },
+      body: JSON.stringify({ paths: [targetPath] }),
+      signal: AbortSignal.timeout(10_000),
+      redirect: 'error',
+    });
+    if (!capabilitiesResponse.ok) throw new Error();
+    const capabilityBody = await capabilitiesResponse.json();
+    const capabilities = capabilityBody.capabilities || capabilityBody.data?.capabilities;
+    if (!Array.isArray(capabilities) ||
+        !capabilities.includes('create') || !capabilities.includes('update')) throw new Error();
+  } catch {
+    throw new Error('openbao_preflight_target_permission_failed');
+  }
+
+  async function metadataRequest(method) {
+    const res = await fetch(`${origin}/v1/${metadataPath}`, {
+      method,
+      headers: { 'X-Vault-Token': metadataToken },
+      signal: AbortSignal.timeout(10_000),
+      redirect: 'error',
+    });
+    if (!res.ok) throw new Error(`openbao_preflight_metadata_${method.toLowerCase()}_failed`);
+    if (method === 'GET') {
+      try { return await res.json(); }
+      catch { throw new Error('openbao_preflight_metadata_invalid'); }
+    }
+  }
+
+  let written = false;
+  try {
+    let receipt;
+    try { receipt = await saveVault({ ...destination, address: origin, token: writerToken, path: probePath }, probeFields); }
+    catch { throw new Error('openbao_preflight_write_failed'); }
+    written = true;
+    if (!Number.isInteger(receipt.version) || receipt.version !== 1) {
+      throw new Error('openbao_preflight_version_missing');
+    }
+    const metadata = await metadataRequest('GET');
+    if (metadata?.data?.current_version !== receipt.version) {
+      throw new Error('openbao_preflight_version_mismatch');
+    }
+    return { checked: true, version: receipt.version };
+  } finally {
+    if (written) await metadataRequest('DELETE');
+  }
+}
+
 // Test a destination by sending a preflight request.
 // For http_post: sends {_zerocreds_preflight: true} through the body template, plus
 // an X-ZeroCreds-Preflight: true header, and expects 2xx. Other destination types are
 // skipped (no external service to probe).
-async function testDestination(destination) {
-  if (!destination || destination.type !== 'http_post') return;
-  await saveHttpPost(destination, { _zerocreds_preflight: true }, { preflight: true });
+async function testDestination(destination, fields) {
+  if (!destination) return;
+  if (destination.type === 'vault' && destination.preflight_path_prefix) {
+    return testVaultDestination(destination, fields);
+  }
+  if (destination.type === 'http_post') {
+    await saveHttpPost(destination, { _zerocreds_preflight: true }, { preflight: true });
+  }
 }
 
 module.exports = { saveToDestination, testDestination, resolveTemplate };
