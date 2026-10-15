@@ -1383,12 +1383,15 @@ function createApp(config = {}) {
         destinations_by_level: resolvedByLevel || null,
         expires, notify,
         integrator_id,
+        _audit_auth: integrator ? 'integrator' : isAdmin ? 'admin' : 'anonymous',
         uid: uid || null,
         allowSave: allow_save !== false,
         ...(useDeterministic ? { service_slug, user_hash, integrator_slug: integrator_id } : {}),
       };
       fs.mkdirSync(CONNECT_PENDING_DIR, { recursive: true });
       fs.writeFileSync(path.join(CONNECT_PENDING_DIR, `${token}.json`), JSON.stringify(pending), { mode: 0o600 });
+      console.info('[session-migration] created auth=%s destination=%s', pending._audit_auth,
+        destinationName ? 'named' : 'inline');
 
       const url_out = useDeterministic
         ? `${BASE_URL}/${integrator_id}/${service_slug}/${user_hash}?gen=${token}`
@@ -1552,6 +1555,8 @@ function createApp(config = {}) {
             { mode: 0o600 },
           );
         } catch {}
+        console.info('[session-migration] completed auth=%s',
+          ['anonymous', 'admin', 'integrator'].includes(pending._audit_auth) ? pending._audit_auth : 'unknown');
 
         const { uid, hadCookie } = getOrCreateUid(req);
         const primarySecretId = saveResult?.secret_id

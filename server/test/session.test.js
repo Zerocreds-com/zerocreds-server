@@ -89,3 +89,22 @@ test('ttl_minutes > 1440 clamped — expires_at ≤ now + 1440 min', async () =>
   const maxAllowed = before + 1440 * 60 * 1000 + 5000; // +5s tolerance
   assert.ok(exp <= maxAllowed, `expires_at ${r.body.expires_at} should be ≤ now + 1440 min`);
 });
+
+test('migration events record only auth category and outcome', async () => {
+  const events = [];
+  const original = console.info;
+  console.info = (...args) => events.push(args.join(' '));
+  try {
+    const created = await request(ctx.port, 'POST', '/api/session/create',
+      { title: 'T', fields: [{ name: 'tok', label: 'L' }], destination: localDest }, auth());
+    assert.equal(created.status, 200);
+    const saved = await request(ctx.port, 'POST', `/f/${created.body.token}`,
+      { t: created.body.token, fields: { tok: 'synthetic-sensitive-value' } });
+    assert.equal(saved.status, 200);
+  } finally {
+    console.info = original;
+  }
+  assert.ok(events.some(event => event.includes('created auth=%s destination=%s admin inline')));
+  assert.ok(events.some(event => event.includes('completed auth=%s admin')));
+  assert.ok(events.every(event => !event.includes('synthetic-sensitive-value')));
+});

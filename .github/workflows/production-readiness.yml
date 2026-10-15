@@ -119,9 +119,6 @@ jobs:
                         kind = 'inline' if inline else 'named' if isinstance(destination, str) else 'other'
                         sessions[f'30d_{owner_kind}'] += 1
                         sessions[f'30d_{kind}'] += 1
-                        completed = file.with_suffix('.done').is_file()
-                        if completed:
-                            sessions[f'30d_{owner_kind}_done'] += 1
                         if inline:
                             destinations = [destination] if isinstance(destination, dict) else []
                             if isinstance(levels, dict):
@@ -151,10 +148,18 @@ jobs:
                         if age <= timedelta(days=7):
                             sessions[f'7d_{owner_kind}'] += 1
                             sessions[f'7d_{kind}'] += 1
-                            if completed:
-                                sessions[f'7d_{owner_kind}_done'] += 1
                     except (OSError, ValueError, TypeError):
                         sessions['invalid'] += 1
+                for file in (Path.home() / 'connect-pending').glob('*.done'):
+                    sessions['all_done_files'] += 1
+                    try:
+                        age = now - datetime.fromtimestamp(file.stat().st_mtime, timezone.utc)
+                        if timedelta(0) <= age <= timedelta(days=30):
+                            sessions['30d_done_files'] += 1
+                            if age <= timedelta(days=7):
+                                sessions['7d_done_files'] += 1
+                    except OSError:
+                        sessions['invalid_done_files'] += 1
                 print(f'pending_session_counts={dict(sessions)}')
                 print(f'pending_session_distinct_integrators_30d={len(seen_integrators)}')
                 print(f'pending_session_distinct_callback_hosts_30d={dict((k, len(v)) for k, v in callback_hosts.items())}')
