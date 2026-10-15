@@ -48,6 +48,11 @@ jobs:
                     else:
                         statuses = collections.Counter(str(v.get('status', 'legacy')) if isinstance(v, dict) else 'invalid' for v in data.values())
                         print(f'{filename}_statuses={dict(statuses)}')
+                        records = [v for v in data.values() if isinstance(v, dict)]
+                        print(f'{filename}_legacy_with_email={sum(bool(v.get("email")) and not v.get("status") for v in records)}')
+                        print(f'{filename}_legacy_without_email={sum(not v.get("email")) and not v.get("status") for v in records)}')
+                        print(f'{filename}_with_destinations={sum(bool(v.get("destinations")) for v in records)}')
+                        print(f'{filename}_missing_id={sum(not v.get("id") for v in records)}')
                 except FileNotFoundError:
                     print(f'{filename}=missing')
                 except (OSError, ValueError):
