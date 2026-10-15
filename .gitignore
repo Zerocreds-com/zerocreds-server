@@ -2,3 +2,5 @@ node_modules/
 mcp/node_modules/
 *.env
 .env
+.dev.vars*
+.wrangler/
