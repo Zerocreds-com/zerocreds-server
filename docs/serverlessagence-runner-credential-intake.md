@@ -17,7 +17,7 @@ Client ── connectionId + prompt ──► Runner API ──► runner broker
                                        └──► OpenCode process on VM
 ```
 
-The value can still be visible to the trusted runner/VM in the current hosted BYOK mode. Only a broker-side provider proxy or customer-owned gateway can keep it out of the agent process. ZeroCreds write-only storage alone does not establish that guarantee.
+The value can still be visible to the trusted runner/VM in the current hosted BYOK mode. Only a broker-side provider proxy or customer-owned gateway can keep it out of the agent process. ZeroCreds write-only storage alone does not establish that guarantee. The explicit list of credential-using executors, their allowed operations and audit fields belongs to the runner; see [runner issue #360](https://github.com/trained-assist/ai-agent-runner/issues/360) and [registry PR #362](https://github.com/trained-assist/ai-agent-runner/pull/362). ZeroCreds itself does not authorize an OpenCode tool or a Playwright script to read a stored value.
 
 ## Ownership and storage contract
 
