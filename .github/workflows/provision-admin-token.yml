@@ -1,0 +1,61 @@
+name: Provision ZeroCreds admin token
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    steps:
+      - name: Create or verify private token on the service host
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST_RU }}
+          username: ${{ secrets.DEPLOY_USER_RU }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          command_timeout: 2m
+          script: |
+            set -eu
+            service_user=$(systemctl show -p User --value zerocreds-server)
+            test "$service_user" = "$(id -un)"
+            python3 <<'PY'
+            import os, secrets, stat
+            from pathlib import Path
+
+            directory = Path.home() / '.config/zerocreds'
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            directory_stat = directory.lstat()
+            if not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_uid != os.getuid():
+                raise SystemExit('admin token directory is not owned by the service user')
+            directory.chmod(0o700)
+
+            target = directory / 'admin-token'
+            try:
+                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+            except FileExistsError:
+                created = False
+            else:
+                created = True
+                try:
+                    with os.fdopen(fd, 'w') as stream:
+                        stream.write(secrets.token_hex(32) + '\n')
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                except BaseException:
+                    target.unlink(missing_ok=True)
+                    raise
+
+            target_stat = target.lstat()
+            if not stat.S_ISREG(target_stat.st_mode) or target_stat.st_uid != os.getuid() or target_stat.st_mode & 0o077:
+                raise SystemExit('admin token file is not private')
+            token = target.read_text().strip()
+            if len(token) < 32 or len(token) > 256 or any(c.isspace() for c in token):
+                raise SystemExit('admin token file has invalid contents')
+            print('admin_token_file_private=true')
+            print(f'admin_token_file_created={str(created).lower()}')
+            PY

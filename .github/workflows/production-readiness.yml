@@ -1,0 +1,168 @@
+name: ZeroCreds production readiness
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect value-free service settings
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST_RU }}
+          username: ${{ secrets.DEPLOY_USER_RU }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          command_timeout: 2m
+          script: |
+            set -eu
+            echo "service_status=$(systemctl is-active zerocreds-server || true)"
+            echo "unauthenticated_create_status=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:3456/api/session/create || true)"
+            service_user=$(systemctl show -p User --value zerocreds-server)
+            if [ "$service_user" = "$(id -un)" ]; then echo 'service_user_matches_deploy=true'; else echo 'service_user_matches_deploy=false'; fi
+            pid=$(systemctl show -p MainPID --value zerocreds-server)
+            python3 - "$pid" <<'PY'
+            import collections, json, os, stat, sys
+            from datetime import datetime, timedelta, timezone
+            from pathlib import Path
+            from urllib.parse import urlsplit
+            pid = sys.argv[1]
+            try:
+                raw = Path('/proc', pid, 'environ').read_bytes()
+                names = {item.split(b'=', 1)[0].decode('utf-8', 'replace') for item in raw.split(b'\0') if item}
+                for name in ('ZEROCREDS_ADMIN_TOKEN', 'ZEROCREDS_DESTINATIONS_FILE', 'ZEROCREDS_INTEGRATORS_FILE', 'ZEROCREDS_HTTP_POST_ALLOWED_HOSTS', 'ZEROCREDS_ALLOW_INLINE_DESTINATIONS'):
+                    print(f'env_{name}={name in names}')
+            except (OSError, ValueError):
+                print('process_environment=unreadable')
+            token_file = Path.home() / '.config/zerocreds/admin-token'
+            try:
+                token_stat = token_file.lstat()
+                private = stat.S_ISREG(token_stat.st_mode) and token_stat.st_uid == os.getuid() and not token_stat.st_mode & 0o077
+                print(f'admin_token_file_private={private}')
+            except FileNotFoundError:
+                print('admin_token_file=missing')
+            except OSError:
+                print('admin_token_file=unreadable')
+            for filename in ('zerocreds-destinations.json', 'zerocreds-integrators.json'):
+                file = Path.home() / filename
+                try:
+                    data = json.loads(file.read_text())
+                    if not isinstance(data, dict):
+                        print(f'{filename}=invalid')
+                        continue
+                    print(f'{filename}_count={len(data)}')
+                    if filename.startswith('zerocreds-destinations'):
+                        counts = collections.Counter(str(v.get('type', 'unknown')) if isinstance(v, dict) else 'invalid' for v in data.values())
+                        print(f'{filename}_types={dict(counts)}')
+                    else:
+                        statuses = collections.Counter(str(v.get('status', 'legacy')) if isinstance(v, dict) else 'invalid' for v in data.values())
+                        print(f'{filename}_statuses={dict(statuses)}')
+                        records = [v for v in data.values() if isinstance(v, dict)]
+                        print(f'{filename}_legacy_with_email={sum(bool(v.get("email")) and not v.get("status") for v in records)}')
+                        print(f'{filename}_legacy_without_email={sum(not v.get("email") and not v.get("status") for v in records)}')
+                        print(f'{filename}_with_destinations={sum(bool(v.get("destinations")) for v in records)}')
+                        print(f'{filename}_missing_id={sum(not v.get("id") for v in records)}')
+                except FileNotFoundError:
+                    print(f'{filename}=missing')
+                except (OSError, ValueError):
+                    print(f'{filename}=unreadable')
+            try:
+                counts = collections.Counter()
+                now = datetime.now(timezone.utc)
+                with Path('/var/log/nginx/access.log').open() as access_log:
+                    for line in access_log:
+                        parts = line.split('"', 2)
+                        if len(parts) < 3 or not parts[1].startswith('POST /api/session/create '):
+                            continue
+                        try:
+                            timestamp = line.split('[', 1)[1].split(']', 1)[0]
+                            age = now - datetime.strptime(timestamp, '%d/%b/%Y:%H:%M:%S %z')
+                            status = parts[2].strip().split(' ', 1)[0]
+                        except (IndexError, ValueError):
+                            counts['unparsed'] += 1
+                            continue
+                        if timedelta(0) <= age <= timedelta(days=30):
+                            counts['30d'] += 1
+                            if status.startswith('2'):
+                                counts['30d_2xx'] += 1
+                            if age <= timedelta(days=7):
+                                counts['7d'] += 1
+                                if status.startswith('2'):
+                                    counts['7d_2xx'] += 1
+                print(f'access_log_session_create_counts={dict(counts)}')
+            except OSError:
+                print('access_log=unreadable')
+            try:
+                sessions = collections.Counter()
+                seen_integrators = set()
+                callback_hosts = collections.defaultdict(set)
+                now = datetime.now(timezone.utc)
+                for file in (Path.home() / 'connect-pending').glob('*.json'):
+                    sessions['all_files'] += 1
+                    try:
+                        age = now - datetime.fromtimestamp(file.stat().st_mtime, timezone.utc)
+                        if not timedelta(0) <= age <= timedelta(days=30):
+                            continue
+                        entry = json.loads(file.read_text())
+                        if not isinstance(entry, dict):
+                            sessions['invalid'] += 1
+                            continue
+                        owner = entry.get('integrator_id')
+                        owner_kind = 'anonymous_or_admin' if owner == 'admin' else 'integrator' if isinstance(owner, str) else 'unknown'
+                        destination = entry.get('destination')
+                        levels = entry.get('destinations_by_level')
+                        inline = isinstance(destination, dict) or isinstance(levels, dict) and any(isinstance(v, dict) for v in levels.values())
+                        kind = 'inline' if inline else 'named' if isinstance(destination, str) else 'other'
+                        sessions[f'30d_{owner_kind}'] += 1
+                        sessions[f'30d_{kind}'] += 1
+                        if inline:
+                            destinations = [destination] if isinstance(destination, dict) else []
+                            if isinstance(levels, dict):
+                                destinations.extend(v for v in levels.values() if isinstance(v, dict))
+                            types = [destination.get('type')] if isinstance(destination, dict) else []
+                            if isinstance(levels, dict):
+                                types.extend(v.get('type') for v in levels.values() if isinstance(v, dict))
+                            allowed_types = {'local_file', 'http_post', 'vault', 'gcp_secret_manager', 'aws_secrets_manager', 'os_keychain', 'macos_keychain', 'windows_credential_manager'}
+                            for destination_type in set(t for t in types if isinstance(t, str)):
+                                safe_type = destination_type if destination_type in allowed_types else 'other'
+                                sessions[f'30d_{owner_kind}_{safe_type}'] += 1
+                            for item in destinations:
+                                if item.get('type') != 'http_post' or not isinstance(item.get('url'), str):
+                                    continue
+                                parsed = urlsplit(item['url'])
+                                if parsed.hostname:
+                                    callback_hosts[owner_kind].add(parsed.hostname.lower())
+                                route = parsed.path
+                                route_kind = 'tokens_callback' if route == '/tokens' else 'runner_github_intake' if route.startswith('/v1/developer/github/intake/') else 'other'
+                                sessions[f'30d_{owner_kind}_http_{route_kind}'] += 1
+                        if entry.get('uid') is not None:
+                            sessions[f'30d_{owner_kind}_with_uid'] += 1
+                        if entry.get('service_slug') or entry.get('service'):
+                            sessions[f'30d_{owner_kind}_with_service'] += 1
+                        if owner_kind == 'integrator':
+                            seen_integrators.add(owner)
+                        if age <= timedelta(days=7):
+                            sessions[f'7d_{owner_kind}'] += 1
+                            sessions[f'7d_{kind}'] += 1
+                    except (OSError, ValueError, TypeError):
+                        sessions['invalid'] += 1
+                for file in (Path.home() / 'connect-pending').glob('*.done'):
+                    sessions['all_done_files'] += 1
+                    try:
+                        age = now - datetime.fromtimestamp(file.stat().st_mtime, timezone.utc)
+                        if timedelta(0) <= age <= timedelta(days=30):
+                            sessions['30d_done_files'] += 1
+                            if age <= timedelta(days=7):
+                                sessions['7d_done_files'] += 1
+                    except OSError:
+                        sessions['invalid_done_files'] += 1
+                print(f'pending_session_counts={dict(sessions)}')
+                print(f'pending_session_distinct_integrators_30d={len(seen_integrators)}')
+                print(f'pending_session_distinct_callback_hosts_30d={dict((k, len(v)) for k, v in callback_hosts.items())}')
+            except OSError:
+                print('pending_sessions=unreadable')
+            PY

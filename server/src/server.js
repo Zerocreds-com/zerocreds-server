@@ -1652,6 +1652,8 @@ function createApp(config = {}) {
         { mode: 0o600 },
       );
     } catch {}
+    console.info('[session-migration] completed auth=%s',
+      ['anonymous', 'admin', 'integrator'].includes(pending._audit_auth) ? pending._audit_auth : 'unknown');
 
     if (pending.notify?.tg_bot_token) {
       tgNotify(pending.notify.tg_bot_token, pending.notify.tg_chat_id,
@@ -2039,12 +2041,15 @@ function createApp(config = {}) {
         notify: notify ? { tg_bot_token: notify.tg_bot_token, tg_chat_id: notify.tg_chat_id } : null,
 
         integrator_id,
+        _audit_auth: integrator ? 'integrator' : isAdmin ? 'admin' : 'anonymous',
         requester: integrator ? String(integrator.name || integrator.id).slice(0, 100) : null,
         uid: uid != null ? String(uid) : null,
         ...(useDeterministic ? { service_slug, user_hash, integrator_slug: integrator_id } : {}),
       };
       fs.mkdirSync(CONNECT_PENDING_DIR, { recursive: true, mode: 0o700 });
       fs.writeFileSync(pendingPath(token), JSON.stringify(pending), { mode: 0o600 });
+      console.info('[session-migration] created auth=%s destination=%s', pending._audit_auth,
+        destinationName ? 'named' : 'inline');
 
       const url_out = useDeterministic
         ? `${BASE_URL}/${integrator_id}/${service_slug}/${user_hash}?gen=${token}`
