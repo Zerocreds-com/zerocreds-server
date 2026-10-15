@@ -1,0 +1,11 @@
+{
+  "name": "@zerocreds/mcp-provider",
+  "version": "1.0.0",
+  "description": "Worker-compatible ZeroCreds wallet MCP provider",
+  "main": "mcp/provider.js",
+  "exports": {
+    ".": "./mcp/provider.js"
+  },
+  "files": ["mcp/provider.js"],
+  "type": "commonjs"
+}
