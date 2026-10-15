@@ -1,0 +1,14 @@
+{
+  "name": "zerocreds-wallet-metadata-sandbox",
+  "main": "src/index.js",
+  "account_id": "d740a05e9442c1d0feacae2dfc673e93",
+  "compatibility_date": "2026-10-15",
+  "workers_dev": true,
+  "vars": { "OPENBAO_MOUNT": "zc_wallet_sandbox" },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "zerocreds-wallet-sandbox",
+    "database_id": "c19f4f65-3b18-4ef6-9174-d8bd6ebdc02a",
+    "migrations_dir": "migrations"
+  }]
+}

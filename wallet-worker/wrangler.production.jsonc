@@ -1,0 +1,14 @@
+{
+  "name": "zerocreds-wallet-metadata-production",
+  "main": "src/index.js",
+  "account_id": "d740a05e9442c1d0feacae2dfc673e93",
+  "compatibility_date": "2026-10-15",
+  "workers_dev": false,
+  "vars": { "OPENBAO_MOUNT": "zc_wallet_production" },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "zerocreds-wallet-production",
+    "database_id": "4cfba689-96b5-4888-a5cb-dadf6e1fba64",
+    "migrations_dir": "migrations"
+  }]
+}
