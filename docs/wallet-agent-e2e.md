@@ -1,6 +1,7 @@
 # Wallet form path for an agent
 
 This branch joins the ZeroCreds signed form API, the standalone D1 metadata Worker and OpenBao KV v2. It is a sandbox implementation, not a deployed credential-use broker. A real local E2E with OpenBao 2.7.1 and Wrangler's local D1 passed on 2026-10-15.
+An isolated OpenCode run also invoked `zerocreds_wallet_form_create` through the new MCP server and received `form_id` and `connection_id` from a synthetic local API. This proves model-to-MCP tool discovery and invocation; it does not prove Runner credential use.
 
 The host gives the MCP process `ZEROCREDS_URL` and `ZEROCREDS_WALLET_API_TOKEN`. The wallet API token is bound server-side to an immutable `owner_id`, `profile_id` and one admin-configured OpenBao destination. The agent invokes `zerocreds_wallet_form_create` with a provider, credential kind and optional fields. It receives a one-time URL, `form_id` and `connection_id`, then calls `zerocreds_wallet_form_status` to observe `pending`, `done`, `expired` or `revoked`. Neither tool accepts an owner, profile, destination or credential value. Existing `zerocreds_create_session` and `zerocreds_check_status` remain available for existing clients.
 
