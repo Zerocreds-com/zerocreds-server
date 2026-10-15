@@ -2318,7 +2318,10 @@ function createApp(config = {}) {
         let doneData = {};
         try { doneData = JSON.parse(fs.readFileSync(doneFile, 'utf8')); } catch {}
         const { _integrator_id, ...result } = doneData;
-        if (!owns(_integrator_id)) return json(res, 200, { status: 'expired' });
+        // Old .done markers predate owner recording. Their 128-bit URL token was
+        // the status capability; keep that contract for pre-existing keys only.
+        const legacyDone = _integrator_id === undefined && isLegacyIntegrator(integrator);
+        if (!owns(_integrator_id) && !legacyDone) return json(res, 200, { status: 'expired' });
         return json(res, 200, { status: 'done', ...result });
       }
       let p = readPending(token);
