@@ -22,9 +22,12 @@ jobs:
             set -eu
             echo "service_status=$(systemctl is-active zerocreds-server || true)"
             echo "unauthenticated_create_status=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:3456/api/session/create || true)"
+            service_user=$(systemctl show -p User --value zerocreds-server)
+            if [ "$service_user" = "$(id -un)" ]; then echo 'service_user_matches_deploy=true'; else echo 'service_user_matches_deploy=false'; fi
             pid=$(systemctl show -p MainPID --value zerocreds-server)
             python3 - "$pid" <<'PY'
-            import collections, json, sys
+            import collections, json, os, stat, sys
+            from datetime import datetime, timedelta, timezone
             from pathlib import Path
             pid = sys.argv[1]
             try:
@@ -34,6 +37,15 @@ jobs:
                     print(f'env_{name}={name in names}')
             except (OSError, ValueError):
                 print('process_environment=unreadable')
+            token_file = Path.home() / '.config/zerocreds/admin-token'
+            try:
+                token_stat = token_file.lstat()
+                private = stat.S_ISREG(token_stat.st_mode) and token_stat.st_uid == os.getuid() and not token_stat.st_mode & 0o077
+                print(f'admin_token_file_private={private}')
+            except FileNotFoundError:
+                print('admin_token_file=missing')
+            except OSError:
+                print('admin_token_file=unreadable')
             for filename in ('zerocreds-destinations.json', 'zerocreds-integrators.json'):
                 file = Path.home() / filename
                 try:
@@ -57,4 +69,30 @@ jobs:
                     print(f'{filename}=missing')
                 except (OSError, ValueError):
                     print(f'{filename}=unreadable')
+            try:
+                counts = collections.Counter()
+                now = datetime.now(timezone.utc)
+                with Path('/var/log/nginx/access.log').open() as access_log:
+                    for line in access_log:
+                        parts = line.split('"', 2)
+                        if len(parts) < 3 or not parts[1].startswith('POST /api/session/create '):
+                            continue
+                        try:
+                            timestamp = line.split('[', 1)[1].split(']', 1)[0]
+                            age = now - datetime.strptime(timestamp, '%d/%b/%Y:%H:%M:%S %z')
+                            status = parts[2].strip().split(' ', 1)[0]
+                        except (IndexError, ValueError):
+                            counts['unparsed'] += 1
+                            continue
+                        if timedelta(0) <= age <= timedelta(days=30):
+                            counts['30d'] += 1
+                            if status.startswith('2'):
+                                counts['30d_2xx'] += 1
+                            if age <= timedelta(days=7):
+                                counts['7d'] += 1
+                                if status.startswith('2'):
+                                    counts['7d_2xx'] += 1
+                print(f'access_log_session_create_counts={dict(counts)}')
+            except OSError:
+                print('access_log=unreadable')
             PY
