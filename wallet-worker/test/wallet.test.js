@@ -36,6 +36,19 @@ test('service authentication is mandatory and no shared token means fail closed'
   expect(oversize.status).toBe(400);
 });
 
+test('host assertion replay claims are atomic, one-time and store only a digest', async () => {
+  const digest = 'a'.repeat(64);
+  const expiresAt = Date.now() + 120_000;
+  const first = await call('/internal/assertions/claim', { jti_hash: digest, expires_at: expiresAt });
+  expect(first).toEqual({ status: 200, body: { claimed: true } });
+  expect((await call('/internal/assertions/claim', { jti_hash: digest, expires_at: expiresAt })).status).toBe(409);
+  expect((await call('/internal/assertions/claim', { jti_hash: 'not-a-digest', expires_at: expiresAt })).status).toBe(400);
+  expect((await call('/internal/assertions/claim', { jti_hash: 'b'.repeat(64), expires_at: Date.now() - 1 })).status).toBe(400);
+  const row = await env.DB.prepare('SELECT * FROM wallet_assertions WHERE jti_hash = ?').bind(digest).first();
+  expect(row.expires_at).toBe(expiresAt);
+  expect(JSON.stringify(row)).not.toContain('assertion-token');
+});
+
 test('allocation is idempotent and derives an owner-scoped OpenBao path', async () => {
   const ownerId = owner();
   const key = `request_${crypto.randomUUID().replaceAll('-', '')}`;

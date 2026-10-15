@@ -3,6 +3,7 @@ const FORM_ID = /^[a-f0-9]{32}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const PROVIDER = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const KEY = /^[a-zA-Z0-9_-]{16,128}$/;
+const ASSERTION_JTI = /^[a-f0-9]{64}$/;
 
 function response(status, body) {
   return new Response(JSON.stringify(body), { status, headers: {
@@ -153,6 +154,19 @@ async function revoke(env, request, connectionId) {
   return result.meta.changes === 1 ? response(200, { connection_id: connectionId, state: 'revoked' })
     : response(404, { error: 'connection_unavailable' });
 }
+async function claimAssertion(env, request) {
+  const body = await readBody(request, ['jti_hash', 'expires_at']);
+  const now = Date.now();
+  if (!body || !validText(body.jti_hash, ASSERTION_JTI) || !Number.isSafeInteger(body.expires_at)
+      || body.expires_at <= now || body.expires_at > now + 300_000) {
+    return response(400, { error: 'invalid_assertion_claim' });
+  }
+  await env.DB.prepare('DELETE FROM wallet_assertions WHERE expires_at <= ?').bind(now).run();
+  const inserted = await env.DB.prepare(`INSERT OR IGNORE INTO wallet_assertions
+    (jti_hash, expires_at, created_at) VALUES (?, ?, ?)`).bind(body.jti_hash, body.expires_at, now).run();
+  return inserted.meta.changes === 1 ? response(200, { claimed: true })
+    : response(409, { error: 'assertion_replayed' });
+}
 export default {
   async fetch(request, env) {
     if (!env.DB || !env.WALLET_SERVICE_TOKEN || !env.OPENBAO_MOUNT) return response(503, { error: 'wallet_not_configured' });
@@ -161,6 +175,7 @@ export default {
     try {
       if (url.pathname === '/internal/connections/allocate' && request.method === 'POST') return allocate(env, request);
       if (url.pathname === '/internal/forms' && request.method === 'POST') return registerForm(env, request);
+      if (url.pathname === '/internal/assertions/claim' && request.method === 'POST') return claimAssertion(env, request);
       const completed = /^\/internal\/forms\/([a-f0-9]{32})\/complete$/.exec(url.pathname);
       if (completed && request.method === 'POST') return completeForm(env, request, completed[1]);
       const connection = /^\/internal\/connections\/([a-zA-Z0-9_-]{1,100})$/.exec(url.pathname);
