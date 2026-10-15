@@ -148,7 +148,7 @@ token
 
 ---
 
-For ServerlessAgence developer-run credentials, see the [owner-scoped intake and runner binding contract](docs/serverlessagence-runner-credential-intake.md). It separates ZeroCreds write-only collection from the runner broker that authorizes credential use per run.
+For the planned ServerlessAgence D1 wallet, see the [task-driven MCP form, destination preflight and owner/profile disclosure contract](docs/serverlessagence-runner-credential-intake.md). The current ZeroCreds server does not yet store form sessions or credentials in D1.
 
 ---
 
