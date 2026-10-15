@@ -507,7 +507,7 @@ function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
       case 'local_file': return `~/agent-tokens/${escHtml(String(dest.uid || '…'))}/${escHtml(String(dest.filename || '…'))}`;
       case 'gcp_secret_manager': return `GCP Secret Manager`;
       case 'aws_secrets_manager': return `AWS Secrets Manager`;
-      case 'vault': return `HashiCorp Vault`;
+      case 'vault': return dest.preflight_path_prefix ? `OpenBao KV v2` : `Vault-compatible secret store`;
       case 'macos_keychain': return `macOS Keychain`;
       case 'windows_credential_manager': return `Windows Credential Manager`;
       case 'os_keychain': return `OS native store (Keychain / Credential Manager / file)`;
@@ -557,6 +557,13 @@ function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
   <button type="button" class="where-btn" data-action="toggle-where" data-target="where-info" aria-controls="where-info" aria-expanded="false">How is this data handled? ▾</button>
   <div id="where-info" class="where-info" hidden>${whereBlocks.join('<div class="wb-sep"></div>')}</div>
 </div>` : '';
+  const storageSummary = pending.preflight?.checked && pending.destination?.type === 'vault'
+    ? `<div class="storage-summary"><strong>Storage: OpenBao KV v2</strong><br>
+       Path: <code>${escHtml(pending.destination.path)}</code><br>
+       Storage checked: ${escHtml(pending.preflight.at)}<br>
+       Credential version: not created yet.<br>
+       Wallet owner and profile: not verified by this form version.</div>`
+    : '';
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -579,6 +586,8 @@ function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
   body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:16px;line-height:1.5;background:var(--glow),var(--bg);background-attachment:fixed;color:var(--text);display:flex;align-items:center;justify-content:center;min-height:100vh;min-height:100dvh;padding:40px 16px}
   a{color:var(--link)}
   .card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:28px 32px 24px;max-width:480px;width:100%;box-shadow:var(--shadow)}
+  .storage-summary{border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin:0 0 18px;color:var(--muted);font-size:13px;overflow-wrap:anywhere}
+  .storage-summary strong{color:var(--text)}
   .zc-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:24px;padding-bottom:18px;border-bottom:1px solid var(--border)}
   .zc-brand{display:flex;align-items:center;gap:10px;min-width:0}
   .zc-dot{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,var(--accent),var(--accent-2));display:grid;place-items:center;flex-shrink:0;box-shadow:0 2px 8px -2px var(--ring)}
@@ -784,6 +793,7 @@ document.addEventListener('DOMContentLoaded', () => {
   <div id="form-view">
     <h1>${escHtml(title)}</h1>
     <p class="sub">${description}</p>
+    ${storageSummary}
     ${fieldHtml}
     <div class="actions">
       <button id="btn" type="button" data-action="submit">Submit</button>
@@ -947,6 +957,17 @@ function createApp(config = {}) {
     if (integrator?.destinations?.[destination]) return integrator.destinations[destination];
     if (NAMED_DESTINATIONS[destination]) return NAMED_DESTINATIONS[destination];
     return null;
+  }
+
+  function resolvePendingNamedDestination(name, integratorId) {
+    if (integratorId === 'admin') return NAMED_DESTINATIONS[name] || null;
+    const integrator = Object.values(INTEGRATORS).find(i => i.id === integratorId);
+    if (integrator?.destinations?.[name]) return integrator.destinations[name];
+    return NAMED_DESTINATIONS[name] || null;
+  }
+
+  function destinationFingerprint(destination) {
+    return crypto.createHash('sha256').update(JSON.stringify(destination)).digest('hex');
   }
 
   function readPending(token) {
@@ -1259,12 +1280,19 @@ function createApp(config = {}) {
               : `destination.type required for level "${level}"` });
           }
           if (!r?.type) return json(res, 400, { error: `destination.type required for level "${level}"` });
+          if (r.type === 'vault' && r.preflight_path_prefix) {
+            return json(res, 400, { error: 'openbao_preflight_requires_single_destination' });
+          }
           resolvedByLevel[level] = r;
         }
       }
 
       // Resolve single destination if provided
+      const destinationName = typeof destination === 'string' ? destination : null;
       if (destination) {
+        if (typeof destination !== 'string' && destination.type === 'vault' && destination.preflight_path_prefix) {
+          return json(res, 400, { error: 'openbao_preflight_requires_named_destination' });
+        }
         const resolved = resolveDestination(destination, integrator);
         if (resolved === null) {
           return json(res, 400, { error: typeof destination === 'string'
@@ -1291,14 +1319,21 @@ function createApp(config = {}) {
       // Default: on. Opt-out with test_destination: false in the request.
       // Only runs for http_post destinations (no external service to probe for others).
       // Catches misconfigured URLs, wrong auth, and bad network paths before the user sees the form.
-      if (payload.test_destination !== false && destination?.type === 'http_post') {
+      const openbaoPreflight = destination?.type === 'vault' && !!destination.preflight_path_prefix;
+      if (openbaoPreflight && payload.test_destination === false) {
+        return json(res, 400, { error: 'openbao_preflight_required' });
+      }
+      let preflightResult;
+      if (openbaoPreflight || (payload.test_destination !== false && destination?.type === 'http_post')) {
         try {
-          await testDestination(destination);
+          preflightResult = await testDestination(destination, fields);
         } catch (e) {
           return json(res, 400, {
             error: 'destination_unreachable',
-            detail: e.message.slice(0, 300),
-            hint: 'Check destination URL and Authorization header. Pass test_destination: false to skip this check.',
+            detail: openbaoPreflight ? e.message : e.message.slice(0, 300),
+            hint: openbaoPreflight
+              ? 'Check the configured OpenBao writer, owner probe path and metadata/cleanup policy.'
+              : 'Check destination URL and Authorization header. Pass test_destination: false to skip this check.',
           });
         }
       }
@@ -1332,8 +1367,19 @@ function createApp(config = {}) {
       const token = crypto.randomBytes(16).toString('hex');
       const expires = Date.now() + Math.min(Math.max(ttl_minutes, 1), 1440) * 60 * 1000;
 
+      const pendingDestination = destination ? { ...destination } : null;
+      if (pendingDestination && openbaoPreflight) {
+        for (const key of ['token', 'role_id', 'secret_id', 'preflight_metadata_token']) {
+          delete pendingDestination[key];
+        }
+      }
       const pending = { token, title, description, fields,
-        destination: destination || null,
+        destination: pendingDestination,
+        ...(openbaoPreflight ? { preflight: { checked: !!preflightResult?.checked, at: new Date().toISOString() } } : {}),
+        ...(openbaoPreflight ? {
+          destination_ref: destinationName,
+          destination_sha256: destinationFingerprint(destination),
+        } : {}),
         destinations_by_level: resolvedByLevel || null,
         expires, notify,
         integrator_id,
@@ -1480,7 +1526,17 @@ function createApp(config = {}) {
             }
             saveResult = { secret_ids: secretIds };
           } else {
-            saveResult = await saveToDestination(pending.destination, clean, { tokensDir: AGENT_TOKENS_DIR, context: { uid: pending.uid, service: pending.service_slug } });
+            let destinationForWrite = pending.destination;
+            if (pending.destination_ref) {
+              destinationForWrite = resolvePendingNamedDestination(pending.destination_ref, pending.integrator_id);
+              if (!destinationForWrite || destinationFingerprint(destinationForWrite) !== pending.destination_sha256) {
+                return json(res, 409, { error: 'destination_changed' });
+              }
+            }
+            saveResult = await saveToDestination(destinationForWrite, clean, { tokensDir: AGENT_TOKENS_DIR, context: { uid: pending.uid, service: pending.service_slug } });
+            if (pending.destination_ref && (!Number.isInteger(saveResult?.version) || saveResult.version < 1)) {
+              throw new Error('openbao_write_receipt_missing');
+            }
           }
         } catch (e) {
           console.error('[dynamic] save failed:', e.message);

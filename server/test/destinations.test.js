@@ -304,6 +304,197 @@ test('vault — missing token and role_id/secret_id → form submission fails wi
   assert.equal(submitRes.status, 500);
 });
 
+test('named OpenBao KV-v2 destination probes owner path, confirms version, cleans up, then writes real value', async () => {
+  const calls = [];
+  const mock = await startMockServer((req, res) => {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      calls.push({ method: req.method, path: req.url, token: req.headers['x-vault-token'],
+        body: body ? JSON.parse(body) : null });
+      res.setHeader('Content-Type', 'application/json');
+      if (req.url === '/v1/sys/capabilities-self') {
+        return res.end(JSON.stringify({ capabilities: ['create', 'update'] }));
+      }
+      if (req.method === 'POST') return res.end(JSON.stringify({ data: { version: req.url.includes('/probes/') ? 1 : 4 } }));
+      if (req.method === 'GET') return res.end(JSON.stringify({ data: { current_version: 1 } }));
+      res.writeHead(204).end();
+    });
+  });
+  const dest = { type: 'vault', address: `http://127.0.0.1:${mock.port}`,
+    path: 'secret/data/owners/owner-a/connections/connection-a', token: 'writer-token',
+    preflight_path_prefix: 'secret/data/owners/owner-a/probes',
+    preflight_metadata_token: 'metadata-token' };
+  const srv = await startServer({ namedDestinations: { 'owner-a-openbao': dest } });
+  try {
+    const create = await request(srv.port, 'POST', '/api/session/create', {
+      title: 'Connect', fields: [{ name: 'api_key', label: 'API key', type: 'password' }],
+      destination: 'owner-a-openbao',
+    }, { Authorization: `Bearer ${srv.adminToken}` });
+    assert.equal(create.status, 200);
+    assert.equal(calls.length, 4);
+    assert.deepEqual(calls.map(c => c.method), ['POST', 'POST', 'GET', 'DELETE']);
+    assert.equal(calls[0].path, '/v1/sys/capabilities-self');
+    assert.deepEqual(calls[0].body, { paths: [dest.path] });
+    assert.match(calls[1].path, /^\/v1\/secret\/data\/owners\/owner-a\/probes\/[0-9a-f-]+$/);
+    assert.equal(calls[1].token, 'writer-token');
+    assert.deepEqual(calls[1].body, { data: { api_key: '__zerocreds_probe__' } });
+    assert.equal(calls[2].token, 'metadata-token');
+    assert.equal(calls[3].token, 'metadata-token');
+    assert.equal(calls[2].path, calls[1].path.replace('/data/', '/metadata/'));
+    assert.equal(calls[3].path, calls[2].path);
+    const pending = fs.readFileSync(path.join(srv.pendingDir, `${create.body.token}.json`), 'utf8');
+    assert.ok(!pending.includes('metadata-token'));
+    assert.ok(!pending.includes('writer-token'));
+    const form = await request(srv.port, 'GET', `/f/${create.body.token}`);
+    assert.equal(form.status, 200);
+    assert.match(form.raw, /Storage: OpenBao KV v2/);
+    assert.match(form.raw, /Storage checked:/);
+    assert.match(form.raw, /Wallet owner and profile: not verified/);
+    assert.ok(!form.raw.includes('writer-token'));
+    assert.ok(!form.raw.includes('metadata-token'));
+    const submit = await request(srv.port, 'POST', `/f/${create.body.token}`,
+      { t: create.body.token, fields: { api_key: 'real-secret' } });
+    assert.equal(submit.status, 200);
+    assert.equal(calls.length, 5);
+    assert.equal(calls[4].path, '/v1/secret/data/owners/owner-a/connections/connection-a');
+    assert.deepEqual(calls[4].body, { data: { api_key: 'real-secret' } });
+    const done = JSON.parse(fs.readFileSync(path.join(srv.pendingDir, `${create.body.token}.done`), 'utf8'));
+    assert.equal(done.version, 4);
+    assert.equal(done.secret_id, dest.path);
+
+    const second = await request(srv.port, 'POST', '/api/session/create', {
+      title: 'Connect again', fields: [{ name: 'api_key', label: 'API key' }],
+      destination: 'owner-a-openbao',
+    }, { Authorization: `Bearer ${srv.adminToken}` });
+    assert.equal(second.status, 200);
+    const changed = await request(srv.port, 'POST', '/api/destinations', {
+      name: 'owner-a-openbao', destination: { ...dest,
+        path: 'secret/data/owners/owner-a/connections/connection-b' },
+    }, { Authorization: `Bearer ${srv.adminToken}` });
+    assert.equal(changed.status, 200);
+    const callCount = calls.length;
+    const submitAfterChange = await request(srv.port, 'POST', `/f/${second.body.token}`,
+      { t: second.body.token, fields: { api_key: 'must-not-be-written' } });
+    assert.equal(submitAfterChange.status, 409);
+    assert.equal(submitAfterChange.body.error, 'destination_changed');
+    assert.equal(calls.length, callCount);
+  } finally {
+    await srv.stop();
+    await mock.close();
+  }
+});
+
+test('OpenBao preflight refuses an unverified write and cannot be disabled', async () => {
+  const mock = await startMockServer((req, res) => {
+    req.resume();
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/v1/sys/capabilities-self') {
+      return res.end(JSON.stringify({ capabilities: ['create', 'update'] }));
+    }
+    if (req.method === 'POST') return res.end(JSON.stringify({ data: { version: 1 } }));
+    if (req.method === 'GET') return res.end(JSON.stringify({ data: { current_version: 2 } }));
+    res.writeHead(204).end();
+  });
+  const srv = await startServer({ namedDestinations: { openbao: {
+    type: 'vault', address: `http://127.0.0.1:${mock.port}`,
+    path: 'secret/data/owners/owner-a/connections/connection-a', token: 'writer-token',
+    preflight_path_prefix: 'secret/data/owners/owner-a/probes',
+    preflight_metadata_token: 'metadata-token',
+  } } });
+  const body = { title: 'Connect', fields: [{ name: 'api_key', label: 'API key' }], destination: 'openbao' };
+  try {
+    const failed = await request(srv.port, 'POST', '/api/session/create', body,
+      { Authorization: `Bearer ${srv.adminToken}` });
+    assert.equal(failed.status, 400);
+    assert.equal(failed.body.error, 'destination_unreachable');
+    const disabled = await request(srv.port, 'POST', '/api/session/create',
+      { ...body, test_destination: false }, { Authorization: `Bearer ${srv.adminToken}` });
+    assert.equal(disabled.status, 400);
+    assert.equal(disabled.body.error, 'openbao_preflight_required');
+    const inline = await request(srv.port, 'POST', '/api/session/create',
+      { ...body, destination: JSON.parse(fs.readFileSync(srv.destinationsFile, 'utf8')).openbao },
+      { Authorization: `Bearer ${srv.adminToken}` });
+    assert.equal(inline.status, 400);
+    assert.equal(inline.body.error, 'openbao_preflight_requires_named_destination');
+    const byLevel = await request(srv.port, 'POST', '/api/session/create',
+      { title: body.title, fields: body.fields, destinations_by_level: { secret: 'openbao' } },
+      { Authorization: `Bearer ${srv.adminToken}` });
+    assert.equal(byLevel.status, 400);
+    assert.equal(byLevel.body.error, 'openbao_preflight_requires_single_destination');
+    assert.deepEqual(fs.readdirSync(srv.pendingDir), []);
+  } finally {
+    await srv.stop();
+    await mock.close();
+  }
+});
+
+test('OpenBao preflight blocks the form if probe cleanup is denied', async () => {
+  const mock = await startMockServer((req, res) => {
+    req.resume();
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/v1/sys/capabilities-self') {
+      return res.end(JSON.stringify({ capabilities: ['create', 'update'] }));
+    }
+    if (req.method === 'POST') return res.end(JSON.stringify({ data: { version: 1 } }));
+    if (req.method === 'GET') return res.end(JSON.stringify({ data: { current_version: 1 } }));
+    res.writeHead(403).end(JSON.stringify({ errors: ['permission denied'] }));
+  });
+  const srv = await startServer({ namedDestinations: { openbao: {
+    type: 'vault', address: `http://127.0.0.1:${mock.port}`,
+    path: 'secret/data/owners/owner-a/connections/connection-a', token: 'writer-token',
+    preflight_path_prefix: 'secret/data/owners/owner-a/probes',
+    preflight_metadata_token: 'metadata-token',
+  } } });
+  try {
+    const created = await request(srv.port, 'POST', '/api/session/create', {
+      title: 'Connect', fields: [{ name: 'api_key', label: 'API key' }], destination: 'openbao',
+    }, { Authorization: `Bearer ${srv.adminToken}` });
+    assert.equal(created.status, 400);
+    assert.equal(created.body.detail, 'openbao_preflight_metadata_delete_failed');
+    assert.deepEqual(fs.readdirSync(srv.pendingDir), []);
+  } finally {
+    await srv.stop();
+    await mock.close();
+  }
+});
+
+test('OpenBao submission without a KV-v2 version receipt does not report done', async () => {
+  const mock = await startMockServer((req, res) => {
+    req.resume();
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/v1/sys/capabilities-self') {
+      return res.end(JSON.stringify({ capabilities: ['create', 'update'] }));
+    }
+    if (req.method === 'POST') {
+      return res.end(JSON.stringify(req.url.includes('/probes/') ? { data: { version: 1 } } : {}));
+    }
+    if (req.method === 'GET') return res.end(JSON.stringify({ data: { current_version: 1 } }));
+    res.writeHead(204).end();
+  });
+  const srv = await startServer({ namedDestinations: { openbao: {
+    type: 'vault', address: `http://127.0.0.1:${mock.port}`,
+    path: 'secret/data/owners/owner-a/connections/connection-a', token: 'writer-token',
+    preflight_path_prefix: 'secret/data/owners/owner-a/probes',
+    preflight_metadata_token: 'metadata-token',
+  } } });
+  try {
+    const created = await request(srv.port, 'POST', '/api/session/create', {
+      title: 'Connect', fields: [{ name: 'api_key', label: 'API key' }], destination: 'openbao',
+    }, { Authorization: `Bearer ${srv.adminToken}` });
+    assert.equal(created.status, 200);
+    const submitted = await request(srv.port, 'POST', `/f/${created.body.token}`,
+      { t: created.body.token, fields: { api_key: 'real-secret' } });
+    assert.equal(submitted.status, 500);
+    assert.equal(submitted.body.error, 'failed to save credentials');
+    assert.ok(fs.existsSync(path.join(srv.pendingDir, `${created.body.token}.json`)));
+    assert.ok(!fs.existsSync(path.join(srv.pendingDir, `${created.body.token}.done`)));
+  } finally {
+    await srv.stop();
+    await mock.close();
+  }
+});
+
 // ── GET /api/destinations ──────────────────────────────────────────────────────
 
 test('GET /api/destinations — returns named destination types, no credentials', async () => {
