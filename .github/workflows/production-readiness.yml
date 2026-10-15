@@ -26,7 +26,7 @@ jobs:
             if [ "$service_user" = "$(id -un)" ]; then echo 'service_user_matches_deploy=true'; else echo 'service_user_matches_deploy=false'; fi
             pid=$(systemctl show -p MainPID --value zerocreds-server)
             python3 - "$pid" <<'PY'
-            import collections, json, os, stat, sys
+            import collections, json, os, re, stat, subprocess, sys
             from datetime import datetime, timedelta, timezone
             from pathlib import Path
             from urllib.parse import urlsplit
@@ -165,4 +165,23 @@ jobs:
                 print(f'pending_session_distinct_callback_hosts_30d={dict((k, len(v)) for k, v in callback_hosts.items())}')
             except OSError:
                 print('pending_sessions=unreadable')
+            # Count only fixed, value-free migration categories. Never print raw journal lines.
+            try:
+                result = subprocess.run(
+                    ['sudo', '-n', '/usr/bin/journalctl', '-u', 'zerocreds-server',
+                     '--since', '24 hours ago', '--no-pager', '-o', 'cat', '-n', '10000'],
+                    capture_output=True, text=True, timeout=20, check=False,
+                )
+                if result.returncode:
+                    print('session_migration_journal=unavailable')
+                else:
+                    migration = collections.Counter()
+                    pattern = re.compile(r'^\[session-migration\] (created|completed) auth=(anonymous|admin|integrator)(?: destination=(inline|named))?$')
+                    for line in result.stdout.splitlines():
+                        match = pattern.fullmatch(line.strip())
+                        if match:
+                            migration['_'.join(part for part in match.groups() if part)] += 1
+                    print(f'session_migration_events_24h={dict(migration)}')
+            except (OSError, subprocess.TimeoutExpired):
+                print('session_migration_journal=unavailable')
             PY
