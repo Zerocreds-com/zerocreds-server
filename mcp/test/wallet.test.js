@@ -19,7 +19,9 @@ test('agent MCP wallet tools create a form and poll value-free status', async ()
     res.setHeader('content-type', 'application/json');
     if (req.method === 'POST' && req.url === '/api/wallet/forms') {
       return res.end(JSON.stringify({ form_id: formId, connection_id: connectionId,
-        url: `http://test.local/f/${formId}`, state: 'pending' }));
+        url: `http://127.0.0.1:${api.address().port}/f/${formId}`,
+        status_url: `http://127.0.0.1:${api.address().port}/api/wallet/forms/${formId}/status`,
+        expires_at: '2030-01-01T00:00:00.000Z', state: 'pending' }));
     }
     if (req.method === 'GET' && req.url === `/api/wallet/forms/${formId}/status`) {
       return res.end(JSON.stringify({ form_id: formId, connection_id: connectionId,
@@ -50,6 +52,7 @@ test('agent MCP wallet tools create a form and poll value-free status', async ()
         { name: 'username', label: 'Username' }, { name: 'password', label: 'Password', type: 'password' },
       ],
     } });
+    assert.ok(created.content[0].text.startsWith('{'), JSON.stringify(created));
     assert.equal(JSON.parse(created.content[0].text).connection_id, connectionId);
     const status = await client.callTool({ name: 'zerocreds_wallet_form_status', arguments: { form_id: formId } });
     assert.equal(JSON.parse(status.content[0].text).status, 'done');

@@ -16,6 +16,7 @@ All endpoints are internal, require `Authorization: Bearer <WALLET_SERVICE_TOKEN
 | --- | --- | --- |
 | `POST /internal/connections/allocate` | `owner_id`, `profile_id`, `provider`, `idempotency_key` | Returns stable `connection_id` and a server-derived `<mount>/data/owners/<owner>/connections/<connection>` path. Repeating the key returns the same allocation. |
 | `POST /internal/forms` | `form_id`, `connection_id`, `owner_id`, `profile_id`, `manifest_id`, `expires_at` | Records an immutable form-to-connection binding. Same request may be retried; a conflicting binding returns 409. |
+| `POST /internal/assertions/claim` | `jti_hash`, `expires_at` | Atomically claims a one-time host assertion ID digest; reuse returns 409. Expired digests are pruned on claim. |
 | `POST /internal/forms/<form_id>/complete` | `owner_id`, `profile_id`, `manifest_id`, `kv_version`, `receipt_ref` | Confirms the already completed OpenBao write. Same version/receipt may be retried. A stale version or changed receipt returns 409. |
 | `GET /internal/connections/<connection_id>` | `X-Wallet-Owner`, `X-Wallet-Profile` headers | Returns a scoped, value-free connection status or 404. |
 | `POST /internal/connections/<connection_id>/revoke` | `owner_id`, `profile_id` | Prevents later form completion or new use. |

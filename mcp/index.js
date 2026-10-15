@@ -3,6 +3,7 @@
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { z } = require('zod');
+const { createWalletProvider, bindingForOperation, API_OPERATIONS } = require('./provider');
 
 const BASE_URL = (process.env.ZEROCREDS_URL || 'https://zerocreds.ru').replace(/\/$/, '');
 const ADMIN_TOKEN = process.env.ZEROCREDS_ADMIN_TOKEN || '';
@@ -25,17 +26,11 @@ async function apiCall(method, path, body) {
   }
 }
 
-async function walletApiCall(method, path, body) {
-  if (!WALLET_API_TOKEN) throw new Error('ZEROCREDS_WALLET_API_TOKEN is not configured');
-  const res = await fetch(`${BASE_URL}${path}`, {
-    method,
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${WALLET_API_TOKEN}` },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
-  return data;
-}
+const walletProvider = createWalletProvider({ baseUrl: BASE_URL });
+const walletHandlers = new Map(walletProvider.tools.map(tool => [tool.name, tool.handler]));
+const legacyWalletContext = (toolName) => ({ bindings: {
+  [bindingForOperation(API_OPERATIONS[toolName])]: WALLET_API_TOKEN,
+} });
 
 const server = new McpServer({
   name: 'zerocreds',
@@ -128,7 +123,7 @@ server.tool(
     idempotency_key: z.string().regex(/^[a-zA-Z0-9_-]{16,128}$/).optional(),
   },
   async (input) => ({ content: [{ type: 'text', text: JSON.stringify(
-    await walletApiCall('POST', '/api/wallet/forms', input), null, 2) }] }),
+    await walletHandlers.get('zerocreds_wallet_form_create')(input, legacyWalletContext('zerocreds_wallet_form_create')), null, 2) }] }),
 );
 
 server.tool(
@@ -136,7 +131,7 @@ server.tool(
   'Check whether a wallet form was completed. Returns only status, connection_id and version metadata; never credential values.',
   { form_id: z.string().regex(/^[a-f0-9]{32}$/) },
   async ({ form_id }) => ({ content: [{ type: 'text', text: JSON.stringify(
-    await walletApiCall('GET', `/api/wallet/forms/${form_id}/status`), null, 2) }] }),
+    await walletHandlers.get('zerocreds_wallet_form_status')({ form_id }, legacyWalletContext('zerocreds_wallet_form_status')), null, 2) }] }),
 );
 
 server.tool(
@@ -144,7 +139,7 @@ server.tool(
   'Check a saved connection by ID after the form link has expired. Returns metadata only, never credential values.',
   { connection_id: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/) },
   async ({ connection_id }) => ({ content: [{ type: 'text', text: JSON.stringify(
-    await walletApiCall('GET', `/api/wallet/connections/${connection_id}`), null, 2) }] }),
+    await walletHandlers.get('zerocreds_wallet_connection_status')({ connection_id }, legacyWalletContext('zerocreds_wallet_connection_status')), null, 2) }] }),
 );
 
 server.tool(
@@ -152,7 +147,7 @@ server.tool(
   'Mark a saved connection revoked when the user explicitly requests it. Trusted brokers must deny future use; this does not return or erase credential values.',
   { connection_id: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/) },
   async ({ connection_id }) => ({ content: [{ type: 'text', text: JSON.stringify(
-    await walletApiCall('POST', `/api/wallet/connections/${connection_id}/revoke`, {}), null, 2) }] }),
+    await walletHandlers.get('zerocreds_wallet_connection_revoke')({ connection_id }, legacyWalletContext('zerocreds_wallet_connection_revoke')), null, 2) }] }),
 );
 
 async function main() {

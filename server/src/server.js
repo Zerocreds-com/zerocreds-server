@@ -1149,6 +1149,7 @@ function createApp(config = {}) {
   const WALLET_WORKER_URL = config.walletWorkerUrl ?? process.env.ZEROCREDS_WALLET_WORKER_URL ?? '';
   const WALLET_SERVICE_TOKEN = config.walletServiceToken ?? process.env.ZEROCREDS_WALLET_SERVICE_TOKEN ?? '';
   const WALLET_CLIENTS_FILE = config.walletClientsFile ?? process.env.ZEROCREDS_WALLET_CLIENTS_FILE ?? '';
+  const WALLET_ASSERTION_ISSUERS_FILE = config.walletAssertionIssuersFile ?? process.env.ZEROCREDS_WALLET_ASSERTION_ISSUERS_FILE ?? '';
   // Unsafe-by-design conveniences for local/dev setups — all off unless explicitly enabled.
   const ALLOW_INLINE_DESTINATIONS = config.allowInlineDestinations ?? envFlag('ZEROCREDS_ALLOW_INLINE_DESTINATIONS');
   const DEST_OPTS = {
@@ -1220,6 +1221,83 @@ function createApp(config = {}) {
     WALLET_CLIENTS.set(tokenHash(token).toString('hex'), scope);
   }
 
+  // Host assertions are short-lived Ed25519 JWTs. Public keys and owner/profile
+  // mappings are operator-owned; claims can select only a preconfigured scope.
+  let walletAssertionIssuers = config.walletAssertionIssuers;
+  if (!walletAssertionIssuers && WALLET_ASSERTION_ISSUERS_FILE) {
+    const stat = fs.statSync(WALLET_ASSERTION_ISSUERS_FILE);
+    if (process.platform !== 'win32' && (stat.mode & 0o077)) {
+      throw new Error('wallet assertion issuers file must be private (mode 0600)');
+    }
+    walletAssertionIssuers = JSON.parse(fs.readFileSync(WALLET_ASSERTION_ISSUERS_FILE, 'utf8'));
+  }
+  const WALLET_ASSERTION_ISSUERS = new Map();
+  const walletOperations = new Set(['wallet.forms.create', 'wallet.forms.status', 'wallet.connections.status', 'wallet.connections.revoke']);
+  for (const [issuer, record] of Object.entries(walletAssertionIssuers || {})) {
+    if (!issuer || !record || typeof record !== 'object' || !record.keys || !record.profiles) {
+      throw new Error('invalid wallet assertion issuer configuration');
+    }
+    const keys = new Map();
+    for (const [kid, publicKey] of Object.entries(record.keys)) {
+      if (!/^[A-Za-z0-9._-]{1,100}$/.test(kid) || typeof publicKey !== 'string') {
+        throw new Error('invalid wallet assertion public key');
+      }
+      try {
+        const parsedKey = crypto.createPublicKey(publicKey);
+        if (parsedKey.asymmetricKeyType !== 'ed25519' || /PRIVATE KEY/.test(publicKey)) throw new Error();
+        keys.set(kid, parsedKey);
+      }
+      catch { throw new Error('invalid wallet assertion public key'); }
+    }
+    const profiles = new Map();
+    for (const [profileId, scope] of Object.entries(record.profiles)) {
+      if (!/^[A-Za-z0-9_-]{1,100}$/.test(profileId) || !scope || typeof scope !== 'object'
+        || !/^[a-zA-Z0-9_-]{1,100}$/.test(scope.owner_id || '') || scope.profile_id !== profileId
+        || !isSafeKey(scope.destination || '') || !Object.hasOwn(NAMED_DESTINATIONS, scope.destination)
+        || !Array.isArray(scope.callers) || !scope.callers.length
+        || scope.callers.some(caller => !['human', 'machine'].includes(caller))) {
+        throw new Error('invalid wallet assertion profile configuration');
+      }
+      profiles.set(profileId, Object.freeze({ owner_id: scope.owner_id, profile_id: profileId,
+        destination: scope.destination, callers: new Set(scope.callers) }));
+    }
+    WALLET_ASSERTION_ISSUERS.set(issuer, { keys, profiles });
+  }
+  function parseWalletAssertion(token, operation) {
+    try {
+      if (typeof token !== 'string' || token.length > 4096) return null;
+      const parts = token.split('.');
+      if (parts.length !== 3 || parts.some(part => !part)) return null;
+      const decode = part => Buffer.from(part, 'base64url').toString('utf8');
+      const header = JSON.parse(decode(parts[0]));
+      const claims = JSON.parse(decode(parts[1]));
+      if (!header || header.alg !== 'EdDSA' || header.typ !== 'JWT' || typeof header.kid !== 'string'
+        || !claims || typeof claims !== 'object' || Array.isArray(claims)) return null;
+      const issuer = WALLET_ASSERTION_ISSUERS.get(claims.iss);
+      const publicKey = issuer?.keys.get(header.kid);
+      if (!issuer || !publicKey || !crypto.verify(null, Buffer.from(`${parts[0]}.${parts[1]}`), publicKey,
+        Buffer.from(parts[2], 'base64url'))) return null;
+      const allowedClaimNames = new Set(['iss', 'aud', 'owner_id', 'profile_id', 'caller_class', 'operations', 'iat', 'exp', 'jti', 'run_id']);
+      if (Object.keys(claims).some(name => !allowedClaimNames.has(name))
+        || !['human', 'machine'].includes(claims.caller_class)
+        || claims.aud !== `zerocreds-wallet:${claims.caller_class}` || !Array.isArray(claims.operations)
+        || !claims.operations.length || claims.operations.some(value => !walletOperations.has(value))
+        || new Set(claims.operations).size !== claims.operations.length || !claims.operations.includes(operation)
+        || !Number.isSafeInteger(claims.iat) || !Number.isSafeInteger(claims.exp)
+        || claims.iat > Math.floor(Date.now() / 1000) + 30 || claims.exp <= Math.floor(Date.now() / 1000)
+        || claims.exp > Math.floor(Date.now() / 1000) + 300
+        || claims.exp <= claims.iat || claims.exp - claims.iat > 300
+        || !/^[A-Za-z0-9_-]{16,128}$/.test(claims.jti || '')) return null;
+      if (claims.caller_class === 'machine') {
+        if (!/^[A-Za-z0-9_.:-]{1,200}$/.test(claims.run_id || '')) return null;
+      } else if (claims.run_id !== undefined) return null;
+      const profile = issuer.profiles.get(claims.profile_id);
+      if (!profile || !profile.callers.has(claims.caller_class) || profile.owner_id !== claims.owner_id
+        || claims.owner_id !== claims.owner_id.trim()) return null;
+      return { issuer: claims.iss, profile, jti: claims.jti, exp: claims.exp };
+    } catch { return null; }
+  }
+
   async function walletCall(method, route, body, scope) {
     if (!WALLET_WORKER_URL || WALLET_SERVICE_TOKEN.length < 32) throw new Error('wallet unavailable');
     const base = new URL(WALLET_WORKER_URL);
@@ -1241,9 +1319,20 @@ function createApp(config = {}) {
     return result;
   }
 
-  function walletScope(authHeader) {
+  async function walletScope(authHeader, operation) {
     if (typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) return null;
-    return WALLET_CLIENTS.get(tokenHash(authHeader.slice(7).trim()).toString('hex')) || null;
+    const token = authHeader.slice(7).trim();
+    const legacyScope = WALLET_CLIENTS.get(tokenHash(token).toString('hex'));
+    if (legacyScope) return legacyScope;
+    const assertion = parseWalletAssertion(token, operation);
+    if (!assertion) return null;
+    try {
+      await walletCall('POST', '/internal/assertions/claim', {
+        jti_hash: crypto.createHash('sha256').update(assertion.jti).digest('hex'),
+        expires_at: assertion.exp * 1000,
+      });
+    } catch { return null; }
+    return { ...assertion.profile, requester: assertion.issuer };
   }
 
   function saveIntegrators() {
@@ -2070,7 +2159,7 @@ function createApp(config = {}) {
     // Wallet form API: a host-issued token pins owner/profile and the OpenBao
     // writer. The agent supplies only the requested credential shape.
     if (req.method === 'POST' && url.pathname === '/api/wallet/forms') {
-      const scope = walletScope(req.headers.authorization);
+      const scope = await walletScope(req.headers.authorization, 'wallet.forms.create');
       if (!scope) return json(res, 401, { error: 'unauthorized' });
       const payload = await readJson(req);
       if (!payload) return json(res, 400, { error: 'bad json' });
@@ -2153,7 +2242,7 @@ function createApp(config = {}) {
 
     const walletStatus = /^\/api\/wallet\/forms\/([a-f0-9]{32})\/status$/.exec(url.pathname);
     if (walletStatus && req.method === 'GET') {
-      const scope = walletScope(req.headers.authorization);
+      const scope = await walletScope(req.headers.authorization, 'wallet.forms.status');
       if (!scope) return json(res, 401, { error: 'unauthorized' });
       const formId = walletStatus[1];
       let pending = readPending(formId);
@@ -2180,7 +2269,8 @@ function createApp(config = {}) {
     const walletConnection = /^\/api\/wallet\/connections\/([a-zA-Z0-9_-]{1,100})(\/revoke)?$/.exec(url.pathname);
     if (walletConnection && (req.method === 'GET' && !walletConnection[2]
       || req.method === 'POST' && walletConnection[2])) {
-      const scope = walletScope(req.headers.authorization);
+      const scope = await walletScope(req.headers.authorization,
+        req.method === 'POST' ? 'wallet.connections.revoke' : 'wallet.connections.status');
       if (!scope) return json(res, 401, { error: 'unauthorized' });
       try {
         const connectionId = walletConnection[1];
