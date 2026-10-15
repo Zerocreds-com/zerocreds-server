@@ -94,6 +94,13 @@ test('wallet form: scoped agent request, OpenBao write, D1 completion, value-fre
     const pending = fs.readFileSync(path.join(srv.pendingDir, `${formId}.json`), 'utf8');
     assert.ok(!pending.includes('writer-token'));
     assert.ok(!pending.includes('metadata-token'));
+    const pendingFile = path.join(srv.pendingDir, `${formId}.json`);
+    const claimedFile = path.join(srv.pendingDir, `${formId}.claimed`);
+    fs.renameSync(pendingFile, claimedFile);
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    fs.utimesSync(claimedFile, old, old);
+    srv.server.sweepPending();
+    assert.ok(fs.existsSync(pendingFile), 'stale wallet claim is recoverable after a crash');
     const form = await request(srv.port, 'GET', `/f/${formId}`);
     assert.equal(form.status, 200);
     assert.match(form.raw, /Wallet owner: <code>owner_a<\/code>/);

@@ -1338,6 +1338,14 @@ function createApp(config = {}) {
           stale = typeof p?.expires === 'number' && p.expires < now;
         } else if (file.endsWith('.claimed')) {
           stale = fs.statSync(full).mtimeMs < now - CLAIM_STALE_MS;
+          if (stale) {
+            let p;
+            try { p = JSON.parse(fs.readFileSync(full, 'utf8')); } catch {}
+            if (p?.wallet && p.expires > now && !fs.existsSync(pendingPath(p.token))) {
+              fs.renameSync(full, pendingPath(p.token));
+              continue;
+            }
+          }
         } else if (file.endsWith('.done') || file.endsWith('.written')) {
           stale = fs.statSync(full).mtimeMs < now - DONE_TTL_MS;
         }
