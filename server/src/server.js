@@ -1109,10 +1109,32 @@ function validateFields(fields) {
 // Destination types that act on the ZeroCreds host itself.
 const SERVER_LOCAL_TYPES = new Set(['local_file', 'macos_keychain', 'windows_credential_manager', 'os_keychain']);
 
+function readAdminTokenFile(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || (stat.mode & 0o077) || (process.getuid && stat.uid !== process.getuid())) {
+      throw new Error('admin token file must be a private regular file owned by the service user');
+    }
+    if (stat.size > 256) throw new Error('admin token file is too large');
+    const token = fs.readFileSync(fd, 'utf8').trim();
+    if (token.length < 32 || /\s/.test(token)) throw new Error('admin token file must contain one token of at least 32 characters');
+    return token;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
 function createApp(config = {}) {
-  const ADMIN_TOKEN = config.adminToken ?? process.env.ZEROCREDS_ADMIN_TOKEN ?? '';
+  let ADMIN_TOKEN = config.adminToken ?? process.env.ZEROCREDS_ADMIN_TOKEN ?? '';
+  const ADMIN_TOKEN_FILE = config.adminTokenFile ?? process.env.ZEROCREDS_ADMIN_TOKEN_FILE ?? path.join(os.homedir(), '.config/zerocreds/admin-token');
+  if (!ADMIN_TOKEN) {
+    try { ADMIN_TOKEN = readAdminTokenFile(ADMIN_TOKEN_FILE); }
+    catch (e) { if (e.code !== 'ENOENT') throw e; }
+  }
   if (typeof ADMIN_TOKEN !== 'string' || !ADMIN_TOKEN) {
-    throw new Error('ZEROCREDS_ADMIN_TOKEN is required — refusing to start without an admin token');
+    throw new Error('ZEROCREDS_ADMIN_TOKEN or a private admin token file is required — refusing to start without an admin token');
   }
   const CONNECT_PENDING_DIR = config.pendingDir ?? process.env.ZEROCREDS_PENDING_DIR ?? path.join(os.homedir(), 'connect-pending');
   const AGENT_TOKENS_DIR = config.tokensDir ?? process.env.ZEROCREDS_TOKENS_DIR ?? path.join(os.homedir(), 'agent-tokens');

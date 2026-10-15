@@ -47,7 +47,7 @@ cd zerocreds-server/server
 npm ci
 npx playwright install chromium --with-deps   # only needed for nalog.ru
 
-export ZEROCREDS_ADMIN_TOKEN=your-secret-token   # required — the server refuses to start without it
+export ZEROCREDS_ADMIN_TOKEN=your-secret-token   # or use a private admin token file (see Deployment)
 PORT=3456 npm start
 ```
 
@@ -382,7 +382,8 @@ The form always shows, above the Submit button, who requested the data and the e
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `ZEROCREDS_ADMIN_TOKEN` | — (required) | Admin bearer token. The server refuses to start without it. |
+| `ZEROCREDS_ADMIN_TOKEN` | — | Admin bearer token. Required unless a private admin token file exists. |
+| `ZEROCREDS_ADMIN_TOKEN_FILE` | `~/.config/zerocreds/admin-token` | Alternate file containing a single admin token of at least 32 characters. Must be a regular file owned by the service user with mode 0600. |
 | `ZEROCREDS_HTTP_POST_ALLOWED_HOSTS` | empty (http_post disabled) | Comma-separated hostnames `http_post` may send to. |
 | `ZEROCREDS_ALLOW_INLINE_DESTINATIONS` | off | `1` accepts inline destination objects and lets integrators add their own destinations. Local/dev only. |
 | `ZEROCREDS_ALLOW_PRIVATE_DESTINATIONS` | off | `1` allows `http://` and private/loopback addresses for `http_post` and `vault`. Local/dev only. |
@@ -430,7 +431,7 @@ WorkingDirectory=/home/vova/zerocreds-server/server
 ExecStart=/usr/bin/node src/server.js
 Restart=always
 Environment=PORT=3456
-Environment=ZEROCREDS_ADMIN_TOKEN=your-token
+# Supply ZEROCREDS_ADMIN_TOKEN here or create a private admin token file.
 Environment=ZEROCREDS_HTTP_POST_ALLOWED_HOSTS=hooks.example.com
 User=vova
 
@@ -441,6 +442,19 @@ WantedBy=multi-user.target
 ```bash
 systemctl enable --now zerocreds-server
 ```
+
+For a file-backed token, create it as the service user before the first restart:
+
+```bash
+umask 077
+mkdir -p ~/.config/zerocreds
+openssl rand -hex 32 > ~/.config/zerocreds/admin-token
+chmod 600 ~/.config/zerocreds/admin-token
+```
+
+Keep this file out of the repository and backups accessible to other users. A missing,
+symlinked, group-readable or world-readable file prevents startup when no environment
+token is configured.
 
 nginx proxy: route `/connect/*`, `/f/*`, and `/api/*` to `:3456`.
 
