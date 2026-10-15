@@ -331,7 +331,7 @@ test('named OpenBao KV-v2 destination probes owner path, confirms version, clean
       title: 'Connect', fields: [{ name: 'api_key', label: 'API key', type: 'password' }],
       destination: 'owner-a-openbao',
     }, { Authorization: `Bearer ${srv.adminToken}` });
-    assert.equal(create.status, 200);
+    assert.equal(create.status, 200, JSON.stringify(create.body));
     assert.equal(calls.length, 4);
     assert.deepEqual(calls.map(c => c.method), ['POST', 'POST', 'GET', 'DELETE']);
     assert.equal(calls[0].path, '/v1/sys/capabilities-self');

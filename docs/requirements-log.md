@@ -14,11 +14,20 @@
 - [реализовано] Dynamic Form API v0.2.0 — POST /api/session/create создаёт форму с произвольными полями, GET /f/{token} отдаёт её пользователю, POST /f/{token} сохраняет данные
 - [реализовано] Multi-destination: local_file, gcp_secret_manager (write-only через secretVersionAdder), aws_secrets_manager (PutSecretValue), vault
 - [реализовано] GET /api/session/{token}/status — агент опрашивает статус без видимости credentials
-- [реализовано] ZEROCREDS_ADMIN_TOKEN — опциональная защита API создания сессий
+- [реализовано] ZEROCREDS_ADMIN_TOKEN — обязателен (#50): без него сервер не стартует; создание сессий только с admin/активным integrator токеном
 - [реализовано] GCP Secret Manager write-only auth — JWT без SDK, roles/secretmanager.secretVersionAdder
 - [реализовано] AWS Secrets Manager write-only — AWS4 HMAC подпись, PutSecretValue без GetSecretValue
 
-- [реализовано] Remember me — cookie `zc_uid` (UUID, HttpOnly, 365 дней) идентифицирует браузер; не-пароли сохраняются в `~/zerocreds-saved/{uid}.json` и предзаполняются при следующем визите; checkbox "Запомнить для следующего раза" на форме (предвыбран если данные уже есть); show/hide toggle (👁) и кнопка Paste для полей type=password
+- [отклонено] Remember me (cookie `zc_uid` + `~/zerocreds-saved/`) — удалено в #50: значения шарились между интеграторами и сохраняли secret-поля открытым текстом; UI никогда не отправлял `save`. Остались show/hide toggle (👁) и кнопка Paste для password-полей
+
+- [реализовано] #50 security hardening: реестр интеграторов в Map по sha256 токена + constant-time сравнение admin; /api/register создаёт pending-интегратора (активация POST /admin/integrators/approve); rate limit по X-Real-IP от nginx
+- [реализовано] #50 никакой запрос не роняет процесс: глобальный try/catch → 500, 413 на большое тело, строгая типизация входа
+- [реализовано] #50 экранирование всех строк сессии (включая description), t= только 32 hex, CSP с nonce, frame-ancestors 'none', no-referrer, no-store
+- [реализовано] #50 destinations: по умолчанию только именованные (inline — ZEROCREDS_ALLOW_INLINE_DESTINATIONS=1); http_post только https и хосты из ZEROCREDS_HTTP_POST_ALLOWED_HOSTS; приватные/loopback/link-local адреса блокируются при коннекте (ZEROCREDS_ALLOW_PRIVATE_DESTINATIONS=1 для dev); тело ответа upstream не возвращается
+- [реализовано] #50 форма всегда показывает над Submit кто запросил и точный destination; без "write-only" для читаемых destinations
+- [реализовано] #50 local_file сессий интеграторов → ~/agent-tokens/_integrators/{id}/...; одноразовые ссылки захватываются атомарно (rename); sweeper чистит просроченные pending/.done; каталоги 0700; статус виден только владельцу
+- [реализовано] #50 nalog: убраны скриншоты в /tmp и логирование текста страниц
+- [планируется] Rate limit на создание/сабмит сессий; индекс вместо полного скана pending для pretty URL (#50 audit, medium — вне scope)
 
 - [реализовано] Z0 CI/CD guard (#51) — удалён auto-merge.yml; deploy через GitHub Environment `production` (required reviewer) только с `main` после `test` на том же sha; `npm ci` + lockfile для server и mcp; Node 22; `npm audit --omit=dev`; gitleaks; syntax lint; actions запинены по SHA; README: исправлены утверждения про telemetry и /version
 - [реализовано] Z8 (#59) Дизайн формы /f/: светлая/тёмная тема (по умолчанию prefers-color-scheme, переключатель, выбор в localStorage, без вспышки), mobile-first (16px инпуты, крупные тап-таргеты, sticky Submit), без inline-обработчиков и style-атрибутов (готово к строгому CSP); скриншоты — `server/scripts/form-screenshots.js` → docs/screenshots/. Всегда видимый блок «Where this goes» — в рамках #50
