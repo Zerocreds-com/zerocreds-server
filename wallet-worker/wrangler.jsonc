@@ -1,0 +1,13 @@
+{
+  "name": "zerocreds-wallet-metadata-local",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-15",
+  "workers_dev": false,
+  "vars": { "OPENBAO_MOUNT": "zc_wallet_local" },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "zc-wallet-local",
+    "database_id": "00000000-0000-0000-0000-000000000001",
+    "migrations_dir": "migrations"
+  }]
+}
