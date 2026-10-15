@@ -1,6 +1,6 @@
 # ZeroCreds wallet metadata Worker
 
-This is the D1 side of the planned ServerlessAgence wallet. It stores **only metadata**. Secret values stay in OpenBao KV v2. This Worker is not deployed and is not yet connected to ZeroCreds forms or Runner.
+This is the D1 side of the planned ServerlessAgence wallet. It stores **only metadata**. Secret values stay in OpenBao KV v2. This Worker is not deployed. The wallet integration branch connects it to ZeroCreds forms, but it is not yet connected to a Runner credential-use broker.
 
 ZeroCreds operates the wallet infrastructure and its OpenBao administrative lifecycle; the customer owns the credential. ServerlessAgence receives a separate broker identity for authorized use, never OpenBao administration. The OpenCode agent receives no direct OpenBao identity. A write-only application policy does not prevent an OpenBao infrastructure administrator from accessing values, so production disclosure must state that boundary.
 
@@ -21,3 +21,5 @@ All endpoints are internal, require `Authorization: Bearer <WALLET_SERVICE_TOKEN
 The current Worker cannot prove an OpenBao write by itself: the trusted ZeroCreds service must verify the KV-v2 version receipt before calling `complete`. The `receipt_ref` is a SHA-256 reference, not a signed receipt or secret. If OpenBao succeeds and D1 completion fails, retry `complete` with the same form/version/receipt; the Worker does not mint a second version. Runtime use must separately check that the connection is active and belongs to the run's owner/profile. No secret read endpoint exists here.
 
 Before production: connect a trusted identity source, bind the signed form manifest to this D1 record, provision scoped OpenBao and D1 environments, establish service-token rotation and audit, and prove end-to-end retry/revocation against a real sandbox. See [the integration contract](../docs/serverlessagence-runner-credential-intake.md).
+
+The local form-to-wallet flow and operator checklist are documented in [wallet-agent-e2e.md](../docs/wallet-agent-e2e.md).

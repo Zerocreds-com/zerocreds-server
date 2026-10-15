@@ -659,7 +659,7 @@ function dynamicFormHtml(token, pending, host, nonce, api = null) {
       ${handleRow}
     </div>`;
 
-  const apiHtml = api ? `<div class="where-wrap">
+  const apiHtml = api && !pending.wallet ? `<div class="where-wrap">
   <button type="button" class="where-btn" data-action="toggle-where" data-target="api-info" aria-controls="api-info" aria-expanded="false">Copy as API request ▾</button>
   <div id="api-info" class="where-info" hidden>
     <div class="wb"><div class="wb-note">Same form from a script: values come from env variables, never from this page. Use the owner key or the one-time submit token as <code>ZEROCREDS_SUBMIT_TOKEN</code>.</div></div>
@@ -707,7 +707,11 @@ function dynamicFormHtml(token, pending, host, nonce, api = null) {
        Path: <code>${escHtml(pending.destination.path)}</code><br>
        Storage checked: ${escHtml(pending.preflight.at)}<br>
        Credential version: not created yet.<br>
-       Wallet owner and profile: not verified by this form version.</div>`
+       ${pending.wallet ? `Wallet owner: <code>${escHtml(pending.wallet.owner_id)}</code><br>
+       Profile: <code>${escHtml(pending.wallet.profile_id)}</code><br>
+       Connection: <code>${escHtml(pending.wallet.connection_id)}</code><br>
+       ZeroCreds operates this wallet; its infrastructure administrators can technically access stored values.`
+         : 'Wallet owner and profile: not verified by this form version.'}</div>`
     : '';
 
   return `<!DOCTYPE html>
@@ -1120,6 +1124,9 @@ function createApp(config = {}) {
   const INTEGRATORS_FILE = config.integratorsFile ?? process.env.ZEROCREDS_INTEGRATORS_FILE ?? path.join(os.homedir(), 'zerocreds-integrators.json');
   const BASE_URL = config.baseUrl ?? process.env.ZEROCREDS_BASE_URL ?? 'https://zerocreds.ru';
   const SIGNING_KEY_FILE = config.signingKeyFile ?? process.env.ZEROCREDS_SIGNING_KEY_FILE ?? path.join(os.homedir(), 'zerocreds-signing-key.pem');
+  const WALLET_WORKER_URL = config.walletWorkerUrl ?? process.env.ZEROCREDS_WALLET_WORKER_URL ?? '';
+  const WALLET_SERVICE_TOKEN = config.walletServiceToken ?? process.env.ZEROCREDS_WALLET_SERVICE_TOKEN ?? '';
+  const WALLET_CLIENTS_FILE = config.walletClientsFile ?? process.env.ZEROCREDS_WALLET_CLIENTS_FILE ?? '';
   // Unsafe-by-design conveniences for local/dev setups — all off unless explicitly enabled.
   const ALLOW_INLINE_DESTINATIONS = config.allowInlineDestinations ?? envFlag('ZEROCREDS_ALLOW_INLINE_DESTINATIONS');
   const DEST_OPTS = {
@@ -1172,6 +1179,50 @@ function createApp(config = {}) {
     console.log(`[config] loaded ${INTEGRATORS.size} integrator(s)`);
   }
   loadIntegrators();
+
+  // Wallet API tokens are issued by the trusted host and bound to an owner,
+  // profile and admin-configured OpenBao destination. The model cannot supply
+  // any of these values in a tool call.
+  const WALLET_CLIENTS = new Map();
+  let walletClients = config.walletClients;
+  if (!walletClients && WALLET_CLIENTS_FILE) {
+    if (process.platform !== 'win32' && (fs.statSync(WALLET_CLIENTS_FILE).mode & 0o077)) {
+      throw new Error('wallet clients file must be private (mode 0600)');
+    }
+    walletClients = JSON.parse(fs.readFileSync(WALLET_CLIENTS_FILE, 'utf8'));
+  }
+  for (const [token, scope] of Object.entries(walletClients || {})) {
+    if (token.length < 32 || token === ADMIN_TOKEN || !scope || !/^[a-zA-Z0-9_-]{1,100}$/.test(scope.owner_id || '')
+      || !/^[a-zA-Z0-9_-]{1,100}$/.test(scope.profile_id || '')
+      || !isSafeKey(scope.destination || '')) throw new Error('invalid wallet client configuration');
+    WALLET_CLIENTS.set(tokenHash(token).toString('hex'), scope);
+  }
+
+  async function walletCall(method, route, body, scope) {
+    if (!WALLET_WORKER_URL || WALLET_SERVICE_TOKEN.length < 32) throw new Error('wallet unavailable');
+    const base = new URL(WALLET_WORKER_URL);
+    if (base.protocol !== 'https:' && !(base.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(base.hostname))) {
+      throw new Error('wallet worker URL must use HTTPS');
+    }
+    const response = await fetch(new URL(route, base), {
+      method, signal: AbortSignal.timeout(10000),
+      headers: { Authorization: `Bearer ${WALLET_SERVICE_TOKEN}`, 'Content-Type': 'application/json',
+        ...(scope ? { 'X-Wallet-Owner': scope.owner_id, 'X-Wallet-Profile': scope.profile_id } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}), redirect: 'error',
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      const error = new Error(result?.error || 'wallet unavailable');
+      error.status = response.status;
+      throw error;
+    }
+    return result;
+  }
+
+  function walletScope(authHeader) {
+    if (typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) return null;
+    return WALLET_CLIENTS.get(tokenHash(authHeader.slice(7).trim()).toString('hex')) || null;
+  }
 
   function saveIntegrators() {
     const out = {};
@@ -1241,7 +1292,7 @@ function createApp(config = {}) {
 
   function resolvePendingNamedDestination(name, integratorId) {
     if (integratorId === 'admin') return NAMED_DESTINATIONS[name] || null;
-    const integrator = Object.values(INTEGRATORS).find(i => i.id === integratorId);
+    const integrator = findIntegratorById(integratorId);
     if (integrator?.destinations?.[name]) return integrator.destinations[name];
     return NAMED_DESTINATIONS[name] || null;
   }
@@ -1287,7 +1338,7 @@ function createApp(config = {}) {
           stale = typeof p?.expires === 'number' && p.expires < now;
         } else if (file.endsWith('.claimed')) {
           stale = fs.statSync(full).mtimeMs < now - CLAIM_STALE_MS;
-        } else if (file.endsWith('.done')) {
+        } else if (file.endsWith('.done') || file.endsWith('.written')) {
           stale = fs.statSync(full).mtimeMs < now - DONE_TTL_MS;
         }
         if (stale) { fs.unlinkSync(full); removed++; }
@@ -1353,6 +1404,20 @@ function createApp(config = {}) {
     }
   }
 
+  function walletDestination(scope, openbaoPath) {
+    const base = NAMED_DESTINATIONS[scope.destination];
+    if (!base || base.type !== 'vault' || !base.preflight_path_prefix) throw new Error('wallet destination unavailable');
+    const mount = openbaoPath.split('/')[0];
+    const expectedPrefix = `${mount}/data/owners/${scope.owner_id}/connections/`;
+    if (!openbaoPath.startsWith(expectedPrefix) || !/^[a-zA-Z0-9_-]{1,100}$/.test(openbaoPath.slice(expectedPrefix.length))) {
+      throw new Error('wallet path mismatch');
+    }
+    return { ...base, path: openbaoPath,
+      preflight_path_prefix: `${mount}/data/owners/${scope.owner_id}/probes`, create_only: true };
+  }
+
+  function walletWritePath(formId) { return pendingPath(formId, 'written'); }
+
   function signedManifest(formId, pending) {
     const { form } = pending;
     const manifest = {
@@ -1365,6 +1430,10 @@ function createApp(config = {}) {
       requester: requesterLabel(pending),
       fields: pending.fields.map(f => ({ name: f.name, label: f.label, type: f.type || 'text', required: f.required !== false })),
       destination: describeDestination(pending.destination, pending),
+      ...(pending.wallet ? { wallet: {
+        owner_id: pending.wallet.owner_id, profile_id: pending.wallet.profile_id,
+        connection_id: pending.wallet.connection_id,
+      } } : {}),
       submit: {
         method: 'POST',
         url: `${BASE_URL}/api/forms/${formId}/submit`,
@@ -1413,6 +1482,70 @@ function createApp(config = {}) {
 
     // One-time link: claim it before saving so concurrent submissions cannot both succeed.
     if (!claimPending(token)) return { status: 403, body: { error: 'invalid or expired token' } };
+
+    if (pending.wallet) {
+      const wallet = pending.wallet;
+      const scope = { owner_id: wallet.owner_id, profile_id: wallet.profile_id };
+      const digest = crypto.createHmac('sha256', token).update(canonicalJson(clean)).digest('hex');
+      try {
+        const connection = await walletCall('GET', `/internal/connections/${wallet.connection_id}`, null, scope);
+        if (connection.state === 'revoked' || connection.openbao_path !== wallet.openbao_path) {
+          releaseClaim(token);
+          return { status: 409, body: { error: 'wallet connection unavailable' } };
+        }
+        let written;
+        try { written = JSON.parse(fs.readFileSync(walletWritePath(token), 'utf8')); } catch {}
+        if (written && written.digest !== digest) {
+          releaseClaim(token);
+          return { status: 409, body: { error: 'submission differs from saved write' } };
+        }
+        if (!written) {
+          const base = NAMED_DESTINATIONS[wallet.destination];
+          if (!base || destinationFingerprint(base) !== wallet.destination_sha256) {
+            releaseClaim(token);
+            return { status: 409, body: { error: 'destination_changed' } };
+          }
+          const destination = walletDestination({ ...scope, destination: wallet.destination }, wallet.openbao_path);
+          const result = await saveToDestination(destination, { ...clean }, saveOptsFor(pending));
+          if (!Number.isInteger(result?.version) || result.version < 1) throw new Error('openbao_write_receipt_missing');
+          const receipt = signPayload(SIGNING_KEY, {
+            v: 1, type: 'zerocreds.receipt', form_id: token,
+            handle: pending.form.handle, kind: pending.form.kind,
+            owner: pending.integrator_id, manifest_id: pending.form.manifest_id,
+            fields: pending.fields.map(f => f.name).filter(n => clean[n] !== undefined),
+            destination: describeDestination(pending.destination, pending),
+            destination_ref: wallet.connection_id,
+            wallet: { owner_id: scope.owner_id, profile_id: scope.profile_id,
+              connection_id: wallet.connection_id, kv_version: result.version },
+            submitted_via: via, submitted_at: new Date().toISOString(),
+            server: { version: VERSION, commit: COMMIT },
+          });
+          written = { digest, version: result.version, receipt,
+            receipt_ref: sha256Hex(canonicalJson(receipt)) };
+          const temp = `${walletWritePath(token)}.${crypto.randomBytes(6).toString('hex')}`;
+          fs.writeFileSync(temp, JSON.stringify(written), { mode: 0o600, flag: 'wx' });
+          fs.renameSync(temp, walletWritePath(token));
+        }
+        await walletCall('POST', `/internal/forms/${token}/complete`, {
+          owner_id: scope.owner_id, profile_id: scope.profile_id,
+          manifest_id: pending.form.manifest_id, kv_version: written.version,
+          receipt_ref: written.receipt_ref,
+        });
+        fs.writeFileSync(pendingPath(token, 'done'), JSON.stringify({
+          connection_id: wallet.connection_id, version: written.version,
+          receipt_ref: written.receipt_ref, handle: pending.form.handle,
+          receipt: written.receipt, _integrator_id: pending.integrator_id,
+        }), { mode: 0o600 });
+        dropClaim(token);
+        try { fs.unlinkSync(walletWritePath(token)); } catch {}
+        return { status: 200, body: { ok: true, connection_id: wallet.connection_id,
+          handle: pending.form.handle, receipt: written.receipt } };
+      } catch (e) {
+        releaseClaim(token);
+        console.error('[wallet] completion failed:', e.message);
+        return { status: 503, body: { error: 'wallet save unavailable; retry with the same values' } };
+      }
+    }
 
     let saveResult;
     try {
@@ -1897,6 +2030,116 @@ function createApp(config = {}) {
     // Public key that verifies form manifests and submission receipts.
     if (req.method === 'GET' && url.pathname === '/.well-known/zerocreds-signing-key') {
       return json(res, 200, { alg: 'Ed25519', key_id: SIGNING_KEY.keyId, public_key_pem: SIGNING_KEY.publicKeyPem });
+    }
+
+    // Wallet form API: a host-issued token pins owner/profile and the OpenBao
+    // writer. The agent supplies only the requested credential shape.
+    if (req.method === 'POST' && url.pathname === '/api/wallet/forms') {
+      const scope = walletScope(req.headers.authorization);
+      if (!scope) return json(res, 401, { error: 'unauthorized' });
+      const payload = await readJson(req);
+      if (!payload) return json(res, 400, { error: 'bad json' });
+      const { provider, kind = 'token', title, description, ttl_minutes = 30, idempotency_key } = payload;
+      if (typeof provider !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(provider)
+        || !Object.hasOwn(FORM_KINDS, kind) || (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 200))
+        || (description !== undefined && (typeof description !== 'string' || description.length > 2000))
+        || !Number.isInteger(ttl_minutes) || ttl_minutes < 1 || ttl_minutes > 1440
+        || (idempotency_key !== undefined && (typeof idempotency_key !== 'string' || !/^[a-zA-Z0-9_-]{16,128}$/.test(idempotency_key)))
+      ) return json(res, 400, { error: 'invalid wallet form' });
+      const validated = validateFields(payload.fields === undefined ? FORM_KINDS[kind] : payload.fields);
+      if (validated.error) return json(res, 400, { error: validated.error });
+      const requestFingerprint = sha256Hex(canonicalJson({ provider, kind,
+        title: title || `Connect ${provider}`, description: description || '',
+        fields: validated.fields, ttl_minutes }));
+      let allocation, destination;
+      try {
+        allocation = await walletCall('POST', '/internal/connections/allocate', {
+          owner_id: scope.owner_id, profile_id: scope.profile_id, provider,
+          idempotency_key: idempotency_key || crypto.randomBytes(24).toString('hex'),
+        });
+        if (allocation.state !== 'allocated') return json(res, 409, { error: 'connection_already_used' });
+        for (const file of fs.readdirSync(CONNECT_PENDING_DIR)) {
+          if (!file.endsWith('.json')) continue;
+          let previous;
+          try { previous = JSON.parse(fs.readFileSync(path.join(CONNECT_PENDING_DIR, file), 'utf8')); } catch { continue; }
+          if (previous.wallet?.connection_id !== allocation.connection_id) continue;
+          if (previous.wallet.owner_id !== scope.owner_id || previous.wallet.profile_id !== scope.profile_id
+            || previous.wallet.request_fingerprint !== requestFingerprint || previous.expires < Date.now()) {
+            return json(res, 409, { error: 'wallet_form_conflict' });
+          }
+          return json(res, 200, { form_id: previous.token, connection_id: allocation.connection_id,
+            url: `${BASE_URL}/f/${previous.token}`,
+            status_url: `${BASE_URL}/api/wallet/forms/${previous.token}/status`,
+            expires_at: new Date(previous.expires).toISOString(), state: 'pending' });
+        }
+        destination = walletDestination(scope, allocation.openbao_path);
+        const destErr = validateDestination(destination, DEST_OPTS);
+        if (destErr) return json(res, 503, { error: 'wallet destination unavailable' });
+      } catch (e) {
+        console.error('[wallet] allocation failed:', e.message);
+        return json(res, 503, { error: 'wallet unavailable' });
+      }
+      const preflight = await preflightDestination(destination, payload, validated.fields);
+      if (preflight?.error) return json(res, 503, { error: 'wallet destination unavailable' });
+      const formId = crypto.randomBytes(16).toString('hex');
+      const submitToken = 'zcs_' + crypto.randomBytes(24).toString('hex');
+      const expires = Date.now() + ttl_minutes * 60_000;
+      const pending = {
+        token: formId, title: title || `Connect ${provider}`, description: description || '',
+        fields: validated.fields, destination: Object.fromEntries(Object.entries(destination)
+          .filter(([key]) => !['token', 'role_id', 'secret_id', 'preflight_metadata_token'].includes(key))),
+        preflight: preflight.preflight, destinations_by_level: null, expires, notify: null,
+        integrator_id: `wallet_${scope.owner_id}`, requester: String(scope.requester || 'ServerlessAgence').slice(0, 100),
+        uid: null, form: { name: provider, kind, handle: `cred:${provider}`,
+          submit_token_hash: tokenHash(submitToken).toString('hex') },
+        wallet: { owner_id: scope.owner_id, profile_id: scope.profile_id,
+          connection_id: allocation.connection_id, openbao_path: allocation.openbao_path,
+          request_fingerprint: requestFingerprint,
+          destination: scope.destination,
+          destination_sha256: destinationFingerprint(NAMED_DESTINATIONS[scope.destination]) },
+      };
+      const manifest = signedManifest(formId, pending);
+      pending.form.manifest_id = manifest.manifest_id;
+      try {
+        await walletCall('POST', '/internal/forms', {
+          form_id: formId, connection_id: allocation.connection_id,
+          owner_id: scope.owner_id, profile_id: scope.profile_id,
+          manifest_id: manifest.manifest_id, expires_at: expires,
+        });
+        fs.writeFileSync(pendingPath(formId), JSON.stringify(pending), { mode: 0o600, flag: 'wx' });
+      } catch (e) {
+        console.error('[wallet] form registration failed:', e.message);
+        return json(res, 503, { error: 'wallet unavailable' });
+      }
+      return json(res, 200, { form_id: formId, connection_id: allocation.connection_id,
+        url: `${BASE_URL}/f/${formId}`, status_url: `${BASE_URL}/api/wallet/forms/${formId}/status`,
+        expires_at: new Date(expires).toISOString(), state: 'pending' });
+    }
+
+    const walletStatus = /^\/api\/wallet\/forms\/([a-f0-9]{32})\/status$/.exec(url.pathname);
+    if (walletStatus && req.method === 'GET') {
+      const scope = walletScope(req.headers.authorization);
+      if (!scope) return json(res, 401, { error: 'unauthorized' });
+      const formId = walletStatus[1];
+      let pending = readPending(formId);
+      if (!pending) {
+        try { pending = JSON.parse(fs.readFileSync(pendingPath(formId, 'claimed'), 'utf8')); } catch {}
+      }
+      let done;
+      try { done = JSON.parse(fs.readFileSync(pendingPath(formId, 'done'), 'utf8')); } catch {}
+      const wallet = pending?.wallet;
+      if (wallet && (wallet.owner_id !== scope.owner_id || wallet.profile_id !== scope.profile_id)) {
+        return json(res, 404, { error: 'form_unavailable' });
+      }
+      const connectionId = wallet?.connection_id || done?.connection_id;
+      if (!connectionId) return json(res, 404, { error: 'form_unavailable' });
+      try {
+        const connection = await walletCall('GET', `/internal/connections/${connectionId}`, null, scope);
+        return json(res, 200, { form_id: formId, connection_id: connectionId,
+          status: connection.state === 'revoked' ? 'revoked' : done ? 'done'
+            : pending.expires < Date.now() ? 'expired' : 'pending',
+          ...(done ? { kv_version: done.version, receipt_ref: done.receipt_ref } : {}) });
+      } catch { return json(res, 503, { error: 'wallet unavailable' }); }
     }
 
     // ── POST /api/forms — form spec ────────────────────────────────────────────
