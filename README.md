@@ -148,6 +148,10 @@ token
 
 ---
 
+For the planned ServerlessAgence D1 wallet, see the [task-driven MCP form, destination preflight and owner/profile disclosure contract](docs/serverlessagence-runner-credential-intake.md). The current ZeroCreds server does not yet store form sessions or credentials in D1.
+
+---
+
 ## Agent Integration (HTTP API)
 
 Three steps from the agent's side:
