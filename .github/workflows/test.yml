@@ -60,6 +60,7 @@ jobs:
           find server/src server/test mcp wallet-worker/src wallet-worker/test -name '*.js' -not -path '*/node_modules/*' -print0 \
             | xargs -0 -n1 node --check
           python3 -m py_compile scripts/check-public.py
+          python3 -c 'from pathlib import Path; s=Path(".github/workflows/production-readiness.yml").read_text(); code=s.split("<<\x27PY\x27\n",1)[1].split("            PY",1)[0]; compile("\n".join(line[12:] for line in code.splitlines()), "production-readiness-inline.py", "exec")'
 
       - name: Unit tests
         run: |
