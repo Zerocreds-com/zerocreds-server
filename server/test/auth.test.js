@@ -151,6 +151,30 @@ test('legacy session destination behavior stays available only on legacy endpoin
   }
 });
 
+test('legacy keys can read historical ownerless done markers by session token', async () => {
+  const legacy = 'tok_legacy_done';
+  const modern = 'tok_modern_done';
+  const srv = await startServer({ integrators: {
+    [legacy]: { id: 'legacy-done', name: 'Legacy', destinations: {} },
+    [modern]: { id: 'modern-done', name: 'Modern', status: 'active', destinations: {} },
+  } });
+  try {
+    const historical = 'a'.repeat(32);
+    fs.writeFileSync(path.join(srv.pendingDir, `${historical}.done`),
+      JSON.stringify({ secret_id: 'old-result' }), { mode: 0o600 });
+    const legacyStatus = await request(srv.port, 'GET', `/api/session/${historical}/status`,
+      undefined, bearer(legacy));
+    assert.deepEqual(legacyStatus.body, { status: 'done', secret_id: 'old-result' });
+    const modernStatus = await request(srv.port, 'GET', `/api/session/${historical}/status`,
+      undefined, bearer(modern));
+    assert.deepEqual(modernStatus.body, { status: 'expired' });
+    const anonymousStatus = await request(srv.port, 'GET', `/api/session/${historical}/status`);
+    assert.equal(anonymousStatus.status, 401);
+  } finally {
+    await srv.stop();
+  }
+});
+
 test('Object.prototype property names are never accepted as tokens', async () => {
   for (const t of ['toString', 'constructor', '__proto__', 'hasOwnProperty', 'valueOf']) {
     const create = await request(ctx.port, 'POST', '/api/session/create', sessionBody, bearer(t));
