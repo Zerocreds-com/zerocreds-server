@@ -8,6 +8,14 @@ An agent asks a **generic ZeroCreds MCP tool** to prepare fields for its task. T
 
 A stable `connectionId` points to an owner-bound credential record. A runner or trusted MCP capability can use it only after owner, run and operation authorization. The exact list and names of credential-using open-source MCP methods are deferred until their implementations and policies are reviewed. Creating a form is not permission to execute arbitrary code with its secret.
 
+### Why D1, rather than a Vault server?
+
+“Vault” previously referred to a possible **OpenBao/HashiCorp Vault server**, not to a Cloudflare product or something already deployed. OpenBao KV v2 supplies secret versions and path-scoped ACLs, and OpenBao has audit devices. It also requires a separately operated stateful service, authentication and unseal, backups, monitoring and availability planning ([KV v2](https://openbao.org/docs/secrets/kv/kv-v2/), [storage operations](https://openbao.org/docs/configuration/storage/), [audit](https://openbao.org/docs/audit/)). ZeroCreds already has a `vault` destination adapter, but that does not mean a production OpenBao cluster or per-owner policies exist.
+
+D1 is the ServerlessAgence **initial default** because it fits the existing Cloudflare control plane and avoids a new always-on service. This is an operational choice, not a claim that SQL rows are a ready-made vault: we must build and test envelope encryption, key rotation/recovery, per-owner authorization, audit, versioning and a broker. D1's platform encryption at rest is not a substitute for these application controls. If those controls cannot pass the sandbox security tests, do not ship the D1 wallet; use an operated OpenBao service instead. Keep the `connectionId` and storage adapter stable so the backend can change without changing the MCP or Runner contract.
+
+Cloudflare Secrets Store is another product, separate from D1 and OpenBao. Its current open beta supports at most 100 production secrets per account and is designed around secrets bound to Cloudflare services, so it is unsuitable as the default per-user credential wallet ([Cloudflare documentation](https://developers.cloudflare.com/secrets-store/manage-secrets/)). It can hold a small number of service-level keys, subject to its access rules.
+
 ```text
 OpenCode agent -- intent + proposed fields --> trusted ZeroCreds MCP adapter
                                               | derives owner + destination
@@ -48,7 +56,7 @@ The form must show a **server-issued storage disclosure**, not agent-authored te
 
 | Displayed item | Source and meaning |
 | --- | --- |
-| Storage | “ServerlessAgence Vault · Cloudflare D1”, or the actual external destination type. Use “HashiCorp Vault” only for that actual product. |
+| Storage | “ServerlessAgence Wallet · Cloudflare D1”, or the actual external destination type. Use “OpenBao” or “HashiCorp Vault” only when that actual product stores the value. |
 | Wallet owner | Authenticated account/tenant and stable wallet identifier. A form link alone must not let another signed-in person claim this wallet. |
 | Bound profile | The trusted profile identity that may later request use, plus the task/run reference if this form was opened from a run. The profile is not chosen by prompt text. |
 | Version | Vault service release/schema version and current credential version, clearly distinguished. Before first submission, say “credential version: not created yet”. Never expose encryption-key material. |
