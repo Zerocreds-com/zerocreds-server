@@ -38,6 +38,25 @@ Browser submission consumes the form once and checks its immutable owner, schema
 
 The form URL is a temporary bearer capability for the intended person. A returned browser link works with current MCP clients. MCP URL-mode elicitation may improve clients that support it, but is optional ([MCP SDK documentation](https://ts.sdk.modelcontextprotocol.io/v2/servers/elicitation)). Form-link expiry is separate from credential expiry and revocation.
 
+## Destination preflight and what the person sees
+
+Keep the existing **preflight-before-link** behavior. Today `/api/session/create` calls `testDestination` by default for an `http_post` destination, sends `X-ZeroCreds-Preflight: true` and a `_zerocreds_preflight` marker, and refuses to create a form if the endpoint does not return 2xx. Existing HTTP callers can set `test_destination: false`; the current MCP tool does not expose that option. This probe catches reachability/auth failures, but **2xx alone does not prove a credential was stored**. Other current destinations are not probed. Do not describe them as verified.
+
+For the ServerlessAgence D1 wallet, preflight is mandatory before issuing a form URL. Route it through the same authenticated credential Worker and serialization/validation path used by a real submission. Write a synthetic, uniquely identified canary with the proposed field structure, confirm its committed version/receipt and read back its non-secret metadata, then delete or expire that canary. Never use a real credential or overwrite the user's existing connection for a probe. A failed or ambiguous probe blocks the form and returns a safe diagnostic to the agent; retries use the same idempotency key. Probe records must not trigger provider calls, notifications or a credential-ready event. The legacy HTTP opt-out need not be removed, but it does not apply to the trusted D1 wallet path.
+
+The form must show a **server-issued storage disclosure**, not agent-authored text:
+
+| Displayed item | Source and meaning |
+| --- | --- |
+| Storage | “ServerlessAgence Vault · Cloudflare D1”, or the actual external destination type. Use “HashiCorp Vault” only for that actual product. |
+| Wallet owner | Authenticated account/tenant and stable wallet identifier. A form link alone must not let another signed-in person claim this wallet. |
+| Bound profile | The trusted profile identity that may later request use, plus the task/run reference if this form was opened from a run. The profile is not chosen by prompt text. |
+| Version | Vault service release/schema version and current credential version, clearly distinguished. Before first submission, say “credential version: not created yet”. Never expose encryption-key material. |
+| Preflight | “Storage checked” with time and a short receipt reference only after the D1 canary round trip succeeds. Do not claim that a later provider login is guaranteed. |
+| Access and lifetime | Which trusted service can use the credential, requested scope, form-link expiry, credential retention/rotation policy, and whether an isolated runtime will see plaintext. |
+
+Bind those display fields, destination and proposed form schema to one immutable, server-signed form manifest. Render the same manifest before submission and include its ID in the resulting receipt; reject any mismatch. If owner/profile cannot be verified, state that plainly and block persistent wallet submission rather than displaying “your wallet”. Do not infer ownership from the browser cookie used by today's optional “remember me” behavior. The present form only shows a generic destination type and has broad “AI never sees it” copy; that is insufficient evidence of wallet ownership or the later execution boundary.
+
 ## D1 custody and use boundary
 
 Use a **dedicated D1 database per environment** for credential metadata and ciphertext. Encrypt inside the credential Worker before writing with authenticated encryption such as AES-GCM, a fresh nonce per version, associated data binding immutable owner/connection/version, and a versioned key in a Worker secret or managed KMS. D1 already encrypts its physical storage, but that does not replace application encryption when database readers must not see plaintext ([Cloudflare D1 data security](https://developers.cloudflare.com/d1/reference/data-security/)). Never place the encryption key in D1, source, run JSON, logs or model context. Define key rotation and recovery before production migration.
@@ -48,9 +67,9 @@ The broker checks owner, connection state, run identity, provider, operation, re
 
 ## Implementation order and acceptance
 
-1. Keep the generic ZeroCreds MCP tools compatible. Add a trusted ServerlessAgence adapter that derives owner and destination server-side, accepts task-specific fields and returns the human form URL. Disallow inline destination selection on this path, without breaking unrelated legacy clients.
-2. Implement dedicated D1 schema and credential Worker: forms, one-time submission state, encrypted versions, owner-bound connections, receipts, revocation and audit. Do not implicitly migrate live secrets. Separate sandbox and production databases and keys.
-3. Connect ZeroCreds submission/status to that Worker. Bind a confirmed `connectionId` to the existing Runner contract and Control Plane credential-ready continuation without putting values in either task store.
+1. Keep the generic ZeroCreds MCP tools compatible. Add a trusted ServerlessAgence adapter that derives owner, profile and destination server-side, accepts task-specific fields, runs mandatory D1 preflight and returns the human form URL. Disallow inline destination selection on this path, without breaking unrelated legacy clients.
+2. Implement dedicated D1 schema and credential Worker: forms, synthetic preflight canaries, one-time submission state, encrypted versions, owner-bound connections, receipts, revocation and audit. Do not implicitly migrate live secrets. Separate sandbox and production databases and keys.
+3. Connect ZeroCreds submission/status and verified storage disclosure to that Worker. Bind a confirmed `connectionId` to the existing Runner contract and Control Plane credential-ready continuation without putting values in either task store.
 4. Add one reviewed, open-source credential-using MCP capability and broker policy; prove a real sandbox task. Define further executor methods after this vertical slice works.
 
-Acceptance tests: task-driven fields and URL; owner B cannot submit, observe or use owner A's connection; prompt cannot choose another destination; one-time submission and timeout reconciliation; D1 row contains ciphertext only; wrong key/owner/version cannot decrypt; no value in status/result/history/webhook; revocation denies new use; restart resumes form state; existing ZeroCreds session clients and Runner run/status/artifact tests pass. Public onboarding waits for the runner's existing isolation and billing gates.
+Acceptance tests: task-driven fields and URL; missing/unreachable D1 blocks form creation; canary uses the real write path but creates no usable credential, provider call or notification; owner B cannot submit, observe or use owner A's connection; prompt cannot choose another destination/profile or alter the displayed manifest; form shows the correct owner, profile, storage and version before and after submission; one-time submission and timeout reconciliation; D1 row contains ciphertext only; wrong key/owner/version cannot decrypt; no value in status/result/history/webhook; revocation denies new use; restart resumes form state; existing ZeroCreds session clients and Runner run/status/artifact tests pass. Public onboarding waits for the runner's existing isolation and billing gates.
