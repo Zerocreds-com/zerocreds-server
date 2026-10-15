@@ -11,7 +11,7 @@ The browser form displays the wallet owner, profile, connection ID, exact OpenBa
 
 ## Local configuration
 
-The Node form service requires its existing `ZEROCREDS_ADMIN_TOKEN`, a named OpenBao destination in `ZEROCREDS_DESTINATIONS_FILE`, `ZEROCREDS_WALLET_WORKER_URL`, `ZEROCREDS_WALLET_SERVICE_TOKEN`, and `ZEROCREDS_WALLET_CLIENTS_FILE`. The latter is an operator-owned mode-0600 JSON object keyed by host-issued API token:
+The Node form service requires an admin token from `ZEROCREDS_ADMIN_TOKEN` or a private service-user file, a named OpenBao destination in `ZEROCREDS_DESTINATIONS_FILE`, `ZEROCREDS_WALLET_WORKER_URL`, `ZEROCREDS_WALLET_SERVICE_TOKEN`, and `ZEROCREDS_WALLET_CLIENTS_FILE`. The latter is an operator-owned mode-0600 JSON object keyed by host-issued API token:
 
 ```json
 {
