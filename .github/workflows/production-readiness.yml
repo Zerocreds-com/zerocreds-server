@@ -29,6 +29,7 @@ jobs:
             import collections, json, os, stat, sys
             from datetime import datetime, timedelta, timezone
             from pathlib import Path
+            from urllib.parse import urlsplit
             pid = sys.argv[1]
             try:
                 raw = Path('/proc', pid, 'environ').read_bytes()
@@ -98,6 +99,7 @@ jobs:
             try:
                 sessions = collections.Counter()
                 seen_integrators = set()
+                callback_hosts = collections.defaultdict(set)
                 now = datetime.now(timezone.utc)
                 for file in (Path.home() / 'connect-pending').glob('*.json'):
                     sessions['all_files'] += 1
@@ -118,6 +120,9 @@ jobs:
                         sessions[f'30d_{owner_kind}'] += 1
                         sessions[f'30d_{kind}'] += 1
                         if inline:
+                            destinations = [destination] if isinstance(destination, dict) else []
+                            if isinstance(levels, dict):
+                                destinations.extend(v for v in levels.values() if isinstance(v, dict))
                             types = [destination.get('type')] if isinstance(destination, dict) else []
                             if isinstance(levels, dict):
                                 types.extend(v.get('type') for v in levels.values() if isinstance(v, dict))
@@ -125,6 +130,15 @@ jobs:
                             for destination_type in set(t for t in types if isinstance(t, str)):
                                 safe_type = destination_type if destination_type in allowed_types else 'other'
                                 sessions[f'30d_{owner_kind}_{safe_type}'] += 1
+                            for item in destinations:
+                                if item.get('type') != 'http_post' or not isinstance(item.get('url'), str):
+                                    continue
+                                parsed = urlsplit(item['url'])
+                                if parsed.hostname:
+                                    callback_hosts[owner_kind].add(parsed.hostname.lower())
+                                route = parsed.path
+                                route_kind = 'tokens_callback' if route == '/tokens' else 'runner_github_intake' if route.startswith('/v1/developer/github/intake/') else 'other'
+                                sessions[f'30d_{owner_kind}_http_{route_kind}'] += 1
                         if entry.get('uid') is not None:
                             sessions[f'30d_{owner_kind}_with_uid'] += 1
                         if entry.get('service_slug') or entry.get('service'):
@@ -138,6 +152,7 @@ jobs:
                         sessions['invalid'] += 1
                 print(f'pending_session_counts={dict(sessions)}')
                 print(f'pending_session_distinct_integrators_30d={len(seen_integrators)}')
+                print(f'pending_session_distinct_callback_hosts_30d={dict((k, len(v)) for k, v in callback_hosts.items())}')
             except OSError:
                 print('pending_sessions=unreadable')
             PY
