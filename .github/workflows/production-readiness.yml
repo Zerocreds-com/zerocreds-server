@@ -119,6 +119,9 @@ jobs:
                         kind = 'inline' if inline else 'named' if isinstance(destination, str) else 'other'
                         sessions[f'30d_{owner_kind}'] += 1
                         sessions[f'30d_{kind}'] += 1
+                        completed = file.with_suffix('.done').is_file()
+                        if completed:
+                            sessions[f'30d_{owner_kind}_done'] += 1
                         if inline:
                             destinations = [destination] if isinstance(destination, dict) else []
                             if isinstance(levels, dict):
@@ -148,6 +151,8 @@ jobs:
                         if age <= timedelta(days=7):
                             sessions[f'7d_{owner_kind}'] += 1
                             sessions[f'7d_{kind}'] += 1
+                            if completed:
+                                sessions[f'7d_{owner_kind}_done'] += 1
                     except (OSError, ValueError, TypeError):
                         sessions['invalid'] += 1
                 print(f'pending_session_counts={dict(sessions)}')
