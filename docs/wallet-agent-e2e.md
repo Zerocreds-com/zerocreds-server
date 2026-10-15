@@ -34,6 +34,8 @@ Run `node --test server/test/*.test.js`, `node --test mcp/test/*.test.js` and `n
 
 ## Remaining production work
 
+The handoff for integrating these tools into the shared Trained Assist MCP Host is [mcp-host-integration-task.md](mcp-host-integration-task.md).
+
 - Replace the static local wallet-client file with a trusted ServerlessAgence/Ladder identity bridge. It must derive owner from `verifyKey()` and authorize profile selection; never trust model-supplied owner/profile headers. Issue or exchange short-lived scoped wallet API credentials and support rotation.
 - Provision persistent OpenBao with TLS, scoped per-owner writer/probe/reader identities, audit, backup, unseal/recovery and operational monitoring. The dedicated D1 databases and sandbox Worker now exist; distribute the sandbox service token to a trusted host, connect the Node service, and verify the full remote form-to-OpenBao-to-D1 path before publishing the production Worker. Store service credentials in operator secret stores and configure production domains.
 - Harden the crash window after OpenBao accepts a write but before the local `.written` marker is durable. CAS prevents a second version, but this case currently needs operator reconciliation; add durable write-ahead state or metadata-based proof before public onboarding. Ensure expired forms with a confirmed OpenBao write can be reconciled.
