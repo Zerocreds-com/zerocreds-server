@@ -362,9 +362,8 @@ For a named OpenBao KV-v2 destination, `vault` remains the compatible destinatio
 }
 ```
 
-This probe verifies the configured OpenBao write path and returns no credential value. It does not establish authenticated wallet ownership, D1 metadata, a signed form manifest, a runner read broker, or a production OpenBao deployment; those remain part of the [ServerlessAgence integration contract](docs/serverlessagence-runner-credential-intake.md).
+This probe verifies the configured OpenBao write path and returns no credential value. `POST /api/forms` can create a signed manifest and receipt for this named destination. That still does not establish authenticated wallet ownership or profile binding, D1 metadata, a runner read broker, or a production OpenBao deployment; those remain part of the [ServerlessAgence integration contract](docs/serverlessagence-runner-credential-intake.md).
 
-### Write-only by design
 ### Who can read what
 
 | Destination | Mechanism | Guarantee |
