@@ -275,7 +275,7 @@ async function saveVault(destination, fields, opts = {}) {
   try {
     response = await httpPost(
       `${address}/v1/${String(vaultPath).replace(/^\//, '')}`,
-      { data: fields },
+      { data: fields, ...(destination.create_only ? { options: { cas: 0 } } : {}) },
       null,
       { 'X-Vault-Token': clientToken },
       { ...opts, captureReceipt: true },
