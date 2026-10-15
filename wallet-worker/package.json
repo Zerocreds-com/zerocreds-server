@@ -1,0 +1,15 @@
+{
+  "name": "@zerocreds/wallet-metadata",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "dev": "wrangler dev",
+    "migrate:local": "wrangler d1 migrations apply zc-wallet-local --local"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.0.0",
+    "vitest": "^4.0.0",
+    "wrangler": "^4.0.0"
+  }
+}

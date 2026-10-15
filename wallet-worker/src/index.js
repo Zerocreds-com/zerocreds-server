@@ -1,0 +1,176 @@
+const ID = /^[a-zA-Z0-9_-]{1,100}$/;
+const FORM_ID = /^[a-f0-9]{32}$/;
+const SHA256 = /^[a-f0-9]{64}$/;
+const PROVIDER = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const KEY = /^[a-zA-Z0-9_-]{16,128}$/;
+
+function response(status, body) {
+  return new Response(JSON.stringify(body), { status, headers: {
+    'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+  } });
+}
+function validObject(value, keys) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).every(key => keys.includes(key));
+}
+function validText(value, pattern) { return typeof value === 'string' && pattern.test(value); }
+async function readBody(request, keys) {
+  if (Number(request.headers.get('content-length') || 0) > 4096) return null;
+  const reader = request.body?.getReader();
+  if (!reader) return null;
+  let size = 0;
+  const chunks = [];
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 4096) { await reader.cancel(); return null; }
+      chunks.push(value);
+    }
+  } catch { return null; }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  const raw = new TextDecoder().decode(bytes);
+  try { const body = JSON.parse(raw); return validObject(body, keys) ? body : null; }
+  catch { return null; }
+}
+async function hash(input) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
+  return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+}
+async function authorized(request, token) {
+  if (!token || token.length < 32) return false;
+  const bearer = request.headers.get('authorization');
+  if (!bearer?.startsWith('Bearer ')) return false;
+  const supplied = bearer.slice(7);
+  if (supplied.length < 32 || supplied.length > 256) return false;
+  const [a, b] = await Promise.all([hash(supplied), hash(token)]);
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return mismatch === 0;
+}
+function identity(ownerId, profileId) { return validText(ownerId, ID) && validText(profileId, ID); }
+function publicConnection(row) {
+  return { connection_id: row.connection_id, owner_id: row.owner_id, profile_id: row.profile_id,
+    provider: row.provider, openbao_path: row.openbao_path, state: row.state,
+    kv_version: row.kv_version, updated_at: row.updated_at };
+}
+async function allocate(env, request) {
+  const body = await readBody(request, ['owner_id', 'profile_id', 'provider', 'idempotency_key']);
+  if (!body || !identity(body.owner_id, body.profile_id) || !validText(body.provider, PROVIDER)
+      || !validText(body.idempotency_key, KEY)) return response(400, { error: 'invalid_allocation' });
+  const requestKeyHash = await hash(body.idempotency_key);
+  const connectionId = crypto.randomUUID();
+  const mount = env.OPENBAO_MOUNT;
+  if (!validText(mount, /^[a-zA-Z0-9_-]{1,64}$/)) return response(503, { error: 'wallet_not_configured' });
+  const path = `${mount}/data/owners/${body.owner_id}/connections/${connectionId}`;
+  const now = Date.now();
+  await env.DB.prepare(`INSERT OR IGNORE INTO wallet_connections
+    (connection_id, owner_id, profile_id, provider, request_key_hash, openbao_path, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(connectionId, body.owner_id, body.profile_id,
+    body.provider, requestKeyHash, path, now, now).run();
+  const row = await env.DB.prepare('SELECT * FROM wallet_connections WHERE owner_id = ? AND request_key_hash = ?')
+    .bind(body.owner_id, requestKeyHash).first();
+  if (!row || row.profile_id !== body.profile_id || row.provider !== body.provider) {
+    return response(409, { error: 'allocation_conflict' });
+  }
+  return response(200, publicConnection(row));
+}
+async function registerForm(env, request) {
+  const body = await readBody(request, ['form_id', 'connection_id', 'owner_id', 'profile_id', 'manifest_id', 'expires_at']);
+  if (!body || !validText(body.form_id, FORM_ID) || !validText(body.connection_id, ID)
+      || !identity(body.owner_id, body.profile_id) || !validText(body.manifest_id, SHA256)
+      || !Number.isSafeInteger(body.expires_at) || body.expires_at <= Date.now()
+      || body.expires_at > Date.now() + 86_400_000) return response(400, { error: 'invalid_form' });
+  const connection = await env.DB.prepare('SELECT * FROM wallet_connections WHERE connection_id = ? AND owner_id = ? AND profile_id = ?')
+    .bind(body.connection_id, body.owner_id, body.profile_id).first();
+  if (!connection || connection.state === 'revoked') return response(404, { error: 'connection_unavailable' });
+  await env.DB.prepare(`INSERT OR IGNORE INTO wallet_forms
+    (form_id, connection_id, owner_id, profile_id, manifest_id, expires_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(body.form_id, body.connection_id, body.owner_id,
+    body.profile_id, body.manifest_id, body.expires_at, Date.now()).run();
+  const row = await env.DB.prepare('SELECT * FROM wallet_forms WHERE form_id = ?').bind(body.form_id).first();
+  if (row.connection_id !== body.connection_id || row.owner_id !== body.owner_id
+      || row.profile_id !== body.profile_id || row.manifest_id !== body.manifest_id
+      || row.expires_at !== body.expires_at) return response(409, { error: 'form_conflict' });
+  return response(200, { form_id: row.form_id, connection_id: row.connection_id,
+    state: row.state, expires_at: row.expires_at });
+}
+async function completeForm(env, request, formId) {
+  const body = await readBody(request, ['owner_id', 'profile_id', 'manifest_id', 'kv_version', 'receipt_ref']);
+  if (!body || !identity(body.owner_id, body.profile_id) || !validText(body.manifest_id, SHA256)
+      || !Number.isSafeInteger(body.kv_version) || body.kv_version < 1
+      || !validText(body.receipt_ref, SHA256)) return response(400, { error: 'invalid_completion' });
+  const row = await env.DB.prepare(`SELECT f.*, c.state AS connection_state FROM wallet_forms f
+    JOIN wallet_connections c ON c.connection_id = f.connection_id
+    WHERE f.form_id = ? AND f.owner_id = ? AND f.profile_id = ?`).bind(formId, body.owner_id, body.profile_id).first();
+  if (!row) return response(404, { error: 'form_unavailable' });
+  if (row.manifest_id !== body.manifest_id) return response(409, { error: 'manifest_mismatch' });
+  if (row.state === 'written') return row.kv_version === body.kv_version && row.receipt_ref === body.receipt_ref
+    ? response(200, { form_id: formId, connection_id: row.connection_id, state: 'written', kv_version: row.kv_version })
+    : response(409, { error: 'completion_conflict' });
+  if (row.expires_at <= Date.now() || row.connection_state === 'revoked') return response(409, { error: 'form_unavailable' });
+  const now = Date.now();
+  let results;
+  try { results = await env.DB.batch([
+    env.DB.prepare(`UPDATE wallet_forms SET state = 'written', kv_version = ?, receipt_ref = ?, completed_at = ?
+      WHERE form_id = ? AND owner_id = ? AND profile_id = ? AND manifest_id = ? AND state = 'pending'
+      AND expires_at > ? AND EXISTS (SELECT 1 FROM wallet_connections c WHERE c.connection_id = wallet_forms.connection_id AND c.state != 'revoked')`)
+      .bind(body.kv_version, body.receipt_ref, now, formId, body.owner_id, body.profile_id, body.manifest_id, now),
+    env.DB.prepare(`UPDATE wallet_connections SET state = 'active', kv_version = ?, updated_at = ?
+      WHERE connection_id = ? AND owner_id = ? AND profile_id = ? AND state != 'revoked'
+      AND EXISTS (SELECT 1 FROM wallet_forms f WHERE f.form_id = ? AND f.state = 'written' AND f.kv_version = ? AND f.receipt_ref = ?)`)
+      .bind(body.kv_version, now, row.connection_id, body.owner_id, body.profile_id,
+        formId, body.kv_version, body.receipt_ref),
+  ]); } catch (error) {
+    if (String(error?.message || '').includes('wallet_version_not_newer')) {
+      return response(409, { error: 'stale_kv_version' });
+    }
+    throw error;
+  }
+  if (results[0].meta.changes !== 1 || results[1].meta.changes !== 1) {
+    return response(409, { error: 'completion_conflict' });
+  }
+  return response(200, { form_id: formId, connection_id: row.connection_id, state: 'written', kv_version: body.kv_version });
+}
+async function connectionStatus(env, request, connectionId) {
+  const owner = request.headers.get('x-wallet-owner');
+  const profile = request.headers.get('x-wallet-profile');
+  if (!identity(owner, profile)) return response(400, { error: 'invalid_scope' });
+  const row = await env.DB.prepare('SELECT * FROM wallet_connections WHERE connection_id = ? AND owner_id = ? AND profile_id = ?')
+    .bind(connectionId, owner, profile).first();
+  return row ? response(200, publicConnection(row)) : response(404, { error: 'connection_unavailable' });
+}
+async function revoke(env, request, connectionId) {
+  const body = await readBody(request, ['owner_id', 'profile_id']);
+  if (!body || !identity(body.owner_id, body.profile_id)) return response(400, { error: 'invalid_scope' });
+  const result = await env.DB.prepare(`UPDATE wallet_connections SET state = 'revoked', updated_at = ?
+    WHERE connection_id = ? AND owner_id = ? AND profile_id = ?`).bind(Date.now(), connectionId,
+    body.owner_id, body.profile_id).run();
+  return result.meta.changes === 1 ? response(200, { connection_id: connectionId, state: 'revoked' })
+    : response(404, { error: 'connection_unavailable' });
+}
+export default {
+  async fetch(request, env) {
+    if (!env.DB || !env.WALLET_SERVICE_TOKEN || !env.OPENBAO_MOUNT) return response(503, { error: 'wallet_not_configured' });
+    if (!(await authorized(request, env.WALLET_SERVICE_TOKEN))) return response(401, { error: 'unauthorized' });
+    const url = new URL(request.url);
+    try {
+      if (url.pathname === '/internal/connections/allocate' && request.method === 'POST') return allocate(env, request);
+      if (url.pathname === '/internal/forms' && request.method === 'POST') return registerForm(env, request);
+      const completed = /^\/internal\/forms\/([a-f0-9]{32})\/complete$/.exec(url.pathname);
+      if (completed && request.method === 'POST') return completeForm(env, request, completed[1]);
+      const connection = /^\/internal\/connections\/([a-zA-Z0-9_-]{1,100})$/.exec(url.pathname);
+      if (connection && request.method === 'GET') return connectionStatus(env, request, connection[1]);
+      const revoked = /^\/internal\/connections\/([a-zA-Z0-9_-]{1,100})\/revoke$/.exec(url.pathname);
+      if (revoked && request.method === 'POST') return revoke(env, request, revoked[1]);
+      return response(404, { error: 'not_found' });
+    } catch (error) {
+      console.error('wallet metadata operation failed', error?.name || 'unknown');
+      return response(503, { error: 'wallet_unavailable' });
+    }
+  },
+};

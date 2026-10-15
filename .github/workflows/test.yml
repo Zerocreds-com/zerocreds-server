@@ -40,17 +40,29 @@ jobs:
         run: |
           cd server && npm ci
           cd ../mcp && npm ci
+          cd ../wallet-worker && npm ci --include=optional
+          # npm can silently skip workerd's platform package when this lockfile
+          # was generated on macOS. Install the pinned Linux binary explicitly.
+          if [ ! -f node_modules/@cloudflare/workerd-linux-64/bin/workerd ]; then
+            WORKERD_VERSION=$(node -p "require('./package-lock.json').packages['node_modules/workerd'].version")
+            npm install --no-save --no-package-lock --ignore-scripts "@cloudflare/workerd-linux-64@${WORKERD_VERSION}"
+          fi
+          test -f node_modules/@cloudflare/workerd-linux-64/bin/workerd
 
       - name: Audit production dependencies
         run: |
           cd server && npm audit --omit=dev --audit-level=moderate
           cd ../mcp && npm audit --omit=dev --audit-level=moderate
+          cd ../wallet-worker && npm audit --omit=dev --audit-level=moderate
 
       - name: Lint (syntax check)
         run: |
-          find server/src server/test mcp -name '*.js' -not -path '*/node_modules/*' -print0 \
+          find server/src server/test mcp wallet-worker/src wallet-worker/test -name '*.js' -not -path '*/node_modules/*' -print0 \
             | xargs -0 -n1 node --check
           python3 -m py_compile scripts/check-public.py
+          python3 scripts/check-workflow-inline-python.py
 
       - name: Unit tests
-        run: cd server && node --test test/*.test.js
+        run: |
+          cd server && node --test test/*.test.js
+          cd ../wallet-worker && npm test
