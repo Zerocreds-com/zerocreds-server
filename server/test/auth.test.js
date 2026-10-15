@@ -119,6 +119,38 @@ test('legacy integrator keys retain access while new registrations require appro
   }
 });
 
+test('legacy session destination behavior stays available only on legacy endpoints', async () => {
+  const legacy = 'tok_legacy_inline';
+  const modern = 'tok_modern_active';
+  const srv = await startServer({ strict: true, integrators: {
+    [legacy]: { id: 'legacy-inline', name: 'Legacy', email: 'old@example.com', destinations: {} },
+    [modern]: { id: 'modern-inline', name: 'Modern', status: 'active', destinations: {} },
+  } });
+  try {
+    const oldSession = await request(srv.port, 'POST', '/api/session/create', sessionBody, bearer(legacy));
+    assert.equal(oldSession.status, 200, JSON.stringify(oldSession.body));
+    const oldLevels = await request(srv.port, 'POST', '/api/session/create',
+      { title: 'T', fields: sessionBody.fields, destinations_by_level: { default: localDest } }, bearer(legacy));
+    assert.equal(oldLevels.status, 200, JSON.stringify(oldLevels.body));
+    const modernSession = await request(srv.port, 'POST', '/api/session/create', sessionBody, bearer(modern));
+    assert.equal(modernSession.status, 400);
+    assert.match(modernSession.body.error, /inline destinations are disabled/);
+
+    const oldNamed = await request(srv.port, 'POST', '/api/destinations',
+      { name: 'old-file', destination: localDest }, bearer(legacy));
+    assert.equal(oldNamed.status, 200, JSON.stringify(oldNamed.body));
+    const modernNamed = await request(srv.port, 'POST', '/api/destinations',
+      { name: 'new-file', destination: localDest }, bearer(modern));
+    assert.equal(modernNamed.status, 403);
+
+    const newForm = await request(srv.port, 'POST', '/api/forms',
+      { name: 'legacy-form', kind: 'token', destination: localDest }, bearer(legacy));
+    assert.equal(newForm.status, 400, 'new form API still requires a named destination');
+  } finally {
+    await srv.stop();
+  }
+});
+
 test('Object.prototype property names are never accepted as tokens', async () => {
   for (const t of ['toString', 'constructor', '__proto__', 'hasOwnProperty', 'valueOf']) {
     const create = await request(ctx.port, 'POST', '/api/session/create', sessionBody, bearer(t));
