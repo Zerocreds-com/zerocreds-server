@@ -167,14 +167,17 @@ jobs:
                 print('pending_sessions=unreadable')
             # Count only fixed, value-free migration categories. Never print raw journal lines.
             try:
-                result = subprocess.run(
-                    ['sudo', '-n', '/usr/bin/journalctl', '-u', 'zerocreds-server',
-                     '--since', '24 hours ago', '--no-pager', '-o', 'cat', '-n', '10000'],
-                    capture_output=True, text=True, timeout=20, check=False,
-                )
-                if result.returncode:
-                    print('session_migration_journal=unavailable')
-                else:
+                args = ['-u', 'zerocreds-server', '--since', '24 hours ago',
+                        '--no-pager', '-o', 'cat', '-n', '10000']
+                result = None
+                for command in (['/usr/bin/journalctl', *args],
+                                ['sudo', '-n', '/usr/bin/journalctl', *args]):
+                    candidate = subprocess.run(command, capture_output=True,
+                                               text=True, timeout=20, check=False)
+                    if candidate.returncode == 0 and candidate.stdout.strip() and '-- No entries --' not in candidate.stdout:
+                        result = candidate
+                        break
+                if result is not None:
                     migration = collections.Counter()
                     pattern = re.compile(r'^\[session-migration\] (created|completed) auth=(anonymous|admin|integrator)(?: destination=(inline|named))?$')
                     for line in result.stdout.splitlines():
@@ -182,6 +185,8 @@ jobs:
                         if match:
                             migration['_'.join(part for part in match.groups() if part)] += 1
                     print(f'session_migration_events_24h={dict(migration)}')
+                else:
+                    print('session_migration_journal=unavailable')
             except (OSError, subprocess.TimeoutExpired):
                 print('session_migration_journal=unavailable')
             PY
