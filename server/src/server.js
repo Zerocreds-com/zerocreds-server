@@ -1235,10 +1235,10 @@ function createApp(config = {}) {
     return null;
   }
 
-  // Self-registered integrators stay inactive until the admin approves them. Records
-  // written before approval existed carry an email but no status: treat those as pending.
+  // New self-registrations have an explicit pending status. Records created before
+  // approval existed have no status and must retain their previously issued access.
   function isActiveIntegrator(rec) {
-    return rec.status ? rec.status === 'active' : !rec.email;
+    return !Object.hasOwn(rec, 'status') || rec.status === 'active';
   }
 
   // Rate limit for self-serve registration: max 3 per client IP per hour

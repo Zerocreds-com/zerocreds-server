@@ -100,7 +100,7 @@ test('approve endpoint requires the admin token', async () => {
   assert.equal(r.status, 401);
 });
 
-test('legacy self-registered integrator record (email, no status) is inactive', async () => {
+test('legacy integrator keys retain access while new registrations require approval', async () => {
   const integrators = {
     tok_legacy_selfreg: { id: 'u_legacy', name: 'u_legacy', email: 'old@example.com', category: 'other', destinations: {} },
     tok_legacy_admin: { id: 'legacy-admin-made', name: 'Legacy', destinations: {} },
@@ -109,7 +109,8 @@ test('legacy self-registered integrator record (email, no status) is inactive', 
   try {
     const selfReg = await request(srv.port, 'POST', '/api/session/create',
       { ...sessionBody, destination: 'x' }, bearer('tok_legacy_selfreg'));
-    assert.equal(selfReg.status, 401);
+    assert.equal(selfReg.status, 400, 'legacy self-registered key remains authorized');
+    assert.match(selfReg.body.error, /unknown named destination/);
     const adminMade = await request(srv.port, 'POST', '/api/session/create',
       { ...sessionBody, destination: 'x' }, bearer('tok_legacy_admin'));
     assert.equal(adminMade.status, 400, 'admin-created legacy integrator stays active');
