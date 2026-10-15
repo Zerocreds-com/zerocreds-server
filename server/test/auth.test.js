@@ -139,12 +139,34 @@ test('createApp refuses to start without an admin token', () => {
   const saved = process.env.ZEROCREDS_ADMIN_TOKEN;
   delete process.env.ZEROCREDS_ADMIN_TOKEN;
   try {
-    assert.throws(() => createApp({ pendingDir: path.join(ctx.tmpDir, 'p2'), tokensDir: path.join(ctx.tmpDir, 't2') }),
-      /ZEROCREDS_ADMIN_TOKEN is required/);
-    assert.throws(() => createApp({ adminToken: '' }), /ZEROCREDS_ADMIN_TOKEN is required/);
+    const missing = path.join(ctx.tmpDir, 'missing-admin-token');
+    assert.throws(() => createApp({ adminTokenFile: missing, pendingDir: path.join(ctx.tmpDir, 'p2'), tokensDir: path.join(ctx.tmpDir, 't2') }),
+      /ZEROCREDS_ADMIN_TOKEN or a private admin token file is required/);
+    assert.throws(() => createApp({ adminToken: '', adminTokenFile: missing }), /ZEROCREDS_ADMIN_TOKEN or a private admin token file is required/);
   } finally {
     if (saved !== undefined) process.env.ZEROCREDS_ADMIN_TOKEN = saved;
   }
+});
+
+test('private admin token file authenticates; unsafe files are rejected', async () => {
+  const file = path.join(ctx.tmpDir, 'admin-token');
+  const token = 'a'.repeat(64);
+  fs.writeFileSync(file, `${token}\n`, { mode: 0o600 });
+  const srv = await startServer({ strict: true, app: { adminToken: '', adminTokenFile: file } });
+  try {
+    const accepted = await request(srv.port, 'POST', '/api/session/create', {}, bearer(token));
+    assert.equal(accepted.status, 400);
+    const denied = await request(srv.port, 'POST', '/api/session/create', {});
+    assert.equal(denied.status, 401);
+  } finally {
+    await srv.stop();
+  }
+  fs.chmodSync(file, 0o644);
+  assert.throws(() => createApp({ adminToken: '', adminTokenFile: file }), /private regular file/);
+  fs.chmodSync(file, 0o600);
+  const link = path.join(ctx.tmpDir, 'admin-token-link');
+  fs.symlinkSync(file, link);
+  assert.throws(() => createApp({ adminToken: '', adminTokenFile: link }));
 });
 
 test('no Authorization → 401 on session create', async () => {
