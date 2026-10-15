@@ -40,7 +40,14 @@ jobs:
         run: |
           cd server && npm ci
           cd ../mcp && npm ci
-          cd ../wallet-worker && npm ci
+          cd ../wallet-worker && npm ci --include=optional
+          # npm can silently skip workerd's platform package when this lockfile
+          # was generated on macOS. Install the pinned Linux binary explicitly.
+          if [ ! -f node_modules/@cloudflare/workerd-linux-64/bin/workerd ]; then
+            WORKERD_VERSION=$(node -p "require('./package-lock.json').packages['node_modules/workerd'].version")
+            npm install --no-save --no-package-lock --ignore-scripts "@cloudflare/workerd-linux-64@${WORKERD_VERSION}"
+          fi
+          test -f node_modules/@cloudflare/workerd-linux-64/bin/workerd
 
       - name: Audit production dependencies
         run: |

@@ -1,0 +1,55 @@
+name: ZeroCreds production readiness
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect value-free service settings
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST_RU }}
+          username: ${{ secrets.DEPLOY_USER_RU }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          command_timeout: 2m
+          script: |
+            set -eu
+            echo "service_status=$(systemctl is-active zerocreds-server || true)"
+            echo "unauthenticated_create_status=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:3456/api/session/create || true)"
+            pid=$(systemctl show -p MainPID --value zerocreds-server)
+            python3 - "$pid" <<'PY'
+            import collections, json, sys
+            from pathlib import Path
+            pid = sys.argv[1]
+            try:
+                raw = Path('/proc', pid, 'environ').read_bytes()
+                names = {item.split(b'=', 1)[0].decode('utf-8', 'replace') for item in raw.split(b'\0') if item}
+                for name in ('ZEROCREDS_ADMIN_TOKEN', 'ZEROCREDS_DESTINATIONS_FILE', 'ZEROCREDS_INTEGRATORS_FILE', 'ZEROCREDS_HTTP_POST_ALLOWED_HOSTS', 'ZEROCREDS_ALLOW_INLINE_DESTINATIONS'):
+                    print(f'env_{name}={name in names}')
+            except (OSError, ValueError):
+                print('process_environment=unreadable')
+            for filename in ('zerocreds-destinations.json', 'zerocreds-integrators.json'):
+                file = Path.home() / filename
+                try:
+                    data = json.loads(file.read_text())
+                    if not isinstance(data, dict):
+                        print(f'{filename}=invalid')
+                        continue
+                    print(f'{filename}_count={len(data)}')
+                    if filename.startswith('zerocreds-destinations'):
+                        counts = collections.Counter(str(v.get('type', 'unknown')) if isinstance(v, dict) else 'invalid' for v in data.values())
+                        print(f'{filename}_types={dict(counts)}')
+                    else:
+                        statuses = collections.Counter(str(v.get('status', 'legacy')) if isinstance(v, dict) else 'invalid' for v in data.values())
+                        print(f'{filename}_statuses={dict(statuses)}')
+                except FileNotFoundError:
+                    print(f'{filename}=missing')
+                except (OSError, ValueError):
+                    print(f'{filename}=unreadable')
+            PY
