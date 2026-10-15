@@ -47,7 +47,16 @@ test('wallet form: scoped agent request, OpenBao write, D1 completion, value-fre
       if (req.headers['x-wallet-owner'] !== owner || req.headers['x-wallet-profile'] !== profile) {
         return send(res, 404, { error: 'connection_unavailable' });
       }
-      return send(res, 200, { connection_id: connectionId, openbao_path: openbaoPath, state: connectionState });
+      return send(res, 200, { connection_id: connectionId, openbao_path: openbaoPath,
+        provider: 'tilda', state: connectionState, kv_version: connectionState === 'active' ? 1 : null,
+        updated_at: 123 });
+    }
+    if (req.url === `/internal/connections/${connectionId}/revoke`) {
+      if (payload.owner_id !== owner || payload.profile_id !== profile) {
+        return send(res, 404, { error: 'connection_unavailable' });
+      }
+      connectionState = 'revoked';
+      return send(res, 200, { connection_id: connectionId, state: connectionState });
     }
     if (/^\/internal\/forms\/[a-f0-9]{32}\/complete$/.test(req.url)) {
       calls.push({ operation: 'complete', payload });
@@ -131,6 +140,19 @@ test('wallet form: scoped agent request, OpenBao write, D1 completion, value-fre
     assert.deepEqual(status.body, { form_id: formId, connection_id: connectionId, status: 'done',
       kv_version: 1, receipt_ref: calls.find(c => c.operation === 'complete').payload.receipt_ref });
     assert.ok(!JSON.stringify(status.body).includes('synthetic-wallet-secret'));
+    const connection = await request(srv.port, 'GET', `/api/wallet/connections/${connectionId}`, undefined, auth);
+    assert.deepEqual(connection.body, { connection_id: connectionId, provider: 'tilda',
+      state: 'active', kv_version: 1, updated_at: 123 });
+    const foreignConnection = await request(srv.port, 'GET', `/api/wallet/connections/${connectionId}`,
+      undefined, { Authorization: `Bearer ${otherToken}` });
+    assert.equal(foreignConnection.status, 404);
+    const foreignRevoke = await request(srv.port, 'POST', `/api/wallet/connections/${connectionId}/revoke`,
+      {}, { Authorization: `Bearer ${otherToken}` });
+    assert.equal(foreignRevoke.status, 404);
+    const revoke = await request(srv.port, 'POST', `/api/wallet/connections/${connectionId}/revoke`, {}, auth);
+    assert.deepEqual(revoke.body, { connection_id: connectionId, state: 'revoked' });
+    const revokedStatus = await request(srv.port, 'GET', `/api/wallet/forms/${formId}/status`, undefined, auth);
+    assert.equal(revokedStatus.body.status, 'revoked');
   } finally {
     if (srv) await srv.stop();
     await bao.close();

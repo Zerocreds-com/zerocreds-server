@@ -139,6 +139,22 @@ server.tool(
     await walletApiCall('GET', `/api/wallet/forms/${form_id}/status`), null, 2) }] }),
 );
 
+server.tool(
+  'zerocreds_wallet_connection_status',
+  'Check a saved connection by ID after the form link has expired. Returns metadata only, never credential values.',
+  { connection_id: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/) },
+  async ({ connection_id }) => ({ content: [{ type: 'text', text: JSON.stringify(
+    await walletApiCall('GET', `/api/wallet/connections/${connection_id}`), null, 2) }] }),
+);
+
+server.tool(
+  'zerocreds_wallet_connection_revoke',
+  'Mark a saved connection revoked when the user explicitly requests it. Trusted brokers must deny future use; this does not return or erase credential values.',
+  { connection_id: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/) },
+  async ({ connection_id }) => ({ content: [{ type: 'text', text: JSON.stringify(
+    await walletApiCall('POST', `/api/wallet/connections/${connection_id}/revoke`, {}), null, 2) }] }),
+);
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);

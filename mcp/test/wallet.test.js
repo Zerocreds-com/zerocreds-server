@@ -25,6 +25,12 @@ test('agent MCP wallet tools create a form and poll value-free status', async ()
       return res.end(JSON.stringify({ form_id: formId, connection_id: connectionId,
         status: 'done', kv_version: 1 }));
     }
+    if (req.method === 'GET' && req.url === `/api/wallet/connections/${connectionId}`) {
+      return res.end(JSON.stringify({ connection_id: connectionId, provider: 'tilda', state: 'active', kv_version: 1 }));
+    }
+    if (req.method === 'POST' && req.url === `/api/wallet/connections/${connectionId}/revoke`) {
+      return res.end(JSON.stringify({ connection_id: connectionId, state: 'revoked' }));
+    }
     res.writeHead(404).end(JSON.stringify({ error: 'not_found' }));
   });
   await new Promise(resolve => api.listen(0, '127.0.0.1', resolve));
@@ -47,7 +53,12 @@ test('agent MCP wallet tools create a form and poll value-free status', async ()
     assert.equal(JSON.parse(created.content[0].text).connection_id, connectionId);
     const status = await client.callTool({ name: 'zerocreds_wallet_form_status', arguments: { form_id: formId } });
     assert.equal(JSON.parse(status.content[0].text).status, 'done');
-    assert.deepEqual(calls.map(c => c.path), ['/api/wallet/forms', `/api/wallet/forms/${formId}/status`]);
+    const connection = await client.callTool({ name: 'zerocreds_wallet_connection_status', arguments: { connection_id: connectionId } });
+    assert.equal(JSON.parse(connection.content[0].text).state, 'active');
+    const revoked = await client.callTool({ name: 'zerocreds_wallet_connection_revoke', arguments: { connection_id: connectionId } });
+    assert.equal(JSON.parse(revoked.content[0].text).state, 'revoked');
+    assert.deepEqual(calls.map(c => c.path), ['/api/wallet/forms', `/api/wallet/forms/${formId}/status`,
+      `/api/wallet/connections/${connectionId}`, `/api/wallet/connections/${connectionId}/revoke`]);
     assert.ok(calls.every(c => c.authorization === `Bearer ${token}`));
     assert.equal(calls[0].body.owner_id, undefined);
     assert.equal(calls[0].body.profile_id, undefined);

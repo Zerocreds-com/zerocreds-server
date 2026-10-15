@@ -100,6 +100,12 @@ path "${mount}/data/owners/${owner}/connections/*" { capabilities = ["read"] }
         headers: { 'X-Vault-Token': writer },
       });
       assert.equal(writerRead.status, 403);
+      const revoked = await request(srv.port, 'POST',
+        `/api/wallet/connections/${created.body.connection_id}/revoke`, {}, auth);
+      assert.equal(revoked.body.state, 'revoked');
+      const afterRevoke = await request(srv.port, 'GET',
+        `/api/wallet/connections/${created.body.connection_id}`, undefined, auth);
+      assert.equal(afterRevoke.body.state, 'revoked');
     } finally {
       if (srv) await srv.stop();
       for (const token of tokens) {

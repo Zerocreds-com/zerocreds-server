@@ -2150,6 +2150,28 @@ function createApp(config = {}) {
       } catch { return json(res, 503, { error: 'wallet unavailable' }); }
     }
 
+    const walletConnection = /^\/api\/wallet\/connections\/([a-zA-Z0-9_-]{1,100})(\/revoke)?$/.exec(url.pathname);
+    if (walletConnection && (req.method === 'GET' && !walletConnection[2]
+      || req.method === 'POST' && walletConnection[2])) {
+      const scope = walletScope(req.headers.authorization);
+      if (!scope) return json(res, 401, { error: 'unauthorized' });
+      try {
+        const connectionId = walletConnection[1];
+        if (req.method === 'POST') {
+          const result = await walletCall('POST', `/internal/connections/${connectionId}/revoke`, {
+            owner_id: scope.owner_id, profile_id: scope.profile_id,
+          });
+          return json(res, 200, { connection_id: result.connection_id, state: result.state });
+        }
+        const result = await walletCall('GET', `/internal/connections/${connectionId}`, null, scope);
+        return json(res, 200, { connection_id: result.connection_id, provider: result.provider,
+          state: result.state, kv_version: result.kv_version, updated_at: result.updated_at });
+      } catch (e) {
+        return json(res, e.status === 404 ? 404 : 503,
+          { error: e.status === 404 ? 'connection_unavailable' : 'wallet unavailable' });
+      }
+    }
+
     // ── POST /api/forms — form spec ────────────────────────────────────────────
     // One spec, two ways in: the human URL (/f/{form_id}) and the machine endpoint
     // (/api/forms/{form_id}/submit). Same auth, validation and destination rules as sessions.
