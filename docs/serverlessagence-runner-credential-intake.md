@@ -1,6 +1,6 @@
 # ServerlessAgence: credential forms through MCP
 
-Status: architecture decision for [ZeroCreds #67](https://github.com/Zerocreds-com/zerocreds-server/issues/67), **not an implemented end-to-end path**. The opt-in OpenBao KV-v2 preflight and version receipt in this change have only a local HTTP fixture test. The current ZeroCreds server stores pending forms in local files. The OpenBao service, owner-scoped policies, D1 metadata and agent-side credential use are not yet deployed as one proven flow.
+Status: architecture decision for [ZeroCreds #67](https://github.com/Zerocreds-com/zerocreds-server/issues/67), **not an implemented end-to-end path**. The opt-in OpenBao KV-v2 preflight and version receipt in this change pass both a local HTTP fixture and a real **ephemeral OpenBao dev-mode** test with per-owner policies. The current ZeroCreds server stores pending forms in local files. A production OpenBao service, D1 metadata and agent-side credential use are not yet deployed as one proven flow.
 
 ## Decision
 
@@ -78,7 +78,7 @@ The broker checks owner, connection state, run identity, provider, operation, re
 ## Implementation order and acceptance
 
 1. Keep the generic ZeroCreds MCP tools compatible. Add a trusted ServerlessAgence adapter that derives owner, profile and a named OpenBao destination server-side, accepts task-specific fields, runs mandatory OpenBao preflight and returns the human form URL. Disallow inline destination selection on this path, without breaking unrelated legacy clients.
-2. Provision a sandbox OpenBao KV-v2 mount, separate writer/reader/probe-cleanup identities and audit devices. The compatible `vault` adapter now has an opt-in version receipt and synthetic write/metadata/cleanup preflight with local fixture tests; repeat against an isolated **real OpenBao** instance before claiming this step complete.
+2. Provision a persistent sandbox OpenBao KV-v2 mount, separate writer/reader/probe-cleanup identities and audit devices. The compatible `vault` adapter now has an opt-in version receipt and synthetic write/metadata/cleanup preflight tested against a real ephemeral OpenBao dev server; that does not prove production configuration, availability or backups.
 3. Implement dedicated D1 metadata schema/Worker for forms, one-time submission state, owner-bound connections, receipts and revocation. Connect ZeroCreds submission/status and verified storage disclosure to it. Bind a confirmed `connectionId` to existing Runner and Control Plane contracts without putting values in their task stores.
 4. Add one reviewed, open-source credential-using MCP capability and broker policy; prove a real sandbox task. Define further executor methods after this vertical slice works.
 
