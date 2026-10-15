@@ -117,6 +117,18 @@ jobs:
                         kind = 'inline' if inline else 'named' if isinstance(destination, str) else 'other'
                         sessions[f'30d_{owner_kind}'] += 1
                         sessions[f'30d_{kind}'] += 1
+                        if inline:
+                            types = [destination.get('type')] if isinstance(destination, dict) else []
+                            if isinstance(levels, dict):
+                                types.extend(v.get('type') for v in levels.values() if isinstance(v, dict))
+                            allowed_types = {'local_file', 'http_post', 'vault', 'gcp_secret_manager', 'aws_secrets_manager', 'os_keychain', 'macos_keychain', 'windows_credential_manager'}
+                            for destination_type in set(t for t in types if isinstance(t, str)):
+                                safe_type = destination_type if destination_type in allowed_types else 'other'
+                                sessions[f'30d_{owner_kind}_{safe_type}'] += 1
+                        if entry.get('uid') is not None:
+                            sessions[f'30d_{owner_kind}_with_uid'] += 1
+                        if entry.get('service_slug') or entry.get('service'):
+                            sessions[f'30d_{owner_kind}_with_service'] += 1
                         if owner_kind == 'integrator':
                             seen_integrators.add(owner)
                         if age <= timedelta(days=7):
