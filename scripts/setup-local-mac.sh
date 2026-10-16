@@ -119,6 +119,15 @@ config.mcp.zerocreds = {
     ZEROCREDS_LOCAL_CATALOG_FILE: `${home}/.config/zerocreds/local/connections.json`,
   },
 };
+const pluginPath = path.join(process.env.ZC_ROOT, 'opencode-plugin/zerocreds-events.js');
+const pluginOptions = { baseUrl: 'http://127.0.0.1:3456', adminTokenFile: `${home}/.config/zerocreds/local/admin-token` };
+config.plugin = Array.isArray(config.plugin) ? config.plugin : [];
+const existingPlugin = config.plugin.findIndex((entry) =>
+  (typeof entry === 'string' && entry === pluginPath) ||
+  (Array.isArray(entry) && entry[0] === pluginPath));
+const pluginEntry = [pluginPath, pluginOptions];
+if (existingPlugin >= 0) config.plugin[existingPlugin] = pluginEntry;
+else config.plugin.push(pluginEntry);
 const tmp = `${configPath}.zerocreds.tmp`;
 fs.writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
 fs.renameSync(tmp, configPath);
