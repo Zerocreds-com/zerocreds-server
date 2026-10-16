@@ -3,7 +3,9 @@
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
-const { verifyLocalCredential } = require('./local-verification');
+const { verifyLocalCredential, credentialHint } = require('./local-verification');
+const { validateRules: validatePlaygroundRules, evaluateRules, simulateScenario, listScenarios } = require('./credential-playground');
+const { diagnoseLocalSetup } = require('./local-doctor');
 const path = require('path');
 const crypto = require('crypto');
 const { startNalogLogin, confirmNalogCode } = require('./nalog-login');
@@ -16,10 +18,20 @@ const { discoverCredentialSources, searchCredentialMetadata } = require('./crede
 // Read git commit at startup for /version endpoint
 function readCommit() {
   try {
-    const headPath = path.join(__dirname, '../../.git/HEAD');
+    let gitDir = path.join(__dirname, '../../.git');
+    if (fs.statSync(gitDir).isFile()) {
+      const pointer = fs.readFileSync(gitDir, 'utf8').trim().match(/^gitdir: (.+)$/);
+      if (!pointer) return 'unknown';
+      gitDir = path.resolve(path.dirname(gitDir), pointer[1]);
+    }
+    const headPath = path.join(gitDir, 'HEAD');
     const head = fs.readFileSync(headPath, 'utf8').trim();
     if (head.startsWith('ref: ')) {
-      const refPath = path.join(__dirname, '../../.git', head.slice(5));
+      let refPath = path.join(gitDir, head.slice(5));
+      if (!fs.existsSync(refPath)) {
+        const commonDirFile = path.join(gitDir, 'commondir');
+        if (fs.existsSync(commonDirFile)) refPath = path.resolve(gitDir, fs.readFileSync(commonDirFile, 'utf8').trim(), head.slice(5));
+      }
       return fs.readFileSync(refPath, 'utf8').trim().slice(0, 12);
     }
     return head.slice(0, 12);
@@ -598,6 +610,9 @@ function dynamicFormHtml(token, pending, host, nonce, api = null) {
   const fields = Array.isArray(pending.fields) ? pending.fields : [];
   const title = pending.title || 'Enter your credentials';
   const description = pending.description || 'Values go directly from this page to ZeroCreds, not through the AI chat.';
+  const playgroundWarning = pending.playground_test
+    ? `<div class="storage-summary" role="note"><strong>TEST PLAYGROUND — DO NOT ENTER REAL CREDENTIALS</strong><br>This local form accepts synthetic test values only. Values are checked against the configured rules in memory, then discarded. Nothing is verified with a provider or saved to a credential store.</div>`
+    : '';
 
   function levelBadge(f) {
     const lm = LEVEL_META[f.level];
@@ -990,6 +1005,7 @@ document.addEventListener('DOMContentLoaded', () => {
   <div id="form-view">
     <h1>${escHtml(title)}</h1>
     <p class="sub">${escHtml(description)}</p>
+    ${playgroundWarning}
     ${storageSummary}
 
     ${fieldHtml}
@@ -1002,7 +1018,7 @@ document.addEventListener('DOMContentLoaded', () => {
   <div id="done" hidden>
     <div class="check-icon" aria-hidden="true">✓</div>
     <h1>Done</h1>
-    <p class="sub">Credentials saved. You can close this page.</p>
+    <p class="sub">${pending.playground_test ? 'Synthetic test value checked and discarded. Nothing was saved.' : 'Credentials saved. You can close this page.'}</p>
   </div>
   <p class="lock"><span id="zc-timer"></span> &middot; One-time link &middot; <a href="https://github.com/Zerocreds-com/zerocreds-server" target="_blank" rel="noopener">v${VERSION}</a></p>
   ${apiHtml}
@@ -1157,6 +1173,7 @@ function readAdminTokenFile(file) {
 
 function createApp(config = {}) {
   const LOCAL_MODE = config.localMode ?? envFlag('ZEROCREDS_LOCAL_MODE');
+  const RUNTIME_PLATFORM = config.platform ?? process.platform;
   let ADMIN_TOKEN = config.adminToken ?? process.env.ZEROCREDS_ADMIN_TOKEN ?? '';
   const ADMIN_TOKEN_FILE = config.adminTokenFile ?? process.env.ZEROCREDS_ADMIN_TOKEN_FILE ?? path.join(os.homedir(), '.config/zerocreds/admin-token');
   if (!ADMIN_TOKEN) {
@@ -1169,6 +1186,8 @@ function createApp(config = {}) {
   const CONNECT_PENDING_DIR = config.pendingDir ?? process.env.ZEROCREDS_PENDING_DIR ?? path.join(os.homedir(), 'connect-pending');
   const AGENT_TOKENS_DIR = config.tokensDir ?? process.env.ZEROCREDS_TOKENS_DIR ?? path.join(os.homedir(), 'agent-tokens');
   const LOCAL_CATALOG_FILE = config.localCatalogFile ?? process.env.ZEROCREDS_LOCAL_CATALOG_FILE ?? path.join(os.homedir(), '.config/zerocreds/local/connections.json');
+  const DEFAULT_LOCAL_DESTINATION = config.defaultLocalDestination ?? process.env.ZEROCREDS_DEFAULT_DESTINATION ?? '';
+  const LOCAL_KEYCHAIN_HELPER = config.keychainHelper ?? process.env.ZEROCREDS_KEYCHAIN_HELPER ?? path.join(__dirname, '../bin/zerocreds-keychain');
   const LOCAL_DISCOVERY_CATALOG_FILE = config.localDiscoveryCatalogFile ?? process.env.ZEROCREDS_LOCAL_DISCOVERY_CATALOG_FILE ?? path.join(os.homedir(), '.config/zerocreds/local/discovery-catalog.json');
   const LOCAL_DISCOVERY_PREVIEWS = new Map();
   const LOCAL_PROVIDER_POLICIES_FILE = config.localProviderPoliciesFile ?? process.env.ZEROCREDS_LOCAL_PROVIDER_POLICIES_FILE ?? path.join(os.homedir(), '.config/zerocreds/local/provider-policies.json');
@@ -1792,6 +1811,21 @@ function createApp(config = {}) {
           if (!['http:', 'https:'].includes(u.protocol)) throw new Error();
         } catch { return { status: 400, body: { error: `invalid URL for field: ${f.name}` } }; }
       }
+
+    if (pending.playground_test) {
+      const field = pending.fields[0];
+      const result = evaluateRules(clean[field.name] || '', pending.playground_rules || []);
+      if (!result.accepted) return { status: 422, body: { error: 'playground rules rejected the synthetic input', rule_results: result.results } };
+      if (!claimPending(token)) return { status: 403, body: { error: 'invalid or expired token' } };
+      try {
+        fs.writeFileSync(pendingPath(token, 'done'), JSON.stringify({
+          status: 'done', playground_test: true, outcome: 'accepted',
+          rule_results: result.results, _integrator_id: pending.integrator_id,
+        }), { mode: 0o600 });
+      } finally { dropClaim(token); }
+      if (LOCAL_MODE) publishLocalFormEvent(token, 'done');
+      return { status: 200, body: { ok: true, playground_test: true, outcome: 'accepted', rule_results: result.results, value_returned: false } };
+    }
     }
 
     // One-time link: claim it before saving so concurrent submissions cannot both succeed.
@@ -2254,6 +2288,82 @@ function createApp(config = {}) {
       return json(res, 200, { ok: true, name });
     }
 
+    if (req.method === 'GET' && url.pathname === '/api/local/doctor') {
+      if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
+      const { isAdmin } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin) return json(res, 401, { error: 'unauthorized' });
+      const report = await diagnoseLocalSetup({
+        helperPath: LOCAL_KEYCHAIN_HELPER,
+        catalogFile: LOCAL_CATALOG_FILE,
+        destinations: NAMED_DESTINATIONS,
+        defaultDestination: DEFAULT_LOCAL_DESTINATION,
+        version: VERSION,
+        commit: COMMIT,
+        platform: RUNTIME_PLATFORM,
+      });
+      return json(res, 200, report);
+    }
+
+    if (url.pathname === '/api/local/playground/scenarios' && req.method === 'GET') {
+      if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
+      const { isAdmin } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin) return json(res, 401, { error: 'unauthorized' });
+      return json(res, 200, {
+        mode: 'synthetic_only',
+        warning: 'Use invented test strings only. No providers or credential stores are contacted.',
+        rule_types: ['required', 'min_length', 'max_length', 'equals', 'contains', 'one_of', 'matches'],
+        scenarios: listScenarios(),
+      });
+    }
+
+    if (url.pathname === '/api/local/playground/forms' && req.method === 'POST') {
+      if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
+      const { isAdmin } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin) return json(res, 401, { error: 'unauthorized' });
+      const payload = await readJson(req);
+      if (!payload) return json(res, 400, { error: 'bad json' });
+      const validated = validatePlaygroundRules(payload.rules || []);
+      if (validated.error) return json(res, 400, { error: validated.error });
+      const ttlMinutes = payload.ttl_minutes === undefined ? 10 : payload.ttl_minutes;
+      if (!Number.isInteger(ttlMinutes) || ttlMinutes < 1 || ttlMinutes > 30) return json(res, 400, { error: 'ttl_minutes must be 1–30' });
+      const title = typeof payload.title === 'string' && payload.title.trim() ? payload.title.trim().slice(0, 200) : 'ZeroCreds credential playground';
+      const token = crypto.randomBytes(16).toString('hex');
+      const expires = Date.now() + ttlMinutes * 60_000;
+      const pending = {
+        token, title,
+        description: 'Test the form and validation path with invented sample data.',
+        fields: [{ name: 'synthetic_value', label: 'Synthetic test value', type: 'password', required: false }],
+        destination: null, destinations_by_level: null, notify: null,
+        integrator_id: 'admin', _audit_auth: 'admin', requester: 'Local ZeroCreds playground',
+        expires, playground_test: true, playground_rules: validated.rules,
+      };
+      fs.mkdirSync(CONNECT_PENDING_DIR, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(pendingPath(token), JSON.stringify(pending), { mode: 0o600 });
+      return json(res, 200, { mode: 'synthetic_only', token, url: `${BASE_URL}/f/${token}`,
+        status_url: `${BASE_URL}/api/session/${token}/status`, expires_at: new Date(expires).toISOString(),
+        warning: 'DO NOT ENTER REAL CREDENTIALS. Submitted values are checked in memory and discarded.' });
+    }
+
+    if (url.pathname === '/api/local/playground/run' && req.method === 'POST') {
+      if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
+      const { isAdmin } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin) return json(res, 401, { error: 'unauthorized' });
+      const payload = await readJson(req);
+      if (!payload) return json(res, 400, { error: 'bad json' });
+      const validated = validatePlaygroundRules(payload.rules || []);
+      if (validated.error) return json(res, 400, { error: validated.error });
+      const scenarios = payload.scenarios === undefined ? listScenarios().map(item => item.id) : payload.scenarios;
+      if (!Array.isArray(scenarios) || scenarios.length < 1 || scenarios.length > 20
+          || scenarios.some(item => !listScenarios().some(scenario => scenario.id === item))) {
+        return json(res, 400, { error: 'scenarios must contain 1–20 supported scenario ids' });
+      }
+      return json(res, 200, {
+        mode: 'synthetic_only',
+        warning: 'This is a deterministic simulator, not a credential verification. No providers or credential stores are contacted.',
+        results: scenarios.map(scenario => simulateScenario(scenario, validated.rules)),
+      });
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/local/connections') {
       if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
       const { isAdmin } = resolveAuth(req.headers['authorization']);
@@ -2424,6 +2534,7 @@ function createApp(config = {}) {
         return json(res, 200, { verification: status, connection_id: entry.connection_id });
       }
       const result = await (config.localCredentialVerifier || verifyLocalCredential)(provider, fields);
+      const safeCredentialHint = credentialHint(provider, fields);
       const verifiedAt = new Date().toISOString();
       entry.last_verified_at = verifiedAt;
       entry.verification_status = result.status;
@@ -2447,6 +2558,7 @@ function createApp(config = {}) {
         permissions: entry.verified_permissions,
         permission_evidence: entry.permission_evidence,
         diagnostic: entry.verification_diagnostic,
+        ...(safeCredentialHint ? { credential_hint: safeCredentialHint } : {}),
         credential_expires_at: entry.credential_expires_at,
       });
     }

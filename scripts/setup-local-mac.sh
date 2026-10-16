@@ -60,6 +60,8 @@ const e = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(
 const env = {
   PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
   ZEROCREDS_LOCAL_MODE: '1',
+  ZEROCREDS_DEFAULT_DESTINATION: 'mac-keychain',
+  ZEROCREDS_KEYCHAIN_HELPER: `${process.env.ZC_CONFIG}/zerocreds-keychain`,
   ZEROCREDS_ADMIN_TOKEN_FILE: `${process.env.ZC_CONFIG}/admin-token`,
   ZEROCREDS_DESTINATIONS_FILE: `${process.env.ZC_CONFIG}/destinations.json`,
   ZEROCREDS_SIGNING_KEY_FILE: `${process.env.ZC_CONFIG}/signing-key.pem`,
@@ -68,7 +70,6 @@ const env = {
   ZEROCREDS_LOCAL_CATALOG_FILE: `${process.env.ZC_CONFIG}/connections.json`,
   ZEROCREDS_LOCAL_PROVIDER_POLICIES_FILE: `${process.env.ZC_CONFIG}/provider-policies.json`,
   ZEROCREDS_BASE_URL: 'http://127.0.0.1:3456',
-  ZEROCREDS_KEYCHAIN_HELPER: `${process.env.ZC_CONFIG}/zerocreds-keychain`,
   PORT: '3456',
 };
 const envXml = Object.entries(env).map(([k, v]) => `<key>${e(k)}</key><string>${e(v)}</string>`).join('');

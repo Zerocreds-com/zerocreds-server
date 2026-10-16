@@ -34,6 +34,16 @@ function selectToken(fields, names) {
   return null;
 }
 
+function credentialHint(provider, fields) {
+  if (String(provider).toLowerCase() !== 'deepgram') return null;
+  const token = selectToken(fields, PROVIDERS.deepgram.tokenFields);
+  if (!token) return null;
+  return {
+    character_count: token.length,
+    masked: token.length >= 12 ? `${token.slice(0, 3)}…${token.slice(-4)}` : '[too short to mask safely]',
+  };
+}
+
 async function verifyLocalCredential(provider, fields, fetchImpl = fetch) {
   const normalizedProvider = String(provider).toLowerCase();
   const config = PROVIDERS[normalizedProvider];
@@ -126,4 +136,4 @@ async function verifyLocalCredential(provider, fields, fetchImpl = fetch) {
   }
 }
 
-module.exports = { verifyLocalCredential };
+module.exports = { verifyLocalCredential, credentialHint };
