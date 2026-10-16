@@ -9,6 +9,12 @@ const PROVIDERS = Object.freeze({
     url: 'https://api.cloudflare.com/client/v4/user/tokens/verify',
     tokenFields: ['api_token', 'token', 'cloudflare_token'],
   },
+  deepgram: {
+    url: 'https://api.deepgram.com/v1/auth/grant',
+    method: 'POST',
+    authScheme: 'Token',
+    tokenFields: ['DEEPGRAM_API_KEY', 'api_key', 'deepgram_api_key', 'token'],
+  },
 });
 
 async function boundedJson(response) {
@@ -29,7 +35,8 @@ function selectToken(fields, names) {
 }
 
 async function verifyLocalCredential(provider, fields, fetchImpl = fetch) {
-  const config = PROVIDERS[String(provider).toLowerCase()];
+  const normalizedProvider = String(provider).toLowerCase();
+  const config = PROVIDERS[normalizedProvider];
   if (!config) return { status: 'unsupported_provider' };
   const token = selectToken(fields, config.tokenFields);
   if (!token) return { status: 'credential_field_missing' };
@@ -37,12 +44,12 @@ async function verifyLocalCredential(provider, fields, fetchImpl = fetch) {
   let response;
   try {
     response = await fetchImpl(config.url, {
-      method: 'GET',
+      method: config.method || 'GET',
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: `${config.authScheme || 'Bearer'} ${token}`,
         Accept: 'application/json',
         'User-Agent': 'ZeroCreds-local-verifier',
-        ...(provider === 'github' ? { 'X-GitHub-Api-Version': '2022-11-28' } : {}),
+        ...(normalizedProvider === 'github' ? { 'X-GitHub-Api-Version': '2022-11-28' } : {}),
       },
       redirect: 'error',
       signal: AbortSignal.timeout(8000),
@@ -51,7 +58,39 @@ async function verifyLocalCredential(provider, fields, fetchImpl = fetch) {
     return { status: 'unavailable' };
   }
 
-  if (provider === 'github') {
+  if (normalizedProvider === 'deepgram') {
+    if (response.status === 401) return { status: 'invalid', diagnostic: { upstream_status: 401, upstream_code: 'invalid_credentials' } };
+    if (!response.ok) {
+      let body = {};
+      try { body = await boundedJson(response); } catch {}
+      const code = typeof body.err_code === 'string' && /^[A-Z0-9_-]{1,64}$/.test(body.err_code)
+        ? body.err_code : undefined;
+      const message = typeof body.err_msg === 'string' ? body.err_msg : typeof body.error === 'string' ? body.error : '';
+      const invalid = response.status === 400 && /invalid credentials/i.test(message);
+      const status = response.status === 403 ? 'insufficient_permissions' : invalid ? 'invalid' : 'unavailable';
+      return { status, diagnostic: { upstream_status: response.status, upstream_code: code || (invalid ? 'invalid_credentials' : undefined) } };
+    }
+    try {
+      const grant = await boundedJson(response);
+      if (typeof grant.access_token !== 'string' || !grant.access_token) {
+        return { status: 'unavailable', diagnostic: { upstream_status: response.status, upstream_code: 'grant_token_missing' } };
+      }
+      return {
+        status: 'valid',
+        identity: { grant_capable: true },
+        permissions: [],
+        permission_evidence: 'provider_verified',
+        diagnostic: {
+          upstream_status: response.status,
+          grant_expires_in: Number.isSafeInteger(grant.expires_in) ? grant.expires_in : null,
+        },
+      };
+    } catch {
+      return { status: 'unavailable', diagnostic: { upstream_status: response.status, upstream_code: 'invalid_response' } };
+    }
+  }
+
+  if (normalizedProvider === 'github') {
     if (response.status === 401) return { status: 'invalid' };
     if (!response.ok) return { status: 'unavailable' };
     try {

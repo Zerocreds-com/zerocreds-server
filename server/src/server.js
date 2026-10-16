@@ -2266,6 +2266,7 @@ function createApp(config = {}) {
         verified_identity: entry.verified_identity || null,
         verified_permissions: Array.isArray(entry.verified_permissions) ? entry.verified_permissions : [],
         permission_evidence: entry.permission_evidence || 'unknown',
+        verification_diagnostic: entry.verification_diagnostic || null,
         created_at: entry.created_at,
         updated_at: entry.updated_at,
         last_used_at: entry.last_used_at,
@@ -2416,6 +2417,7 @@ function createApp(config = {}) {
       entry.verified_identity = result.identity || null;
       entry.verified_permissions = result.permissions || [];
       entry.permission_evidence = result.permission_evidence || 'unknown';
+      entry.verification_diagnostic = result.diagnostic || null;
       if (result.provider_expires_at && Number.isFinite(Date.parse(result.provider_expires_at))) {
         entry.credential_expires_at = new Date(result.provider_expires_at).toISOString();
         entry.expiry_status = 'provider_verified';
@@ -2431,6 +2433,7 @@ function createApp(config = {}) {
         identity: entry.verified_identity,
         permissions: entry.verified_permissions,
         permission_evidence: entry.permission_evidence,
+        diagnostic: entry.verification_diagnostic,
         credential_expires_at: entry.credential_expires_at,
       });
     }
