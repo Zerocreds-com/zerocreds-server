@@ -50,12 +50,19 @@ async function withLocalServer(run) {
     localMode: true,
     baseUrl: `http://127.0.0.1:${port}`,
     localCatalogFile: catalogFile,
+    localProviderPolicies: { github: {
+      login_url: 'https://github.com/login', auth_url: 'https://github.com/settings/profile',
+      username_selector: '#login_field', password_selector: '#password',
+      submit_selector: 'button[type=submit]', success_selector: '#signed-in',
+      username_field: 'username', password_field: 'password',
+    } },
     pendingDir: path.join(root, 'pending'),
     tokensDir: path.join(root, 'tokens'),
     destinationsFile: path.join(root, 'destinations.json'),
     integratorsFile: path.join(root, 'integrators.json'),
     signingKeyFile: path.join(root, 'signing-key.pem'),
-    localCredentialReader: async () => ({ token: 'must-never-escape-test-secret' }),
+    localCredentialReader: async () => ({ token: 'must-never-escape-test-secret', username: 'test-user',
+      password: 'synthetic-login-password', api_token: 'must-not-be-included' }),
     localCredentialVerifier: async () => ({ status: 'valid', identity: { id: '123', login: 'octocat' },
       permissions: ['repo'], permission_evidence: 'provider_verified' }),
   });
@@ -84,5 +91,33 @@ test('local verification requires admin auth and persists only value-free provid
     assert.equal(list.body.connections[0].verification_status, 'valid');
     assert.deepEqual(list.body.connections[0].verified_permissions, ['repo']);
     assert.ok(list.body.connections[0].last_verified_at);
+  });
+});
+
+test('local broker grants are connection-bound, short-lived, one-use and return only approved fields', async () => {
+  await withLocalServer(async ({ port, token, catalogFile }) => {
+    const denied = await call(port, 'POST', '/api/local/broker/grants', {
+      provider: 'github', account_alias: 'work', run_id: '12345678-1234-1234-1234-123456789abc',
+    });
+    assert.equal(denied.status, 401);
+    const issued = await call(port, 'POST', '/api/local/broker/grants', {
+      provider: 'github', account_alias: 'work', run_id: '12345678-1234-1234-1234-123456789abc',
+    }, token);
+    assert.equal(issued.status, 200);
+    assert.equal(issued.body.approved_origin, 'https://github.com');
+    assert.equal(issued.body.login_url, 'https://github.com/login');
+    assert.equal(issued.body.success_selector, '#signed-in');
+    assert.ok(!JSON.stringify(issued.body).includes('must-never-escape-test-secret'));
+
+    const redeemed = await call(port, 'POST', '/api/local/broker/redeem', { grant: issued.body.grant });
+    assert.equal(redeemed.status, 200);
+    assert.deepEqual(redeemed.body, { username: 'test-user', password: 'synthetic-login-password' });
+    assert.ok(!JSON.stringify(redeemed.body).includes('must-not-be-included'));
+    const replay = await call(port, 'POST', '/api/local/broker/redeem', { grant: issued.body.grant });
+    assert.equal(replay.status, 401);
+    const catalog = JSON.parse(fs.readFileSync(catalogFile, 'utf8'));
+    assert.equal(catalog[0].last_use.operation, 'browser_login');
+    assert.equal(catalog[0].last_use.run_id, '12345678-1234-1234-1234-123456789abc');
+    assert.equal(catalog[0].last_use.outcome, 'delivered');
   });
 });

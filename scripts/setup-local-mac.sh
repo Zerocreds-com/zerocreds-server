@@ -40,6 +40,12 @@ JSON
   chmod 600 "$CONFIG/destinations.json"
 fi
 
+if [[ ! -f "$CONFIG/provider-policies.json" ]]; then
+  umask 077
+  printf '{}\n' > "$CONFIG/provider-policies.json"
+  chmod 600 "$CONFIG/provider-policies.json"
+fi
+
 if [[ ! -d "$ROOT/server/node_modules" ]]; then (cd "$ROOT/server" && npm ci); fi
 if [[ ! -d "$ROOT/mcp/node_modules" ]]; then (cd "$ROOT/mcp" && npm ci); fi
 
@@ -59,6 +65,7 @@ const env = {
   ZEROCREDS_PENDING_DIR: `${process.env.ZC_DATA}/pending`,
   ZEROCREDS_TOKENS_DIR: `${process.env.ZC_DATA}/tokens`,
   ZEROCREDS_LOCAL_CATALOG_FILE: `${process.env.ZC_CONFIG}/connections.json`,
+  ZEROCREDS_LOCAL_PROVIDER_POLICIES_FILE: `${process.env.ZC_CONFIG}/provider-policies.json`,
   ZEROCREDS_BASE_URL: 'http://127.0.0.1:3456',
   ZEROCREDS_KEYCHAIN_HELPER: `${process.env.ZC_CONFIG}/zerocreds-keychain`,
   PORT: '3456',
