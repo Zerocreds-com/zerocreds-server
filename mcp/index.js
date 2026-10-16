@@ -163,9 +163,9 @@ server.tool(
 
 if (LOCAL_MODE) server.tool(
   'zerocreds_connection_verify',
-  'Verify a saved GitHub or Cloudflare credential against that provider from the trusted local ZeroCreds server. Returns identity, observed permissions and expiry only; never returns credential values.',
+  'Verify a saved GitHub, Cloudflare or Deepgram credential from the trusted local ZeroCreds server. For Deepgram this safely tests whether the key can mint a default 30-second grant, then discards the token; it does not make a billable transcription request. Returns safe status/diagnostics only and never returns credential or grant values. This verifies the Mac Keychain credential, not whether a separate Cloudflare Worker secret was updated.',
   {
-    provider: z.enum(['github', 'cloudflare']),
+    provider: z.enum(['github', 'cloudflare', 'deepgram']),
     account_alias: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
   },
   async ({ provider, account_alias }) => {

@@ -22,6 +22,8 @@ The form URL stays on the Mac. This local catalog is not synchronized to cloud R
 
 The local server also exposes a broker protocol for safe-playwright. It is disabled for every provider until an operator adds a private mode-0600 entry to `~/.config/zerocreds/local/provider-policies.json`. A policy pins HTTPS login/auth URLs, username/password selectors and the exact source field names stored in Keychain. The model cannot choose the origin or selectors. The broker issues a one-use grant that expires in 60 seconds; safe-playwright's audited filler redeems it directly over loopback, and the ZeroCreds MCP process receives only the grant and non-secret policy metadata. Redemption rechecks that the connection is active and unexpired, returns only the two approved fields, and records a value-free `browser_login` use event. Grants are in-memory and are invalidated on server restart.
 
+`zerocreds_connection_verify` separates storage from provider validity: it reads the selected Keychain item internally and reports only safe metadata. For Deepgram it calls `POST /v1/auth/grant`, checks that the API key can mint the default 30-second temporary grant, and discards that token without returning it or making a transcription request. A `valid` result confirms that the Mac Keychain value can mint a grant; it does not update or verify a different environment such as a Cloudflare Worker secret. Check a Worker deployment through that app's own non-secret diagnostic endpoint.
+
 Example policy shape (replace selectors and fields with values reviewed for the actual site):
 
 ```json

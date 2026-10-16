@@ -35,14 +35,16 @@ function call(port, method, route, body, token) {
   });
 }
 
-async function withLocalServer(run) {
+async function withLocalServer(run, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zc-local-catalog-'));
   const port = await freePort();
   const token = 'local-test-token-' + 'x'.repeat(40);
   const catalogFile = path.join(root, 'connections.json');
   const discoveryCatalogFile = path.join(root, 'discovery-catalog.json');
+  const provider = options.provider || 'github';
+  const accountAlias = options.accountAlias || 'work';
   fs.writeFileSync(catalogFile, JSON.stringify([{
-    connection_id: 'connection-1', provider: 'github', account_alias: 'work',
+    connection_id: 'connection-1', provider, account_alias: accountAlias,
     storage: 'keychain:github-work', state: 'active', credential_expires_at: null,
     verification_status: 'unknown', created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
   }]));
@@ -69,8 +71,8 @@ async function withLocalServer(run) {
     signingKeyFile: path.join(root, 'signing-key.pem'),
     localCredentialReader: async () => ({ token: 'must-never-escape-test-secret', username: 'test-user',
       password: 'synthetic-login-password', api_token: 'must-not-be-included' }),
-    localCredentialVerifier: async () => ({ status: 'valid', identity: { id: '123', login: 'octocat' },
-      permissions: ['repo'], permission_evidence: 'provider_verified' }),
+    localCredentialVerifier: options.verifier || (async () => ({ status: 'valid', identity: { id: '123', login: 'octocat' },
+      permissions: ['repo'], permission_evidence: 'provider_verified' })),
   });
   await new Promise((resolve, reject) => { app.once('error', reject); app.listen(port, '127.0.0.1', resolve); });
   try { await run({ port, token, catalogFile, discoveryCatalogFile }); }
@@ -80,23 +82,30 @@ async function withLocalServer(run) {
   }
 }
 
-test('local verification requires admin auth and persists only value-free provider evidence', async () => {
+test('local Deepgram verification returns and persists grant diagnostics without the grant token', async () => {
+  const accessToken = 'temporary-grant-must-not-escape';
   await withLocalServer(async ({ port, token }) => {
-    const denied = await call(port, 'POST', '/api/local/connections/verify', { provider: 'github', account_alias: 'work' });
+    const input = { provider: 'deepgram', account_alias: 'chemistry-gpt-deepgram' };
+    const denied = await call(port, 'POST', '/api/local/connections/verify', input);
     assert.equal(denied.status, 401);
-    const verified = await call(port, 'POST', '/api/local/connections/verify',
-      { provider: 'github', account_alias: 'work' }, token);
+    const verified = await call(port, 'POST', '/api/local/connections/verify', input, token);
     assert.equal(verified.status, 200);
     assert.equal(verified.body.verification, 'valid');
-    assert.deepEqual(verified.body.identity, { id: '123', login: 'octocat' });
-    assert.deepEqual(verified.body.permissions, ['repo']);
+    assert.deepEqual(verified.body.identity, { grant_capable: true });
+    assert.deepEqual(verified.body.diagnostic, { upstream_status: 200, grant_expires_in: 30 });
+    assert.ok(!JSON.stringify(verified.body).includes(accessToken));
     assert.ok(!JSON.stringify(verified.body).includes('must-never-escape-test-secret'));
 
     const list = await call(port, 'GET', '/api/local/connections', undefined, token);
     assert.equal(list.status, 200);
     assert.equal(list.body.connections[0].verification_status, 'valid');
-    assert.deepEqual(list.body.connections[0].verified_permissions, ['repo']);
+    assert.deepEqual(list.body.connections[0].verification_diagnostic, { upstream_status: 200, grant_expires_in: 30 });
     assert.ok(list.body.connections[0].last_verified_at);
+  }, {
+    provider: 'deepgram',
+    accountAlias: 'chemistry-gpt-deepgram',
+    verifier: async () => ({ status: 'valid', identity: { grant_capable: true }, permissions: [], access_token: accessToken,
+      permission_evidence: 'provider_verified', diagnostic: { upstream_status: 200, grant_expires_in: 30 } }),
   });
 });
 
