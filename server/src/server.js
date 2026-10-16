@@ -2308,8 +2308,9 @@ function createApp(config = {}) {
           ? scan.candidates.filter((item) => payload.source_ids.includes(item.source_id)) : scan.candidates;
         if (selected.length > 200) return json(res, 413, { error: 'too many candidates; select a source or search the preview' });
         const previewId = crypto.randomBytes(18).toString('hex');
-        const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-        LOCAL_DISCOVERY_PREVIEWS.set(previewId, { candidates: selected, expires: Date.now() + 10 * 60 * 1000 });
+        const previewExpiresAt = Date.now() + 6 * 60 * 60 * 1000;
+        const expiresAt = new Date(previewExpiresAt).toISOString();
+        LOCAL_DISCOVERY_PREVIEWS.set(previewId, { candidates: selected, expires: previewExpiresAt });
         for (const [id, preview] of LOCAL_DISCOVERY_PREVIEWS) if (preview.expires <= Date.now()) LOCAL_DISCOVERY_PREVIEWS.delete(id);
         return json(res, 200, { preview_id: previewId, expires_at: expiresAt, sources: scan.sources,
           candidate_count: selected.length, candidates: selected,

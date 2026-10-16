@@ -139,6 +139,8 @@ test('discovery is previewed before explicit selection and persists metadata onl
     assert.equal(preview.status, 200);
     assert.equal(preview.body.requires_user_confirmation_to_catalog, true);
     assert.equal(preview.body.candidates.length, 1);
+    const previewLifetime = Date.parse(preview.body.expires_at) - Date.now();
+    assert.ok(previewLifetime > 5 * 60 * 60 * 1000 && previewLifetime <= 6 * 60 * 60 * 1000);
     assert.equal(fs.existsSync(discoveryCatalogFile), false);
     const searchedPreview = await call(port, 'GET', `/api/local/discovery/search?q=github&preview_id=${preview.body.preview_id}`, undefined, token);
     assert.equal(searchedPreview.body.scope, 'preview');
