@@ -66,7 +66,7 @@ const server = new McpServer({
 
 server.tool(
   'zerocreds_create_session',
-  'Create a ZeroCreds credential-collection session. Returns a one-time URL to send to the user. The user fills in credentials directly — the agent never sees them.',
+  'Create a ZeroCreds credential-collection session. The user fills in credentials directly — the agent never sees them. When sharing the form, show the returned user_message verbatim so the link has a friendly label; do not expose the raw URL by itself.',
   {
     title: z.string().describe('Heading shown on the form (e.g. "Connect GitHub")'),
     description: z.string().optional().describe('Subtext explaining what credentials are needed and why'),
@@ -114,6 +114,9 @@ server.tool(
       notify,
     });
     if (data.error) throw new Error(data.error);
+    const userMessage = LOCAL_MODE
+      ? `Запрос создан. Попросите пользователя открыть форму и ввести данные напрямую в ZeroCreds: [Открыть защищённую форму ZeroCreds](${data.url})`
+      : `Credential request created. Ask the user to enter their credentials directly in ZeroCreds: [Open secure ZeroCreds form](${data.url})`;
     return {
       content: [{
         type: 'text',
@@ -121,6 +124,7 @@ server.tool(
           token: data.token,
           url: data.url,
           expires_at: data.expires_at,
+          user_message: userMessage,
         }, null, 2),
       }],
     };
