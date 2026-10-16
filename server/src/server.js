@@ -879,6 +879,17 @@ async function copyText(id, btn) {
     showMsg('err', 'Allow clipboard access or select the text and copy it manually');
   }
 }
+let lastErrorDetails = '';
+async function copyErrorDetails(btn) {
+  if (!lastErrorDetails) return;
+  try {
+    await navigator.clipboard.writeText(lastErrorDetails);
+    btn.textContent = 'Copied';
+    setTimeout(() => { btn.textContent = 'Copy details'; }, 1500);
+  } catch {
+    showMsg('err', 'Allow clipboard access, then select and copy the error details');
+  }
+}
 async function submit() {
   const fields = {};
   for (const name of FIELD_NAMES) {
@@ -903,17 +914,29 @@ async function submit() {
       document.getElementById('form-view').hidden = true;
       document.getElementById('done').hidden = false;
     } else {
-      showMsg('err', d.error || 'Server error');
+      const detail = d.diagnostic ? 'Reference: ' + d.diagnostic : '';
+      const safeDetails = [d.error_code, d.diagnostic, d.error].filter(Boolean).join(' | ');
+      showMsg('err', [d.message || d.error || 'Server error', detail].filter(Boolean).join(' — '), safeDetails);
       btn.disabled = false; btn.textContent = 'Submit';
     }
   } catch(e) {
-    showMsg('err', 'Network error: ' + e.message);
+    const diagnostic = 'local-' + Date.now().toString(36);
+    showMsg('err', 'Could not reach ZeroCreds. Check that the local server is running, then retry.',
+      ['NETWORK_ERROR', diagnostic, 'POST /f/[redacted]', location.origin].join(' | '));
     btn.disabled = false; btn.textContent = 'Submit';
   }
 }
-function showMsg(cls, text) {
+function showMsg(cls, text, details = '') {
   const el = document.getElementById('msg');
-  el.className = 'msg ' + cls; el.textContent = text; el.hidden = false;
+  el.className = 'msg ' + cls; el.replaceChildren(document.createTextNode(text));
+  lastErrorDetails = details;
+  if (cls === 'err' && details) {
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'copy-btn'; button.textContent = 'Copy details';
+    button.style.marginTop = '8px'; button.addEventListener('click', () => copyErrorDetails(button));
+    el.appendChild(document.createElement('br')); el.appendChild(button);
+  }
+  el.hidden = false;
 }
 document.addEventListener('click', e => {
   const b = e.target.closest && e.target.closest('[data-action]');
@@ -1840,7 +1863,16 @@ function createApp(config = {}) {
       // Let the user retry with the same link; never echo upstream details back.
       releaseClaim(token);
       console.error('[dynamic] save failed:', e.message);
-      return { status: 500, body: { error: 'failed to save credentials' } };
+      const diagnostic = `zc-${crypto.randomBytes(6).toString('hex')}`;
+      const keychainFailure = /^macos_keychain:/.test(String(e?.message || ''));
+      return { status: 500, body: {
+        error: 'failed to save credentials',
+        error_code: keychainFailure ? 'KEYCHAIN_WRITE_FAILED' : 'CREDENTIAL_SAVE_FAILED',
+        message: keychainFailure
+          ? 'Could not save to macOS Keychain. Check that the local helper is installed and your login Keychain is unlocked.'
+          : 'ZeroCreds could not save this credential. Retry once; if it continues, copy the details and share them with the operator.',
+        diagnostic,
+      } };
     }
 
     if (LOCAL_MODE && pending.service_slug && pending.uid) {
