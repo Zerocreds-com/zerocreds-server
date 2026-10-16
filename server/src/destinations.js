@@ -335,24 +335,25 @@ function applyTemplate(template, fields) {
 }
 
 // ── macos_keychain ────────────────────────────────────────────────────────────
-// destination: { type: "macos_keychain", service: "zerocreds", account: "github" }
-// Stores JSON of all fields as the keychain password entry.
-// Uses `security` CLI — macOS only, no extra dependencies.
-// Read back: security find-generic-password -s zerocreds -a github -w
-async function saveMacosKeychain(destination, fields) {
+// Secret values go to a tiny native helper over stdin so they never appear in
+// process arguments. Compile server/scripts/macos-keychain.swift with swiftc.
+async function saveMacosKeychain(destination, fields, opts = {}) {
   if (process.platform !== 'darwin') throw new Error('macos_keychain: only supported on macOS');
-  const { execFile } = require('child_process');
-  const { service = 'zerocreds', account = 'default' } = destination;
+  const { spawn } = require('child_process');
+  const service = resolveTemplate(destination.service || 'zerocreds', opts.context || {});
+  const account = resolveTemplate(destination.account || 'default', opts.context || {});
   if (!/^[a-zA-Z0-9_@.-]{1,128}$/.test(account)) throw new Error('macos_keychain: invalid account');
   if (!/^[a-zA-Z0-9_@.-]{1,128}$/.test(service)) throw new Error('macos_keychain: invalid service');
-
-  const value = JSON.stringify(fields);
+  const helper = process.env.ZEROCREDS_KEYCHAIN_HELPER || path.join(__dirname, '../bin/zerocreds-keychain');
   await new Promise((resolve, reject) => {
-    // -U = update existing entry if present
-    execFile('security', ['add-generic-password', '-U', '-s', service, '-a', account, '-w', value],
-      { timeout: 5000 },
-      (err) => err ? reject(new Error(`macos_keychain: ${err.message}`)) : resolve(undefined),
-    );
+    const child = spawn(helper, ['set', service, account], { stdio: ['pipe', 'ignore', 'ignore'] });
+    const timer = setTimeout(() => child.kill('SIGKILL'), 10000);
+    child.once('error', () => { clearTimeout(timer); reject(new Error('macos_keychain: native helper unavailable; run the local Mac setup command')); });
+    child.once('close', (code) => {
+      clearTimeout(timer);
+      code === 0 ? resolve(undefined) : reject(new Error('macos_keychain: Keychain write failed'));
+    });
+    child.stdin.end(JSON.stringify(fields));
   });
   return { secret_id: `keychain:${service}/${account}` };
 }
@@ -395,7 +396,7 @@ async function saveWindowsCredentialManager(destination, fields) {
 //   Windows → Credential Manager (PowerShell / PasswordVault)
 //   Linux   → local_file fallback
 async function saveOsKeychain(destination, fields, opts) {
-  if (process.platform === 'darwin') return saveMacosKeychain(destination, fields);
+  if (process.platform === 'darwin') return saveMacosKeychain(destination, fields, opts);
   if (process.platform === 'win32') return saveWindowsCredentialManager(destination, fields);
   return saveLocalFile(destination, fields, opts);
 }

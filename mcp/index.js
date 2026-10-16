@@ -6,8 +6,35 @@ const { z } = require('zod');
 const { createWalletProvider, bindingForOperation, API_OPERATIONS } = require('./provider');
 
 const BASE_URL = (process.env.ZEROCREDS_URL || 'https://zerocreds.ru').replace(/\/$/, '');
-const ADMIN_TOKEN = process.env.ZEROCREDS_ADMIN_TOKEN || '';
+const fs = require('fs');
+const ADMIN_TOKEN_FILE = process.env.ZEROCREDS_ADMIN_TOKEN_FILE || '';
+let ADMIN_TOKEN = process.env.ZEROCREDS_ADMIN_TOKEN || '';
+if (!ADMIN_TOKEN && ADMIN_TOKEN_FILE) {
+  let fd;
+  try {
+    fd = fs.openSync(ADMIN_TOKEN_FILE, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || (stat.mode & 0o077) || (process.getuid && stat.uid !== process.getuid()) || stat.size > 256) {
+      throw new Error('ZeroCreds admin token file must be a private regular file owned by the current user');
+    }
+    ADMIN_TOKEN = fs.readFileSync(fd, 'utf8').trim();
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+  if (ADMIN_TOKEN.length < 32 || /\s/.test(ADMIN_TOKEN)) throw new Error('ZeroCreds admin token file is invalid');
+}
 const WALLET_API_TOKEN = process.env.ZEROCREDS_WALLET_API_TOKEN || '';
+const LOCAL_MODE = process.env.ZEROCREDS_LOCAL_MODE === '1';
+const DEFAULT_DESTINATION = process.env.ZEROCREDS_DEFAULT_DESTINATION || '';
+if (LOCAL_MODE) {
+  let endpoint;
+  try { endpoint = new URL(BASE_URL); } catch {}
+  if (!endpoint || endpoint.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname)
+      || endpoint.username || endpoint.password || endpoint.pathname !== '/' || endpoint.search || endpoint.hash
+      || !DEFAULT_DESTINATION) {
+    throw new Error('Local ZeroCreds requires a loopback URL and a configured local Keychain destination');
+  }
+}
 
 async function apiCall(method, path, body) {
   const res = await fetch(`${BASE_URL}${path}`, {
@@ -58,19 +85,31 @@ server.tool(
         uid: z.string().optional(),
         filename: z.string().optional(),
       }).passthrough().describe('Inline destination config — only accepted when the server sets ZEROCREDS_ALLOW_INLINE_DESTINATIONS=1'),
-    ]).describe('Where to save the credentials'),
+    ]).optional().describe('Where to save credentials. Local mode always uses the locally configured Keychain destination.'),
+    uid: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional().describe('Stable local account alias, for example github-work or github-personal. Used to keep multiple accounts separate.'),
+    service: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional().describe('Provider slug used in the local credential catalog, for example github.'),
+    credential_expires_at: z.string().datetime({ offset: true }).optional().describe('Known credential expiry as an ISO timestamp. Omit when unknown; this is different from the form link expiry.'),
     ttl_minutes: z.number().int().min(1).max(1440).optional().describe('Link expiry in minutes (default: 30)'),
     notify: z.object({
       tg_bot_token: z.string(),
       tg_chat_id: z.string(),
     }).optional().describe('Send the form link via Telegram automatically'),
   },
-  async ({ title, description, fields, destination, ttl_minutes, notify }) => {
+  async ({ title, description, fields, destination, uid, service, credential_expires_at, ttl_minutes, notify }) => {
+    const selectedDestination = LOCAL_MODE ? DEFAULT_DESTINATION : destination;
+    if (!selectedDestination) throw new Error('ZeroCreds destination is not configured');
+    if (LOCAL_MODE && (!uid || !service)) throw new Error('Local credential setup requires a provider slug and a distinct account alias');
+    if (LOCAL_MODE && destination && destination !== DEFAULT_DESTINATION) {
+      throw new Error('Local ZeroCreds always uses the configured macOS Keychain destination');
+    }
     const data = await apiCall('POST', '/api/session/create', {
       title,
       description,
       fields,
-      destination,
+      destination: selectedDestination,
+      uid,
+      service,
+      credential_expires_at,
       ttl_minutes,
       notify,
     });
@@ -86,6 +125,36 @@ server.tool(
       }],
     };
   }
+);
+
+server.tool(
+  'zerocreds_connections_list',
+  'List local ZeroCreds credential connections without returning credential values. Shows provider, account alias, expiry and verification status.',
+  {
+    provider: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional(),
+  },
+  async ({ provider }) => {
+    const query = provider ? `?provider=${encodeURIComponent(provider)}` : '';
+    const data = await apiCall('GET', `/api/local/connections${query}`);
+    if (data.error) throw new Error(data.error);
+    return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+  },
+);
+
+server.tool(
+  'zerocreds_connection_resolve',
+  'Resolve an existing local connection for a provider. Pass an account alias when more than one account exists. Never returns the credential value.',
+  {
+    provider: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+    account_alias: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional(),
+  },
+  async ({ provider, account_alias }) => {
+    const query = new URLSearchParams({ provider, resolve: '1' });
+    if (account_alias) query.set('account_alias', account_alias);
+    const data = await apiCall('GET', `/api/local/connections?${query}`);
+    if (data.error) throw new Error(data.error);
+    return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+  },
 );
 
 server.tool(
@@ -106,6 +175,7 @@ server.tool(
   }
 );
 
+if (!LOCAL_MODE || WALLET_API_TOKEN) {
 server.tool(
   'zerocreds_wallet_form_create',
   'Request a credential form in the current user profile. Returns a one-time URL and connection_id. The agent never sees credential values or chooses the storage destination.',
@@ -149,6 +219,7 @@ server.tool(
   async ({ connection_id }) => ({ content: [{ type: 'text', text: JSON.stringify(
     await walletHandlers.get('zerocreds_wallet_connection_revoke')({ connection_id }, legacyWalletContext('zerocreds_wallet_connection_revoke')), null, 2) }] }),
 );
+}
 
 async function main() {
   const transport = new StdioServerTransport();
