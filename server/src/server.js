@@ -1173,6 +1173,7 @@ function readAdminTokenFile(file) {
 
 function createApp(config = {}) {
   const LOCAL_MODE = config.localMode ?? envFlag('ZEROCREDS_LOCAL_MODE');
+  const RUNTIME_PLATFORM = config.platform ?? process.platform;
   let ADMIN_TOKEN = config.adminToken ?? process.env.ZEROCREDS_ADMIN_TOKEN ?? '';
   const ADMIN_TOKEN_FILE = config.adminTokenFile ?? process.env.ZEROCREDS_ADMIN_TOKEN_FILE ?? path.join(os.homedir(), '.config/zerocreds/admin-token');
   if (!ADMIN_TOKEN) {
@@ -2298,6 +2299,7 @@ function createApp(config = {}) {
         defaultDestination: DEFAULT_LOCAL_DESTINATION,
         version: VERSION,
         commit: COMMIT,
+        platform: RUNTIME_PLATFORM,
       });
       return json(res, 200, report);
     }

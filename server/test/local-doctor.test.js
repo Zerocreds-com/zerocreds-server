@@ -26,6 +26,7 @@ test('doctor reports local Keychain and catalog readiness without exposing catal
       catalogFile,
       destinations: { 'mac-keychain': { type: 'macos_keychain' } },
       defaultDestination: 'mac-keychain',
+      platform: 'darwin',
       version: 'test', commit: 'abcdef123456',
     });
     assert.equal(report.overall, 'ok');
@@ -45,6 +46,7 @@ test('doctor gives a repair action for a locked Keychain and malformed catalog',
   try {
     const report = await diagnoseLocalSetup({ helperPath: helper, catalogFile,
       destinations: { 'mac-keychain': { type: 'macos_keychain' } }, defaultDestination: 'mac-keychain',
+      platform: 'darwin',
       version: 'test', commit: 'abcdef123456' });
     assert.equal(report.overall, 'needs_attention');
     assert.equal(report.checks.find(check => check.name === 'macos_keychain').status, 'warning');

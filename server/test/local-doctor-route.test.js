@@ -29,7 +29,7 @@ test('local doctor route requires admin auth and returns a sanitized report', as
   const destinationsFile = path.join(dir, 'destinations.json');
   fs.writeFileSync(destinationsFile, JSON.stringify({ 'mac-keychain': { type: 'macos_keychain' } }), { mode: 0o600 });
   const server = createApp({
-    localMode: true, adminToken, baseUrl: 'http://127.0.0.1',
+    localMode: true, adminToken, baseUrl: 'http://127.0.0.1', platform: 'darwin',
     keychainHelper: helperPath, defaultLocalDestination: 'mac-keychain', destinationsFile,
     localCatalogFile: path.join(dir, 'connections.json'),
     pendingDir: path.join(dir, 'pending'), tokensDir: path.join(dir, 'tokens'),

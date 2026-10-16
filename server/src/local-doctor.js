@@ -67,6 +67,7 @@ function inspectCatalog(catalogFile) {
 }
 
 async function diagnoseLocalSetup(options) {
+  const platform = options.platform || process.platform;
   const checks = [];
   const add = (name, status, detail, action = undefined) => checks.push({ name, status, detail, ...(action ? { action } : {}) });
   add('mcp_to_local_server', 'ok', 'This authenticated MCP request reached the local ZeroCreds server.');
@@ -76,8 +77,8 @@ async function diagnoseLocalSetup(options) {
   add('keychain_helper', helperStatus === 'ready' ? 'ok' : 'error',
     helperStatus === 'ready' ? 'Private Keychain helper is installed.' : `Keychain helper status: ${helperStatus}.`,
     helperStatus === 'ready' ? undefined : 'Run scripts/setup-local-mac.sh to compile and install the helper.');
-  const keychainStatus = helperStatus === 'ready' && process.platform === 'darwin'
-    ? await runHelperHealth(options.helperPath) : process.platform === 'darwin' ? 'unavailable' : 'unsupported_platform';
+  const keychainStatus = helperStatus === 'ready' && platform === 'darwin'
+    ? await runHelperHealth(options.helperPath) : platform === 'darwin' ? 'unavailable' : 'unsupported_platform';
   add('macos_keychain', keychainStatus === 'accessible' ? 'ok' : keychainStatus === 'locked' ? 'warning' : 'error',
     keychainStatus === 'accessible' ? 'Login Keychain answered a metadata-only health query.'
       : keychainStatus === 'locked' ? 'Login Keychain is locked or requires user interaction.'
