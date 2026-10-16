@@ -2193,12 +2193,12 @@ function createApp(config = {}) {
         return json(res, 200, { verification: 'expired', connection_id: entry.connection_id });
       }
       let fields;
-      try { fields = await readLocalKeychainEntry(entry.storage); }
+      try { fields = await (config.localCredentialReader || readLocalKeychainEntry)(entry.storage); }
       catch (error) {
         const status = error.message === 'keychain_locked' ? 'keychain_locked' : 'unavailable_here';
         return json(res, 200, { verification: status, connection_id: entry.connection_id });
       }
-      const result = await verifyLocalCredential(provider, fields);
+      const result = await (config.localCredentialVerifier || verifyLocalCredential)(provider, fields);
       const verifiedAt = new Date().toISOString();
       entry.last_verified_at = verifiedAt;
       entry.verification_status = result.status;
