@@ -3,6 +3,7 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const http = require('http');
 const { startServer, request } = require('./helpers');
 
@@ -493,6 +494,54 @@ test('OpenBao submission without a KV-v2 version receipt does not report done', 
     await srv.stop();
     await mock.close();
   }
+});
+
+test('macOS Keychain hashes long account identities deterministically before invoking helper', async () => {
+  const { saveToDestination } = require('../src/destinations');
+  const { spawn } = require('node:child_process');
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+  const originalHelper = process.env.ZEROCREDS_KEYCHAIN_HELPER;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zc-keychain-helper-'));
+  const argsFile = path.join(root, 'args.json');
+  const helper = path.join(root, 'helper');
+  fs.writeFileSync(helper, `#!/usr/bin/env node\nrequire('fs').writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(2))); process.stdin.resume(); process.stdin.on('end', () => process.exit(0));\n`, { mode: 0o700 });
+  process.env.ZEROCREDS_KEYCHAIN_HELPER = helper;
+  Object.defineProperty(process, 'platform', { value: 'darwin' });
+  try {
+    const requestedAccount = `hostland-${'a'.repeat(125)}`;
+    const saved = await saveToDestination({ type: 'macos_keychain', service: 'zerocreds', account: '{{service}}-{{uid}}' },
+      { password: 'synthetic-secret' }, { context: { service: 'hostland', uid: 'a'.repeat(125) } });
+    const args = JSON.parse(fs.readFileSync(argsFile, 'utf8'));
+    assert.equal(args[0], 'set');
+    assert.equal(args[1], 'zerocreds');
+    assert.match(args[2], /^zc-[a-f0-9]{64}$/);
+    assert.equal(args[2], `zc-${require('node:crypto').createHash('sha256').update(requestedAccount).digest('hex')}`);
+    assert.equal(saved.secret_id, `keychain:zerocreds/${args[2]}`);
+    assert.ok(!args.includes('synthetic-secret'));
+  } finally {
+    if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+    else delete process.platform;
+    if (originalHelper === undefined) delete process.env.ZEROCREDS_KEYCHAIN_HELPER;
+    else process.env.ZEROCREDS_KEYCHAIN_HELPER = originalHelper;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('failed credential save returns safe diagnostics and form includes Copy details action', async () => {
+  const created = await request(ctx.port, 'POST', '/api/session/create', {
+    title: 'Keychain diagnostics', fields: [{ name: 'password', label: 'Password', type: 'password' }],
+    destination: { type: 'macos_keychain', service: 'zerocreds', account: 'test-account' },
+  }, auth());
+  assert.equal(created.status, 200);
+  const form = await request(ctx.port, 'GET', created.body.url.replace('http://test.local', ''));
+  assert.match(form.raw, /Copy details/);
+  const submitted = await request(ctx.port, 'POST', `/f/${created.body.token}`,
+    { t: created.body.token, fields: { password: 'synthetic-secret-must-not-return' } });
+  assert.equal(submitted.status, 500);
+  assert.equal(submitted.body.error_code, 'KEYCHAIN_WRITE_FAILED');
+  assert.match(submitted.body.diagnostic, /^zc-[a-f0-9]{12}$/);
+  assert.ok(submitted.body.message);
+  assert.ok(!JSON.stringify(submitted.body).includes('synthetic-secret-must-not-return'));
 });
 
 // ── GET /api/destinations ──────────────────────────────────────────────────────

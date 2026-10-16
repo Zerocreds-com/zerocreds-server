@@ -341,8 +341,13 @@ async function saveMacosKeychain(destination, fields, opts = {}) {
   if (process.platform !== 'darwin') throw new Error('macos_keychain: only supported on macOS');
   const { spawn } = require('child_process');
   const service = resolveTemplate(destination.service || 'zerocreds', opts.context || {});
-  const account = resolveTemplate(destination.account || 'default', opts.context || {});
-  if (!/^[a-zA-Z0-9_@.-]{1,128}$/.test(account)) throw new Error('macos_keychain: invalid account');
+  const requestedAccount = resolveTemplate(destination.account || 'default', opts.context || {});
+  if (!/^[a-zA-Z0-9_@.-]{1,512}$/.test(requestedAccount)) throw new Error('macos_keychain: invalid account');
+  // Keychain's account attribute has a practical length limit. Hash only long
+  // template expansions so identities remain distinct without leaking long IDs
+  // into the native helper's arguments.
+  const account = requestedAccount.length <= 128 ? requestedAccount
+    : `zc-${require('crypto').createHash('sha256').update(requestedAccount).digest('hex')}`;
   if (!/^[a-zA-Z0-9_@.-]{1,128}$/.test(service)) throw new Error('macos_keychain: invalid service');
   const helper = process.env.ZEROCREDS_KEYCHAIN_HELPER || path.join(__dirname, '../bin/zerocreds-keychain');
   await new Promise((resolve, reject) => {
@@ -409,7 +414,7 @@ async function saveToDestination(destination, fields, opts = {}) {
     case 'aws_secrets_manager':         return saveAwsSecret(destination, fields);
     case 'vault':                       return saveVault(destination, fields, opts);
     case 'http_post':                   return saveHttpPost(destination, fields, opts);
-    case 'macos_keychain':              return saveMacosKeychain(destination, fields);
+    case 'macos_keychain':              return saveMacosKeychain(destination, fields, opts);
     case 'windows_credential_manager':  return saveWindowsCredentialManager(destination, fields);
     case 'os_keychain':                 return saveOsKeychain(destination, fields, opts);
     default: throw new Error(`Unknown destination type: ${destination.type}`);
