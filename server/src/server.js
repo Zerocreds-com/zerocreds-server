@@ -6,7 +6,8 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { startNalogLogin, confirmNalogCode } = require('./nalog-login');
-const { saveToDestination, testDestination } = require('./destinations');
+const { saveToDestination, testDestination, validateDestination, resolveTemplate } = require('./destinations');
+const { canonicalJson, sha256Hex, loadSigningKey, signPayload } = require('./receipts');
 
 // ── Module-level pure helpers ──────────────────────────────────────────────────
 
@@ -56,43 +57,96 @@ function tgNotify(botToken, chatId, text) {
   }).catch(e => console.error('[tg] notify failed:', e.message));
 }
 
+class HttpError extends Error {
+  constructor(status, message) { super(message); this.status = status; }
+}
+
 function readBody(req, maxBytes = 1_048_576) {
   return new Promise((resolve, reject) => {
+    if (Number(req.headers['content-length']) > maxBytes) return reject(new HttpError(413, 'body too large'));
     const chunks = [];
     let total = 0;
+    let done = false;
     req.on('data', c => {
+      if (done) return;
       total += c.length;
-      if (total > maxBytes) { req.destroy(); return reject(new Error('body too large')); }
+      if (total > maxBytes) { done = true; return reject(new HttpError(413, 'body too large')); }
       chunks.push(c);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString()));
-    req.on('error', reject);
+    req.on('end', () => { if (!done) { done = true; resolve(Buffer.concat(chunks).toString()); } });
+    req.on('error', e => { if (!done) { done = true; reject(e); } });
   });
 }
 
+// Reads a JSON object body. Returns null for invalid JSON or a non-object top level.
+async function readJson(req) {
+  const body = await readBody(req);
+  try {
+    const v = JSON.parse(body);
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : null;
+  } catch { return null; }
+}
+
+const BASE_SECURITY_HEADERS = {
+  'Cache-Control': 'no-store',
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
+};
+
 function json(res, status, data, extraHeaders = {}) {
-  res.writeHead(status, { 'Content-Type': 'application/json', ...extraHeaders });
+  res.writeHead(status, { 'Content-Type': 'application/json', ...BASE_SECURITY_HEADERS, ...extraHeaders });
   res.end(JSON.stringify(data));
 }
 
-function parseCookieUid(req) {
-  const m = (req.headers.cookie || '').match(/(?:^|;\s*)zc_uid=([0-9a-f-]{36})/);
-  return m ? m[1] : null;
+// Every HTML page gets a strict CSP: scripts only with the per-response nonce,
+// network only back to this origin, and no framing.
+function sendHtml(res, status, body, nonce) {
+  const scriptSrc = nonce ? `'nonce-${nonce}'` : `'none'`;
+  res.writeHead(status, {
+    'Content-Type': 'text/html; charset=utf-8',
+    ...BASE_SECURITY_HEADERS,
+    'Content-Security-Policy': `default-src 'none'; script-src ${scriptSrc}; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+    'X-Frame-Options': 'DENY',
+  }).end(body);
 }
 
-function getOrCreateUid(req) {
-  const existing = parseCookieUid(req);
-  return { uid: existing || crypto.randomUUID(), hadCookie: !!existing };
+function newNonce() {
+  return crypto.randomBytes(16).toString('base64');
 }
 
-function cookieSetHeader(uid, req) {
-  const secure = req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '';
-  return `zc_uid=${uid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000${secure}`;
+function escHtml(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// Serialises a value for embedding inside an inline <script>.
+function jsValue(v) {
+  return JSON.stringify(v).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+}
+
+const TOKEN_RE = /^[a-f0-9]{32}$/;
+const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+// Names used as object keys (field names, destination names) — no prototype keys.
+function isSafeKey(k, max = 64) {
+  return typeof k === 'string' && new RegExp(`^[a-zA-Z0-9_-]{1,${max}}$`).test(k) && !RESERVED_KEYS.has(k);
+}
+
+function isLoopback(addr) {
+  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+}
+
+// Client IP for rate limiting: X-Real-IP is only trusted from the local reverse
+// proxy (nginx overwrites it); X-Forwarded-For is client-controlled and ignored.
+function clientIp(req) {
+  const remote = req.socket.remoteAddress || '';
+  const realIp = req.headers['x-real-ip'];
+  if (isLoopback(remote) && typeof realIp === 'string' && realIp) return realIp.trim();
+  return remote;
 }
 
 // ── HTML templates (pure) ─────────────────────────────────────────────────────
 
-function nalogFormHtml(token) {
+function nalogFormHtml(token, nonce) {
   return `<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -135,7 +189,7 @@ function nalogFormHtml(token) {
     <input id="login" type="text" autocomplete="username" inputmode="email" placeholder="+7 999 123-45-67">
     <label for="password">Пароль Госуслуг</label>
     <input id="password" type="password" autocomplete="current-password" placeholder="Пароль">
-    <button id="btn1" onclick="submitCreds()">Войти через Госуслуги</button>
+    <button id="btn1" type="button">Войти через Госуслуги</button>
     <div id="msg1" class="msg"></div>
   </div>
   <div id="step2">
@@ -143,7 +197,7 @@ function nalogFormHtml(token) {
     <p class="sub">На ваш телефон или в приложение Госуслуги отправлен код. Введите его ниже.</p>
     <label for="code">Код из SMS / приложения</label>
     <input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" maxlength="8">
-    <button id="btn2" onclick="submitCode()">Подтвердить</button>
+    <button id="btn2" type="button">Подтвердить</button>
     <div id="msg2" class="msg"></div>
   </div>
   <div id="step3">
@@ -153,11 +207,11 @@ function nalogFormHtml(token) {
   </div>
   <p class="lock">Данные не попадают в LLM &middot; Ссылка одноразовая &middot; <a href="/version">v${VERSION}</a></p>
 </div>
-<script>
-const T = '${token.replace(/'/g, "\\'")}';
+<script nonce="${nonce}">
+const T = ${jsValue(token)};
 let sessionId = '';
 function show(stepId) {
-  ['step1','step2','step3'].forEach(id => document.getElementById(id).style.display = id === stepId ? '' : 'none');
+  ['step1','step2','step3'].forEach(id => document.getElementById(id).style.display = id === stepId ? 'block' : 'none');
 }
 function showMsg(n, cls, text) {
   const el = document.getElementById('msg' + n);
@@ -219,6 +273,8 @@ async function submitCode() {
     btn.disabled = false; btn.textContent = 'Подтвердить';
   }
 }
+document.getElementById('btn1').addEventListener('click', submitCreds);
+document.getElementById('btn2').addEventListener('click', submitCode);
 document.getElementById('password').addEventListener('keydown', e => { if (e.key === 'Enter') submitCreds(); });
 document.getElementById('code').addEventListener('keydown', e => { if (e.key === 'Enter') submitCode(); });
 </script>
@@ -401,10 +457,10 @@ function expiredHtml() {
 }
 
 const LEVEL_META = {
-  secret:     { tag: 'SECRET',   label: 'Secret store',       aiSees: 'Never',          logs: 'Never logged', desc: 'Data goes directly to a secret store. The AI assistant never sees it.' },
+  secret:     { tag: 'SECRET',   label: 'Secret',             aiSees: 'Not via ZeroCreds', logs: 'Never logged', desc: 'Treated as a secret. See "Sent to" above for exactly who receives it.' },
   pii:        { tag: 'PII DATA', label: 'Personal data',      aiSees: 'For tasks only', logs: 'Anonymised',   desc: 'The AI can use this for tasks. Not stored in logs in plain form.' },
   attribute:  { tag: 'CONFIG',   label: 'Configuration',      aiSees: 'Openly',         logs: 'Yes',          desc: 'Open configuration. The AI uses this in every request.' },
-  credential: { tag: 'SESSION',  label: 'Session credential', aiSees: 'This session',   logs: 'Never logged', desc: 'Used only in the current session. Not saved to logs.' },
+  credential: { tag: 'SESSION',  label: 'Session credential', aiSees: 'Not via ZeroCreds', logs: 'Never logged', desc: 'Used only in the current session. Not saved to logs.' },
 };
 
 // Design tokens for the dynamic form (/f/:token). Light is the default; dark applies via
@@ -444,29 +500,113 @@ const FORM_THEME_DARK = [
   '--show-sun:block', '--show-moon:none',
 ].join(';');
 
-function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
-  const fields = pending.fields || [];
+const FIELD_TYPES = ['text', 'password', 'email', 'number', 'tel', 'textarea', 'url'];
+
+// Form specs (POST /api/forms): the credential kind picks the default fields.
+const FORM_KINDS = {
+  token: [{ name: 'token', label: 'Token', type: 'password' }],
+  ssh: [{ name: 'private_key', label: 'SSH private key', type: 'textarea' }],
+  login: [{ name: 'username', label: 'Username' }, { name: 'password', label: 'Password', type: 'password' }],
+};
+// The handle is not a secret: cred:<name> in the owner's space.
+const HANDLE_NAME_RE = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
+const SUBMIT_TOKEN_RE = /^zcs_[a-f0-9]{48}$/;
+
+// Values for {{placeholders}} in destination configs.
+function templateContext(pending) {
+  return { uid: pending.uid, service: pending.service_slug ?? pending.form?.name, name: pending.form?.name };
+}
+
+function envVarName(formName, fieldName) {
+  return `${formName}_${fieldName}`.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+}
+
+// "Copy as API request": the machine equivalent of a form, with placeholders instead of
+// values. Everything interpolated here is validated (hex ids, [a-z0-9_.-] names).
+function formApiSnippets(formId, pending, baseUrl) {
+  const { form, fields } = pending;
+  const args = fields.map(f => `--arg ${f.name} "$${envVarName(form.name, f.name)}"`).join(' ');
+  const obj = fields.map(f => `${f.name}: $${f.name}`).join(', ');
+  const curl = [
+    `curl -sS -X POST '${baseUrl}/api/forms/${formId}/submit' \\`,
+    `  -H "Authorization: Bearer $ZEROCREDS_SUBMIT_TOKEN" \\`,
+    `  -H 'Content-Type: application/json' \\`,
+    `  -d "$(jq -n ${args} '{manifest_id: "${form.manifest_id}", fields: {${obj}}}')"`,
+  ].join('\n');
+  const sar = fields.length === 1
+    ? `sar cred put ${form.name} --kind ${form.kind} --from-env ${envVarName(form.name, fields[0].name)}`
+    : `sar cred put ${form.name} --kind ${form.kind} --from-file ./${form.name}.json   # {${fields.map(f => `"${f.name}": "…"`).join(', ')}}`;
+  return { curl, sar };
+}
+
+// Sessions created by an integrator write local files under their own subtree.
+function integratorSubdir(integratorId) {
+  return !integratorId || integratorId === 'admin' ? '' : path.join('_integrators', integratorId);
+}
+
+function urlHostPath(u) {
+  try {
+    const x = new URL(String(u));
+    return `${x.protocol}//${x.host}${x.pathname === '/' ? '' : x.pathname}`;
+  } catch { return String(u || '').slice(0, 200); }
+}
+
+const SERVER_READABLE_NOTE = 'Stored on the ZeroCreds server; programs run by the server operator can read it.';
+const WRITE_ONLY_NOTE = 'ZeroCreds is only given write access to this store (when configured as documented).';
+
+// Plain-text summary of where values go: { kind, target, note }. Callers escape it.
+function describeDestination(dest, pending) {
+  if (!dest || typeof dest !== 'object') return { kind: 'Not stored', target: '', note: '' };
+  const ctx = templateContext(pending);
+  switch (dest.type) {
+    case 'local_file': {
+      const sub = integratorSubdir(pending.integrator_id);
+      const file = path.posix.join('~/agent-tokens', sub.split(path.sep).join('/'),
+        String(resolveTemplate(String(dest.uid ?? ''), ctx)), String(resolveTemplate(String(dest.filename ?? ''), ctx)));
+      return { kind: 'File on the ZeroCreds server', target: file, note: SERVER_READABLE_NOTE };
+    }
+    case 'gcp_secret_manager': return { kind: 'Google Cloud Secret Manager', target: String(dest.secret || ''), note: WRITE_ONLY_NOTE };
+    case 'aws_secrets_manager': return { kind: 'AWS Secrets Manager', target: `${dest.secret_id || ''} (${dest.region || ''})`, note: WRITE_ONLY_NOTE };
+    case 'vault': return { kind: dest.preflight_path_prefix ? 'OpenBao KV v2' : 'Vault-compatible secret store',
+      target: `${urlHostPath(dest.address)}/v1/${String(dest.path || '').replace(/^\//, '')}`, note: WRITE_ONLY_NOTE };
+    case 'http_post': return { kind: 'Web endpoint of the requester', target: urlHostPath(dest.url), note: 'Whoever runs this endpoint receives the values in readable form.' };
+    case 'macos_keychain':
+    case 'windows_credential_manager':
+    case 'os_keychain': return { kind: 'OS keychain on the ZeroCreds server', target: `${dest.service || 'zerocreds'}/${dest.account || 'default'}`, note: SERVER_READABLE_NOTE };
+    default: return { kind: String(dest.type), target: '', note: '' };
+  }
+}
+
+// Mirrors the routing in POST /f/:token.
+function destinationForField(pending, f) {
+  const byLevel = pending.destinations_by_level;
+  if (byLevel) {
+    const lvl = f.level || 'default';
+    return (Object.hasOwn(byLevel, lvl) && byLevel[lvl]) || byLevel.default || pending.destination || null;
+  }
+  return pending.destination || null;
+}
+
+function requesterLabel(pending) {
+  if (!pending.integrator_id || pending.integrator_id === 'admin') return 'Operator of this ZeroCreds server';
+  return pending.requester ? `${pending.requester} (integrator ${pending.integrator_id})` : `Integrator ${pending.integrator_id}`;
+}
+
+function dynamicFormHtml(token, pending, host, nonce, api = null) {
+  const fields = Array.isArray(pending.fields) ? pending.fields : [];
   const title = pending.title || 'Enter your credentials';
-  const description = pending.description || 'Credentials go straight into your secret store — the AI assistant never sees them.';
-
-  function escAttr(s) {
-    return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-  }
-  function escHtml(s) {
-    return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
-
+  const description = pending.description || 'Values go directly from this page to ZeroCreds, not through the AI chat.';
 
   function levelBadge(f) {
     const lm = LEVEL_META[f.level];
     if (!lm) return '';
-    return `<div class="level-tag"><span class="level-chip lvl-${f.level}">${lm.tag}</span><button type="button" class="level-btn" data-action="toggle-info" data-target="info_${f.name}" aria-controls="info_${f.name}" aria-expanded="false" title="What happens to this data?" aria-label="What happens to this data?">ⓘ</button></div>`;
+    return `<div class="level-tag"><span class="level-chip lvl-${f.level}">${lm.tag}</span><button type="button" class="level-btn" data-action="toggle-info" data-target="info_${escHtml(f.name)}" aria-controls="info_${escHtml(f.name)}" aria-expanded="false" title="What happens to this data?" aria-label="What happens to this data?">ⓘ</button></div>`;
   }
 
   function levelInfoCard(f) {
     const lm = LEVEL_META[f.level];
     if (!lm) return '';
-    return `<div id="info_${f.name}" class="level-info lvl-${f.level}" hidden>
+    return `<div id="info_${escHtml(f.name)}" class="level-info lvl-${f.level}" hidden>
   <div class="level-info-title">${lm.tag} — ${lm.label}</div>
   <table class="level-table">
     <tr><td>ZeroCreds server</td><td>Receives</td></tr>
@@ -478,49 +618,62 @@ function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
   }
 
   const fieldHtml = fields.map(f => {
-    const type = f.type || 'text';
-    const ph = escAttr(f.placeholder || '');
+    const type = FIELD_TYPES.includes(f.type) ? f.type : 'text';
+    const id = `f_${escHtml(f.name)}`;
+    const name = escHtml(f.name);
+    const ph = escHtml(f.placeholder || '');
     const req = f.required !== false ? 'required' : '';
-    const labelHtml = `<label for="f_${f.name}" class="field-label">${escHtml(f.label)}${levelBadge(f)}</label>${levelInfoCard(f)}`;
+    const labelHtml = `<label for="${id}" class="field-label">${escHtml(f.label)}${levelBadge(f)}</label>${levelInfoCard(f)}`;
     if (type === 'textarea') {
-      const val = escAttr(savedValues[f.name] || '');
-      return `${labelHtml}<textarea id="f_${f.name}" name="${f.name}" placeholder="${ph}" ${req} rows="4">${val}</textarea>`;
+      return `${labelHtml}<textarea id="${id}" name="${name}" placeholder="${ph}" ${req} rows="4"></textarea>`;
     }
     if (type === 'password') {
-      return `${labelHtml}<div class="pw-wrap"><input id="f_${f.name}" name="${f.name}" type="password" placeholder="${ph}" autocomplete="current-password" spellcheck="false" ${req}><button type="button" class="pw-btn eye" data-action="toggle-pw" data-target="f_${f.name}" title="Show/hide" aria-label="Show or hide">👁</button><button type="button" class="pw-btn paste" data-action="paste" data-target="f_${f.name}">Paste</button></div>`;
+      return `${labelHtml}<div class="pw-wrap"><input id="${id}" name="${name}" type="password" placeholder="${ph}" autocomplete="current-password" spellcheck="false" ${req}><button type="button" class="pw-btn eye" data-action="toggle-pw" data-target="${id}" title="Show/hide" aria-label="Show or hide">👁</button><button type="button" class="pw-btn paste" data-action="paste" data-target="${id}">Paste</button></div>`;
     }
-    const val = savedValues[f.name] ? ` value="${escAttr(savedValues[f.name])}"` : '';
-    return `${labelHtml}<input id="f_${f.name}" name="${f.name}" type="${type}" placeholder="${ph}" autocomplete="off" spellcheck="false" ${req}${val}>`;
+    return `${labelHtml}<input id="${id}" name="${name}" type="${type}" placeholder="${ph}" autocomplete="off" spellcheck="false" ${req}>`;
   }).join('\n  ');
-
-  const fieldNames = JSON.stringify(fields.map(f => f.name));
 
   const isLocal = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host);
   const hostBadge = isLocal
     ? `You are on <a href="https://www.google.com/search?q=what+is+localhost" target="_blank" rel="noopener">localhost</a>`
     : escHtml(host || '');
 
-  // Build per-level "where it goes" explanation
-  function destShort(dest) {
-    if (!dest?.type) return null;
-    switch (dest.type) {
-      case 'local_file': return `~/agent-tokens/${escHtml(String(dest.uid || '…'))}/${escHtml(String(dest.filename || '…'))}`;
-      case 'gcp_secret_manager': return `GCP Secret Manager`;
-      case 'aws_secrets_manager': return `AWS Secrets Manager`;
-      case 'vault': return dest.preflight_path_prefix ? `OpenBao KV v2` : `Vault-compatible secret store`;
-      case 'macos_keychain': return `macOS Keychain`;
-      case 'windows_credential_manager': return `Windows Credential Manager`;
-      case 'os_keychain': return `OS native store (Keychain / Credential Manager / file)`;
-      case 'http_post': return `HTTP endpoint`;
-      default: return escHtml(dest.type);
-    }
+  // Always-visible: who asked, and exactly where each group of fields is sent.
+  const destGroups = [];
+  for (const f of fields) {
+    const d = describeDestination(destinationForField(pending, f), pending);
+    const key = `${d.kind}\n${d.target}`;
+    let g = destGroups.find(x => x.key === key);
+    if (!g) { g = { key, ...d, labels: [] }; destGroups.push(g); }
+    g.labels.push(f.label);
+
   }
+  const destRows = destGroups.map(g => {
+    const k = destGroups.length > 1 ? `${escHtml(g.labels.join(', '))} →` : 'Sent to';
+    return `<div class="dest-row"><span class="dest-k">${k}</span><span class="dest-v">${escHtml(g.kind)}${g.target ? `<code class="dest-target">${escHtml(g.target)}</code>` : ''}${g.note ? `<span class="dest-note">${escHtml(g.note)}</span>` : ''}</span></div>`;
+  }).join('');
+  const handleRow = pending.form ? `<div class="dest-row"><span class="dest-k">Saved as</span><span class="dest-v"><code class="dest-target">${escHtml(pending.form.handle)}</code></span></div>` : '';
+  const destBox = `<div class="dest-box" id="zc-destination">
+      <div class="dest-row"><span class="dest-k">Requested by</span><span class="dest-v">${escHtml(requesterLabel(pending))}</span></div>
+      ${destRows}
+      ${handleRow}
+    </div>`;
+
+  const apiHtml = api && !pending.wallet ? `<div class="where-wrap">
+  <button type="button" class="where-btn" data-action="toggle-where" data-target="api-info" aria-controls="api-info" aria-expanded="false">Copy as API request ▾</button>
+  <div id="api-info" class="where-info" hidden>
+    <div class="wb"><div class="wb-note">Same form from a script: values come from env variables, never from this page. Use the owner key or the one-time submit token as <code>ZEROCREDS_SUBMIT_TOKEN</code>.</div></div>
+    <div class="wb"><div class="api-head"><span class="wb-fields">curl</span><button type="button" class="copy-btn" data-action="copy" data-target="api-curl">Copy</button></div><pre class="api-code"><code id="api-curl">${escHtml(api.curl)}</code></pre></div>
+    <div class="wb-sep"></div>
+    <div class="wb"><div class="api-head"><span class="wb-fields">sar CLI</span><button type="button" class="copy-btn" data-action="copy" data-target="api-sar">Copy</button></div><pre class="api-code"><code id="api-sar">${escHtml(api.sar)}</code></pre></div>
+  </div>
+</div>` : '';
 
   const LEVEL_BEHAVIOR = {
-    secret:     { store: true,  note: 'Agent has no read access — write-only by design. Only your local process can read it back.' },
-    pii:        { store: true,  note: 'Agent receives this for task context. Not stored in conversation logs in plain form.' },
-    attribute:  { store: true,  note: 'Agent uses this openly in every request.' },
-    credential: { store: true,  note: 'Used in the current session only. Not written to persistent logs.' },
+    secret:     { note: 'Handled as a secret: ZeroCreds does not log submitted values.' },
+    pii:        { note: 'Agent receives this for task context. Not stored in conversation logs in plain form.' },
+    attribute:  { note: 'Agent uses this openly in every request.' },
+    credential: { note: 'Used in the current session only. Not written to persistent logs.' },
   };
 
   // Group fields by level
@@ -531,23 +684,15 @@ function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
     levelGroups[lvl].push(f);
   }
 
-  function destForLevel(lvl) {
-    if (pending.destinations_by_level?.[lvl]) return pending.destinations_by_level[lvl];
-    return pending.destination || null;
-  }
-
   let whereBlocks = [];
   for (const [lvl, group] of Object.entries(levelGroups)) {
     const lm = LEVEL_META[lvl];
     const behavior = LEVEL_BEHAVIOR[lvl];
-    const dest = destForLevel(lvl === '_none' ? null : lvl);
-    const store = destShort(dest);
     const fieldNames_ = group.map(f => escHtml(f.label)).join(', ');
 
     let html = `<div class="wb">`;
     if (lm) html += `<div class="wb-head"><span class="wl-chip lvl-${lvl}">${lm.tag}</span><span class="wb-fields">${fieldNames_}</span></div>`;
     else     html += `<div class="wb-head"><span class="wb-fields">${fieldNames_}</span></div>`;
-    if (store) html += `<div class="wb-dest">Stored in: ${store}</div>`;
     if (behavior) html += `<div class="wb-note">${behavior.note}</div>`;
     html += `</div>`;
     whereBlocks.push(html);
@@ -562,7 +707,11 @@ function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
        Path: <code>${escHtml(pending.destination.path)}</code><br>
        Storage checked: ${escHtml(pending.preflight.at)}<br>
        Credential version: not created yet.<br>
-       Wallet owner and profile: not verified by this form version.</div>`
+       ${pending.wallet ? `Wallet owner: <code>${escHtml(pending.wallet.owner_id)}</code><br>
+       Profile: <code>${escHtml(pending.wallet.profile_id)}</code><br>
+       Connection: <code>${escHtml(pending.wallet.connection_id)}</code><br>
+       ZeroCreds operates this wallet; its infrastructure administrators can technically access stored values.`
+         : 'Wallet owner and profile: not verified by this form version.'}</div>`
     : '';
 
   return `<!DOCTYPE html>
@@ -616,6 +765,13 @@ function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
   .pw-btn.eye{right:74px}
   .pw-btn.paste{right:6px;background:var(--chip-bg);border-color:var(--border);color:var(--text);font-weight:600;font-size:13px;padding:0 12px}
   .pw-btn.paste:hover{background:var(--chip-hover)}
+  .sub{white-space:pre-line}
+  .dest-box{margin-top:24px;padding:12px 14px;border:1px solid var(--border);border-radius:12px;background:var(--input-bg);font-size:13px;line-height:1.5}
+  .dest-row{display:flex;gap:12px;padding:3px 0}
+  .dest-k{flex:0 0 32%;color:var(--muted)}
+  .dest-v{flex:1;min-width:0;color:var(--text);font-weight:600;overflow-wrap:anywhere}
+  .dest-target{display:block;font-family:ui-monospace,'SF Mono',Monaco,Consolas,monospace;font-size:12px;font-weight:400;margin-top:2px}
+  .dest-note{display:block;color:var(--muted);font-weight:400;font-size:12px;margin-top:2px}
   .actions{margin-top:24px}
   button#btn{width:100%;min-height:52px;background:var(--accent);color:var(--accent-text);border:none;border-radius:12px;padding:12px;font-size:16px;font-weight:700;font-family:inherit;cursor:pointer;letter-spacing:.01em;box-shadow:0 6px 16px -6px var(--ring);transition:background .15s,transform .05s}
   button#btn:hover{background:var(--accent-hover)}
@@ -653,6 +809,10 @@ function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
   .level-table td:first-child{color:var(--muted);width:55%}
   .level-table td:last-child{font-weight:600;color:var(--text)}
   .level-desc{color:var(--muted);font-size:13px;line-height:1.5}
+  .api-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+  .copy-btn{min-height:36px;padding:0 12px;border-radius:8px;border:1px solid var(--border);background:var(--chip-bg);color:var(--text);font-size:13px;font-weight:600;font-family:inherit;cursor:pointer}
+  .copy-btn:hover{background:var(--chip-hover)}
+  .api-code{margin:0;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--card);font-family:ui-monospace,'SF Mono',Monaco,Consolas,monospace;font-size:12px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
   @media (max-width:560px){
     body{padding:0;align-items:stretch}
     .card{max-width:none;min-height:100vh;min-height:100dvh;border:none;border-radius:0;box-shadow:none;padding:16px 16px 24px}
@@ -664,11 +824,11 @@ function dynamicFormHtml(token, pending, savedValues = {}, host = '') {
     .level-btn{width:40px;height:40px}
   }
 </style>
-<script>
+<script nonce="${nonce}">
 (function(){try{var t=localStorage.getItem('zc-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
-const T = '${token}';
-const FIELD_NAMES = ${fieldNames};
-const EXPIRES = ${pending.expires};
+const T = ${jsValue(token)};
+const FIELD_NAMES = ${jsValue(fields.map(f => f.name))};
+const EXPIRES = ${Number(pending.expires) || 0};
 function currentTheme() {
   const t = document.documentElement.getAttribute('data-theme');
   if (t) return t;
@@ -707,6 +867,17 @@ async function pastePw(id) {
     showMsg('err', 'Allow clipboard access or paste manually (Ctrl+V / ⌘V)');
   }
 }
+async function copyText(id, btn) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  try {
+    await navigator.clipboard.writeText(el.textContent);
+    btn.textContent = 'Copied';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+  } catch {
+    showMsg('err', 'Allow clipboard access or select the text and copy it manually');
+  }
+}
 async function submit() {
   const fields = {};
   for (const name of FIELD_NAMES) {
@@ -731,7 +902,7 @@ async function submit() {
       document.getElementById('form-view').hidden = true;
       document.getElementById('done').hidden = false;
     } else {
-      showMsg('err', d.detail ? (d.error + ': ' + d.detail) : (d.error || 'Server error'));
+      showMsg('err', d.error || 'Server error');
       btn.disabled = false; btn.textContent = 'Submit';
     }
   } catch(e) {
@@ -753,6 +924,7 @@ document.addEventListener('click', e => {
     case 'paste': pastePw(target); break;
     case 'toggle-info':
     case 'toggle-where': toggleHidden(target, b); break;
+    case 'copy': copyText(target, b); break;
     case 'submit': submit(); break;
   }
 });
@@ -792,9 +964,11 @@ document.addEventListener('DOMContentLoaded', () => {
   </div>
   <div id="form-view">
     <h1>${escHtml(title)}</h1>
-    <p class="sub">${description}</p>
+    <p class="sub">${escHtml(description)}</p>
     ${storageSummary}
+
     ${fieldHtml}
+    ${destBox}
     <div class="actions">
       <button id="btn" type="button" data-action="submit">Submit</button>
       <div id="msg" class="msg" role="alert" hidden></div>
@@ -806,13 +980,14 @@ document.addEventListener('DOMContentLoaded', () => {
     <p class="sub">Credentials saved. You can close this page.</p>
   </div>
   <p class="lock"><span id="zc-timer"></span> &middot; One-time link &middot; <a href="https://github.com/Zerocreds-com/zerocreds-server" target="_blank" rel="noopener">v${VERSION}</a></p>
+  ${apiHtml}
   ${whereHtml}
 </main>
 </body>
 </html>`;
 }
 
-function connectFormHtml(service, meta, token) {
+function connectFormHtml(service, meta, token, nonce) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -848,12 +1023,12 @@ function connectFormHtml(service, meta, token) {
   <p class="sub">Credentials go directly to the server — your AI assistant <b>never sees them</b>.<br><br>${meta.hint}</p>
   <label for="tok">Authorization data</label>
   <input id="tok" type="password" placeholder="${meta.placeholder}" autocomplete="off" spellcheck="false">
-  <button id="btn" onclick="submit()">Connect</button>
+  <button id="btn" type="button">Connect</button>
   <div id="msg" class="msg"></div>
   <p class="lock">Credentials never reach the AI &middot; One-time link &middot; <a href="/version">v${VERSION}</a></p>
 </div>
-<script>
-const T = '${token.replace(/'/g, "\\'")}';
+<script nonce="${nonce}">
+const T = ${jsValue(token)};
 async function submit() {
   const v = document.getElementById('tok').value.trim();
   if (!v) { show('err', 'Please enter credentials'); return; }
@@ -883,6 +1058,7 @@ function show(cls, text) {
   const el = document.getElementById('msg');
   el.className = 'msg ' + cls; el.textContent = text; el.style.display = 'block';
 }
+document.getElementById('btn').addEventListener('click', submit);
 document.getElementById('tok').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
 </script>
 </body>
@@ -891,22 +1067,109 @@ document.getElementById('tok').addEventListener('keydown', e => { if (e.key === 
 
 // ── App factory ───────────────────────────────────────────────────────────────
 
+function envFlag(name) {
+  return /^(1|true|yes)$/i.test(process.env[name] || '');
+}
+
+function envList(name) {
+  return (process.env[name] || '').split(',').map(s => s.trim()).filter(Boolean);
+}
+
+const FIELD_NAME_RE = /^[a-zA-Z0-9_]{1,64}$/;
+const FIELD_LEVELS = ['secret', 'pii', 'attribute', 'credential'];
+const MAX_FIELDS = 50;
+
+// Validates and normalises the fields array of a session. Returns { fields } or { error }.
+function validateFields(fields) {
+  if (!Array.isArray(fields) || fields.length === 0) return { error: 'missing title or fields' };
+  if (fields.length > MAX_FIELDS) return { error: `too many fields (max ${MAX_FIELDS})` };
+  const out = [];
+  const seen = new Set();
+  for (const f of fields) {
+    if (!f || typeof f !== 'object' || Array.isArray(f)) return { error: 'each field must be an object' };
+    if (typeof f.name !== 'string' || typeof f.label !== 'string' || !f.name || !f.label) {
+      return { error: 'field missing name or label' };
+    }
+    if (!FIELD_NAME_RE.test(f.name) || RESERVED_KEYS.has(f.name)) return { error: `invalid field name: ${f.name.slice(0, 64)}` };
+    if (seen.has(f.name)) return { error: `duplicate field name: ${f.name}` };
+    seen.add(f.name);
+    if (f.label.length > 200) return { error: `field label too long: ${f.name}` };
+    if (f.type !== undefined && !FIELD_TYPES.includes(f.type)) return { error: `invalid field type: ${String(f.type).slice(0, 32)}` };
+    if (f.level !== undefined && !FIELD_LEVELS.includes(f.level)) return { error: `invalid field level: ${String(f.level).slice(0, 32)}` };
+    if (f.placeholder !== undefined && (typeof f.placeholder !== 'string' || f.placeholder.length > 200)) {
+      return { error: `invalid placeholder for field: ${f.name}` };
+    }
+    if (f.required !== undefined && typeof f.required !== 'boolean') return { error: `required must be a boolean: ${f.name}` };
+    const clean = { name: f.name, label: f.label };
+    if (f.type !== undefined) clean.type = f.type;
+    if (f.level !== undefined) clean.level = f.level;
+    if (f.placeholder !== undefined) clean.placeholder = f.placeholder;
+    if (f.required !== undefined) clean.required = f.required;
+    out.push(clean);
+  }
+  return { fields: out };
+}
+
+// Destination types that act on the ZeroCreds host itself.
+const SERVER_LOCAL_TYPES = new Set(['local_file', 'macos_keychain', 'windows_credential_manager', 'os_keychain']);
+
+function readAdminTokenFile(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || (stat.mode & 0o077) || (process.getuid && stat.uid !== process.getuid())) {
+      throw new Error('admin token file must be a private regular file owned by the service user');
+    }
+    if (stat.size > 256) throw new Error('admin token file is too large');
+    const token = fs.readFileSync(fd, 'utf8').trim();
+    if (token.length < 32 || /\s/.test(token)) throw new Error('admin token file must contain one token of at least 32 characters');
+    return token;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
 function createApp(config = {}) {
-  const ADMIN_TOKEN = config.adminToken ?? process.env.ZEROCREDS_ADMIN_TOKEN ?? '';
+  let ADMIN_TOKEN = config.adminToken ?? process.env.ZEROCREDS_ADMIN_TOKEN ?? '';
+  const ADMIN_TOKEN_FILE = config.adminTokenFile ?? process.env.ZEROCREDS_ADMIN_TOKEN_FILE ?? path.join(os.homedir(), '.config/zerocreds/admin-token');
+  if (!ADMIN_TOKEN) {
+    try { ADMIN_TOKEN = readAdminTokenFile(ADMIN_TOKEN_FILE); }
+    catch (e) { if (e.code !== 'ENOENT') throw e; }
+  }
+  if (typeof ADMIN_TOKEN !== 'string' || !ADMIN_TOKEN) {
+    throw new Error('ZEROCREDS_ADMIN_TOKEN or a private admin token file is required — refusing to start without an admin token');
+  }
   const CONNECT_PENDING_DIR = config.pendingDir ?? process.env.ZEROCREDS_PENDING_DIR ?? path.join(os.homedir(), 'connect-pending');
   const AGENT_TOKENS_DIR = config.tokensDir ?? process.env.ZEROCREDS_TOKENS_DIR ?? path.join(os.homedir(), 'agent-tokens');
-  const SAVED_DIR = config.savedDir ?? process.env.ZEROCREDS_SAVED_DIR ?? path.join(os.homedir(), 'zerocreds-saved');
   const DESTINATIONS_FILE = config.destinationsFile ?? process.env.ZEROCREDS_DESTINATIONS_FILE ?? path.join(os.homedir(), 'zerocreds-destinations.json');
   const INTEGRATORS_FILE = config.integratorsFile ?? process.env.ZEROCREDS_INTEGRATORS_FILE ?? path.join(os.homedir(), 'zerocreds-integrators.json');
   const BASE_URL = config.baseUrl ?? process.env.ZEROCREDS_BASE_URL ?? 'https://zerocreds.ru';
+  const SIGNING_KEY_FILE = config.signingKeyFile ?? process.env.ZEROCREDS_SIGNING_KEY_FILE ?? path.join(os.homedir(), 'zerocreds-signing-key.pem');
+  const WALLET_WORKER_URL = config.walletWorkerUrl ?? process.env.ZEROCREDS_WALLET_WORKER_URL ?? '';
+  const WALLET_SERVICE_TOKEN = config.walletServiceToken ?? process.env.ZEROCREDS_WALLET_SERVICE_TOKEN ?? '';
+  const WALLET_CLIENTS_FILE = config.walletClientsFile ?? process.env.ZEROCREDS_WALLET_CLIENTS_FILE ?? '';
+  const WALLET_ASSERTION_ISSUERS_FILE = config.walletAssertionIssuersFile ?? process.env.ZEROCREDS_WALLET_ASSERTION_ISSUERS_FILE ?? '';
+  // Unsafe-by-design conveniences for local/dev setups — all off unless explicitly enabled.
+  const ALLOW_INLINE_DESTINATIONS = config.allowInlineDestinations ?? envFlag('ZEROCREDS_ALLOW_INLINE_DESTINATIONS');
+  const DEST_OPTS = {
+    allowPrivate: config.allowPrivateDestinations ?? envFlag('ZEROCREDS_ALLOW_PRIVATE_DESTINATIONS'),
+    httpPostAllowedHosts: config.httpPostAllowedHosts ?? envList('ZEROCREDS_HTTP_POST_ALLOWED_HOSTS'),
+  };
+  const DONE_TTL_MS = 24 * 60 * 60 * 1000;
+  const CLAIM_STALE_MS = 60 * 60 * 1000;
+  const SWEEP_INTERVAL_MS = 10 * 60 * 1000;
 
-  try { fs.mkdirSync(SAVED_DIR, { recursive: true, mode: 0o700 }); } catch {}
+  for (const dir of [CONNECT_PENDING_DIR, AGENT_TOKENS_DIR]) {
+    try { fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch {}
+  }
 
   // Named destinations (admin-configured, SA keys never travel in API requests)
-  let NAMED_DESTINATIONS = {};
+  let NAMED_DESTINATIONS = Object.create(null);
   function loadNamedDestinations() {
     try {
-      NAMED_DESTINATIONS = JSON.parse(fs.readFileSync(DESTINATIONS_FILE, 'utf8'));
+      const raw = JSON.parse(fs.readFileSync(DESTINATIONS_FILE, 'utf8'));
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) NAMED_DESTINATIONS = Object.assign(Object.create(null), raw);
       console.log(`[config] loaded ${Object.keys(NAMED_DESTINATIONS).length} named destination(s)`);
     } catch (e) {
       if (e.code !== 'ENOENT') console.warn('[config] destinations file error:', e.message);
@@ -914,23 +1177,181 @@ function createApp(config = {}) {
   }
   loadNamedDestinations();
 
-  // Integrators registry
-  let INTEGRATORS = {};
+  // Ed25519 key for form manifests and submission receipts (created on first start).
+  const SIGNING_KEY = loadSigningKey(SIGNING_KEY_FILE);
+
+  // Integrators registry: sha256(token) → record. A Map, so no prototype keys can match.
+  const INTEGRATORS = new Map();
+  function tokenHash(t) {
+    return crypto.createHash('sha256').update(String(t)).digest();
+  }
   function loadIntegrators() {
+    let raw;
     try {
-      INTEGRATORS = JSON.parse(fs.readFileSync(INTEGRATORS_FILE, 'utf8'));
-      console.log(`[config] loaded ${Object.keys(INTEGRATORS).length} integrator(s)`);
+      raw = JSON.parse(fs.readFileSync(INTEGRATORS_FILE, 'utf8'));
     } catch (e) {
       if (e.code !== 'ENOENT') console.warn('[config] integrators file error:', e.message);
+      return;
     }
+    if (!raw || typeof raw !== 'object') return;
+    for (const [token, rec] of Object.entries(raw)) {
+      if (!token || !rec || typeof rec !== 'object') continue;
+      INTEGRATORS.set(tokenHash(token).toString('hex'),
+        { ...rec, token, destinations: Object.assign(Object.create(null), rec.destinations || {}) });
+    }
+    console.log(`[config] loaded ${INTEGRATORS.size} integrator(s)`);
   }
   loadIntegrators();
 
-  function saveIntegrators() {
-    fs.writeFileSync(INTEGRATORS_FILE, JSON.stringify(INTEGRATORS, null, 2), { mode: 0o600 });
+  // Wallet API tokens are issued by the trusted host and bound to an owner,
+  // profile and admin-configured OpenBao destination. The model cannot supply
+  // any of these values in a tool call.
+  const WALLET_CLIENTS = new Map();
+  let walletClients = config.walletClients;
+  if (!walletClients && WALLET_CLIENTS_FILE) {
+    if (process.platform !== 'win32' && (fs.statSync(WALLET_CLIENTS_FILE).mode & 0o077)) {
+      throw new Error('wallet clients file must be private (mode 0600)');
+    }
+    walletClients = JSON.parse(fs.readFileSync(WALLET_CLIENTS_FILE, 'utf8'));
+  }
+  for (const [token, scope] of Object.entries(walletClients || {})) {
+    if (token.length < 32 || token === ADMIN_TOKEN || !scope || !/^[a-zA-Z0-9_-]{1,100}$/.test(scope.owner_id || '')
+      || !/^[a-zA-Z0-9_-]{1,100}$/.test(scope.profile_id || '')
+      || !isSafeKey(scope.destination || '')) throw new Error('invalid wallet client configuration');
+    WALLET_CLIENTS.set(tokenHash(token).toString('hex'), scope);
   }
 
-  // Rate limit for self-serve registration: max 3 tokens per IP per hour
+  // Host assertions are short-lived Ed25519 JWTs. Public keys and owner/profile
+  // mappings are operator-owned; claims can select only a preconfigured scope.
+  let walletAssertionIssuers = config.walletAssertionIssuers;
+  if (!walletAssertionIssuers && WALLET_ASSERTION_ISSUERS_FILE) {
+    const stat = fs.statSync(WALLET_ASSERTION_ISSUERS_FILE);
+    if (process.platform !== 'win32' && (stat.mode & 0o077)) {
+      throw new Error('wallet assertion issuers file must be private (mode 0600)');
+    }
+    walletAssertionIssuers = JSON.parse(fs.readFileSync(WALLET_ASSERTION_ISSUERS_FILE, 'utf8'));
+  }
+  const WALLET_ASSERTION_ISSUERS = new Map();
+  const walletOperations = new Set(['wallet.forms.create', 'wallet.forms.status', 'wallet.connections.status', 'wallet.connections.revoke']);
+  for (const [issuer, record] of Object.entries(walletAssertionIssuers || {})) {
+    if (!issuer || !record || typeof record !== 'object' || !record.keys || !record.profiles) {
+      throw new Error('invalid wallet assertion issuer configuration');
+    }
+    const keys = new Map();
+    for (const [kid, publicKey] of Object.entries(record.keys)) {
+      if (!/^[A-Za-z0-9._-]{1,100}$/.test(kid) || typeof publicKey !== 'string') {
+        throw new Error('invalid wallet assertion public key');
+      }
+      try {
+        const parsedKey = crypto.createPublicKey(publicKey);
+        if (parsedKey.asymmetricKeyType !== 'ed25519' || /PRIVATE KEY/.test(publicKey)) throw new Error();
+        keys.set(kid, parsedKey);
+      }
+      catch { throw new Error('invalid wallet assertion public key'); }
+    }
+    const profiles = new Map();
+    for (const [profileId, scope] of Object.entries(record.profiles)) {
+      if (!/^[A-Za-z0-9_-]{1,100}$/.test(profileId) || !scope || typeof scope !== 'object'
+        || !/^[a-zA-Z0-9_-]{1,100}$/.test(scope.owner_id || '') || scope.profile_id !== profileId
+        || !isSafeKey(scope.destination || '') || !Object.hasOwn(NAMED_DESTINATIONS, scope.destination)
+        || !Array.isArray(scope.callers) || !scope.callers.length
+        || scope.callers.some(caller => !['human', 'machine'].includes(caller))) {
+        throw new Error('invalid wallet assertion profile configuration');
+      }
+      profiles.set(profileId, Object.freeze({ owner_id: scope.owner_id, profile_id: profileId,
+        destination: scope.destination, callers: new Set(scope.callers) }));
+    }
+    WALLET_ASSERTION_ISSUERS.set(issuer, { keys, profiles });
+  }
+  function parseWalletAssertion(token, operation) {
+    try {
+      if (typeof token !== 'string' || token.length > 4096) return null;
+      const parts = token.split('.');
+      if (parts.length !== 3 || parts.some(part => !part)) return null;
+      const decode = part => Buffer.from(part, 'base64url').toString('utf8');
+      const header = JSON.parse(decode(parts[0]));
+      const claims = JSON.parse(decode(parts[1]));
+      if (!header || header.alg !== 'EdDSA' || header.typ !== 'JWT' || typeof header.kid !== 'string'
+        || !claims || typeof claims !== 'object' || Array.isArray(claims)) return null;
+      const issuer = WALLET_ASSERTION_ISSUERS.get(claims.iss);
+      const publicKey = issuer?.keys.get(header.kid);
+      if (!issuer || !publicKey || !crypto.verify(null, Buffer.from(`${parts[0]}.${parts[1]}`), publicKey,
+        Buffer.from(parts[2], 'base64url'))) return null;
+      const allowedClaimNames = new Set(['iss', 'aud', 'owner_id', 'profile_id', 'caller_class', 'operations', 'iat', 'exp', 'jti', 'run_id']);
+      if (Object.keys(claims).some(name => !allowedClaimNames.has(name))
+        || !['human', 'machine'].includes(claims.caller_class)
+        || claims.aud !== `zerocreds-wallet:${claims.caller_class}` || !Array.isArray(claims.operations)
+        || !claims.operations.length || claims.operations.some(value => !walletOperations.has(value))
+        || new Set(claims.operations).size !== claims.operations.length || !claims.operations.includes(operation)
+        || !Number.isSafeInteger(claims.iat) || !Number.isSafeInteger(claims.exp)
+        || claims.iat > Math.floor(Date.now() / 1000) + 30 || claims.exp <= Math.floor(Date.now() / 1000)
+        || claims.exp > Math.floor(Date.now() / 1000) + 300
+        || claims.exp <= claims.iat || claims.exp - claims.iat > 300
+        || !/^[A-Za-z0-9_-]{16,128}$/.test(claims.jti || '')) return null;
+      if (claims.caller_class === 'machine') {
+        if (!/^[A-Za-z0-9_.:-]{1,200}$/.test(claims.run_id || '')) return null;
+      } else if (claims.run_id !== undefined) return null;
+      const profile = issuer.profiles.get(claims.profile_id);
+      if (!profile || !profile.callers.has(claims.caller_class) || profile.owner_id !== claims.owner_id
+        || claims.owner_id !== claims.owner_id.trim()) return null;
+      return { issuer: claims.iss, profile, jti: claims.jti, exp: claims.exp };
+    } catch { return null; }
+  }
+
+  async function walletCall(method, route, body, scope) {
+    if (!WALLET_WORKER_URL || WALLET_SERVICE_TOKEN.length < 32) throw new Error('wallet unavailable');
+    const base = new URL(WALLET_WORKER_URL);
+    if (base.protocol !== 'https:' && !(base.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(base.hostname))) {
+      throw new Error('wallet worker URL must use HTTPS');
+    }
+    const response = await fetch(new URL(route, base), {
+      method, signal: AbortSignal.timeout(10000),
+      headers: { Authorization: `Bearer ${WALLET_SERVICE_TOKEN}`, 'Content-Type': 'application/json',
+        ...(scope ? { 'X-Wallet-Owner': scope.owner_id, 'X-Wallet-Profile': scope.profile_id } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}), redirect: 'error',
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      const error = new Error(result?.error || 'wallet unavailable');
+      error.status = response.status;
+      throw error;
+    }
+    return result;
+  }
+
+  async function walletScope(authHeader, operation) {
+    if (typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) return null;
+    const token = authHeader.slice(7).trim();
+    const legacyScope = WALLET_CLIENTS.get(tokenHash(token).toString('hex'));
+    if (legacyScope) return legacyScope;
+    const assertion = parseWalletAssertion(token, operation);
+    if (!assertion) return null;
+    try {
+      await walletCall('POST', '/internal/assertions/claim', {
+        jti_hash: crypto.createHash('sha256').update(assertion.jti).digest('hex'),
+        expires_at: assertion.exp * 1000,
+      });
+    } catch { return null; }
+    return { ...assertion.profile, requester: assertion.issuer };
+  }
+
+  function saveIntegrators() {
+    const out = {};
+    for (const { token, ...rest } of INTEGRATORS.values()) out[token] = rest;
+    fs.writeFileSync(INTEGRATORS_FILE, JSON.stringify(out, null, 2), { mode: 0o600 });
+  }
+
+  function findIntegratorById(id) {
+    for (const rec of INTEGRATORS.values()) if (rec.id === id) return rec;
+    return null;
+  }
+
+  // New self-registrations have an explicit pending status. Records created before
+  // approval existed have no status and must retain their previously issued access.
+  function isLegacyIntegrator(rec) { return !!rec && !Object.hasOwn(rec, 'status'); }
+  function isActiveIntegrator(rec) { return isLegacyIntegrator(rec) || rec.status === 'active'; }
+
+  // Rate limit for self-serve registration: max 3 per client IP per hour
   const registerRateLimit = new Map();
   function checkRegisterLimit(ip) {
     const now = Date.now();
@@ -942,26 +1363,47 @@ function createApp(config = {}) {
     return true;
   }
 
+  const ADMIN_HASH = tokenHash(ADMIN_TOKEN);
+  const NO_AUTH = { isAdmin: false, integrator: null };
+
   // Resolve auth: returns { isAdmin, integrator|null }
   function resolveAuth(authHeader) {
-    if (!authHeader || !authHeader.startsWith('Bearer ')) return { isAdmin: false, integrator: null };
-    const token = authHeader.slice(7);
-    if (ADMIN_TOKEN && token === ADMIN_TOKEN) return { isAdmin: true, integrator: null };
-    if (INTEGRATORS[token]) return { isAdmin: false, integrator: { token, ...INTEGRATORS[token] } };
-    return { isAdmin: false, integrator: null };
+    if (typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) return NO_AUTH;
+    const token = authHeader.slice(7).trim();
+    if (!token) return NO_AUTH;
+    const hash = tokenHash(token);
+    if (crypto.timingSafeEqual(hash, ADMIN_HASH)) return { isAdmin: true, integrator: null };
+    const rec = INTEGRATORS.get(hash.toString('hex'));
+    if (rec && isActiveIntegrator(rec)) return { isAdmin: false, integrator: rec };
+    return NO_AUTH;
   }
 
-  // Resolve destination: name → config, checking integrator's destinations first
-  function resolveDestination(destination, integrator) {
-    if (typeof destination !== 'string') return destination; // inline object, use as-is
-    if (integrator?.destinations?.[destination]) return integrator.destinations[destination];
-    if (NAMED_DESTINATIONS[destination]) return NAMED_DESTINATIONS[destination];
-    return null;
+  // Resolve destination: name → config (integrator's own first), or an inline object
+  // when the server allows it. Returns { dest } or { error }.
+  function resolveDestination(destination, integrator, isAdmin, legacySession = false) {
+    if (typeof destination === 'string') {
+      if (integrator && Object.hasOwn(integrator.destinations, destination)) return { dest: integrator.destinations[destination] };
+      if (Object.hasOwn(NAMED_DESTINATIONS, destination)) return { dest: NAMED_DESTINATIONS[destination] };
+      return { error: `unknown named destination: ${destination.slice(0, 64)}` };
+    }
+    const legacyInline = legacySession && isLegacyIntegrator(integrator);
+    if (!ALLOW_INLINE_DESTINATIONS && !legacyInline) {
+      return { error: 'inline destinations are disabled on this server — use a named destination configured by the admin' };
+    }
+    if (!destination || typeof destination !== 'object' || Array.isArray(destination)) return { error: 'destination.type is required' };
+    if (!isAdmin && !legacyInline && SERVER_LOCAL_TYPES.has(destination.type)) {
+      return { error: `inline ${destination.type} destinations are only available to the admin` };
+    }
+    return { dest: destination };
+  }
+
+  function pendingPath(token, ext = 'json') {
+    return path.join(CONNECT_PENDING_DIR, `${token}.${ext}`);
   }
 
   function resolvePendingNamedDestination(name, integratorId) {
     if (integratorId === 'admin') return NAMED_DESTINATIONS[name] || null;
-    const integrator = Object.values(INTEGRATORS).find(i => i.id === integratorId);
+    const integrator = findIntegratorById(integratorId);
     if (integrator?.destinations?.[name]) return integrator.destinations[name];
     return NAMED_DESTINATIONS[name] || null;
   }
@@ -971,12 +1413,57 @@ function createApp(config = {}) {
   }
 
   function readPending(token) {
-    const file = path.join(CONNECT_PENDING_DIR, `${token}.json`);
-    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+    try { return JSON.parse(fs.readFileSync(pendingPath(token), 'utf8')); } catch { return null; }
   }
 
   function deletePending(token) {
-    try { fs.unlinkSync(path.join(CONNECT_PENDING_DIR, `${token}.json`)); } catch {}
+    try { fs.unlinkSync(pendingPath(token)); } catch {}
+  }
+
+  // Atomically take ownership of a one-time link: only one request can rename the file.
+  function claimPending(token) {
+    try { fs.renameSync(pendingPath(token), pendingPath(token, 'claimed')); return true; }
+    catch { return false; }
+  }
+
+  function releaseClaim(token) {
+    try { fs.renameSync(pendingPath(token, 'claimed'), pendingPath(token)); } catch {}
+  }
+
+  function dropClaim(token) {
+    try { fs.unlinkSync(pendingPath(token, 'claimed')); } catch {}
+  }
+
+  // Removes expired pending files, stale claims and old .done markers. Pending files may
+  // embed destination credentials, so they must not outlive their session.
+  function sweepPending(now = Date.now()) {
+    let files;
+    try { files = fs.readdirSync(CONNECT_PENDING_DIR); } catch { return 0; }
+    let removed = 0;
+    for (const file of files) {
+      const full = path.join(CONNECT_PENDING_DIR, file);
+      try {
+        let stale = false;
+        if (file.endsWith('.json')) {
+          const p = JSON.parse(fs.readFileSync(full, 'utf8'));
+          stale = typeof p?.expires === 'number' && p.expires < now;
+        } else if (file.endsWith('.claimed')) {
+          stale = fs.statSync(full).mtimeMs < now - CLAIM_STALE_MS;
+          if (stale) {
+            let p;
+            try { p = JSON.parse(fs.readFileSync(full, 'utf8')); } catch {}
+            if (p?.wallet && p.expires > now && !fs.existsSync(pendingPath(p.token))) {
+              fs.renameSync(full, pendingPath(p.token));
+              continue;
+            }
+          }
+        } else if (file.endsWith('.done') || file.endsWith('.written')) {
+          stale = fs.statSync(full).mtimeMs < now - DONE_TTL_MS;
+        }
+        if (stale) { fs.unlinkSync(full); removed++; }
+      } catch {}
+    }
+    return removed;
   }
 
   // Scan for an active (not expired, not done) session matching integrator+service+user_hash.
@@ -986,7 +1473,7 @@ function createApp(config = {}) {
     catch { return null; }
     for (const file of files) {
       const token = file.slice(0, -5);
-      if (fs.existsSync(path.join(CONNECT_PENDING_DIR, `${token}.done`))) continue;
+      if (fs.existsSync(pendingPath(token, 'done'))) continue;
       try {
         const s = JSON.parse(fs.readFileSync(path.join(CONNECT_PENDING_DIR, file), 'utf8'));
         if (s.integrator_id === integrator_id &&
@@ -998,34 +1485,273 @@ function createApp(config = {}) {
     return null;
   }
 
-  function readSaved(uid) {
-    if (!uid) return {};
-    try { return JSON.parse(fs.readFileSync(path.join(SAVED_DIR, `${uid}.json`), 'utf8')); }
-    catch { return {}; }
+  function saveOptsFor(pending) {
+    const sub = integratorSubdir(pending.integrator_id);
+    if (sub && !/^[a-zA-Z0-9_-]{1,64}$/.test(pending.integrator_id)) throw new Error('invalid integrator id');
+    return {
+      ...DEST_OPTS,
+      tokensDir: path.join(AGENT_TOKENS_DIR, sub),
+      context: templateContext(pending),
+    };
   }
 
-  function writeSaved(uid, submittedFields, fieldDefs) {
-    if (!uid) return;
-    const existing = readSaved(uid);
-    for (const f of fieldDefs) {
-      if (f.type !== 'password' && submittedFields[f.name] !== undefined && submittedFields[f.name] !== '') {
-        existing[f.name] = submittedFields[f.name];
+  function renderDynamicForm(res, req, token, pending) {
+    const nonce = newNonce();
+    const api = pending.form ? formApiSnippets(token, pending, BASE_URL) : null;
+    sendHtml(res, 200, dynamicFormHtml(token, pending, String(req.headers.host || ''), nonce, api), nonce);
+  }
+
+  // Probes an http_post destination before a session/form is created. Returns an error
+  // response body, or null. The upstream response body is never returned — only the status.
+  async function preflightDestination(dest, payload, fields) {
+    const openbao = dest?.type === 'vault' && !!dest.preflight_path_prefix;
+    if (openbao && payload.test_destination === false) return { error: 'openbao_preflight_required' };
+    if (!openbao && (payload.test_destination === false || dest?.type !== 'http_post')) return null;
+    try {
+      const receipt = await testDestination(dest, DEST_OPTS, fields);
+      return openbao ? { preflight: { checked: receipt?.checked === true, at: new Date().toISOString() } } : null;
+    } catch (e) {
+      const detail = openbao ? e.message : /^HTTP \d{3}$/.test(e.message) ? e.message
+        : e.code === 'EDESTBLOCKED' ? 'destination address is not allowed'
+        : 'request failed';
+      return {
+        error: 'destination_unreachable',
+        detail,
+        hint: openbao ? 'Check the configured OpenBao writer, owner probe path and metadata/cleanup policy.'
+          : 'Check destination URL and Authorization header. Pass test_destination: false to skip this check.',
+      };
+    }
+  }
+
+  function walletDestination(scope, openbaoPath) {
+    const base = NAMED_DESTINATIONS[scope.destination];
+    if (!base || base.type !== 'vault' || !base.preflight_path_prefix) throw new Error('wallet destination unavailable');
+    const mount = openbaoPath.split('/')[0];
+    const expectedPrefix = `${mount}/data/owners/${scope.owner_id}/connections/`;
+    if (!openbaoPath.startsWith(expectedPrefix) || !/^[a-zA-Z0-9_-]{1,100}$/.test(openbaoPath.slice(expectedPrefix.length))) {
+      throw new Error('wallet path mismatch');
+    }
+    return { ...base, path: openbaoPath,
+      preflight_path_prefix: `${mount}/data/owners/${scope.owner_id}/probes`, create_only: true };
+  }
+
+  function walletWritePath(formId) { return pendingPath(formId, 'written'); }
+
+  function signedManifest(formId, pending) {
+    const { form } = pending;
+    const manifest = {
+      v: 1,
+      type: 'zerocreds.form_manifest',
+      form_id: formId,
+      handle: form.handle,
+      kind: form.kind,
+      owner: pending.integrator_id,
+      requester: requesterLabel(pending),
+      fields: pending.fields.map(f => ({ name: f.name, label: f.label, type: f.type || 'text', required: f.required !== false })),
+      destination: describeDestination(pending.destination, pending),
+      ...(pending.wallet ? { wallet: {
+        owner_id: pending.wallet.owner_id, profile_id: pending.wallet.profile_id,
+        connection_id: pending.wallet.connection_id,
+      } } : {}),
+      submit: {
+        method: 'POST',
+        url: `${BASE_URL}/api/forms/${formId}/submit`,
+        auth: 'Bearer <owner key> or Bearer <one-time submit token>',
+        body: { manifest_id: '<manifest_id>', fields: Object.fromEntries(pending.fields.map(f => [f.name, `<${f.name}>`])) },
+      },
+      human_url: `${BASE_URL}/f/${formId}`,
+      expires_at: new Date(pending.expires).toISOString(),
+      server: { version: VERSION, commit: COMMIT },
+    };
+    return { manifest_id: sha256Hex(canonicalJson(manifest)), ...signPayload(SIGNING_KEY, manifest) };
+  }
+
+  // Validates submitted values against the session, saves them and marks the link used.
+  // Shared by the human form (POST /f/:token) and machine submit (POST /api/forms/:id/submit).
+  // Returns { status, body }.
+  async function submitPending(token, pending, submitted, via) {
+    if (!submitted || typeof submitted !== 'object' || Array.isArray(submitted)) {
+      return { status: 400, body: { error: 'missing fields' } };
+    }
+    // Only keep declared field names — strip anything extra
+    const clean = Object.create(null);
+    for (const f of pending.fields) {
+      if (!Object.hasOwn(submitted, f.name)) continue;
+      const v = submitted[f.name];
+      if (!['string', 'number', 'boolean'].includes(typeof v)) return { status: 400, body: { error: `invalid value for field: ${f.name}` } };
+      clean[f.name] = String(v);
+    }
+
+    // Validate all required fields are present
+    for (const f of pending.fields) {
+      if (f.required !== false && !clean[f.name]) {
+        return { status: 400, body: { error: `missing required field: ${f.name}` } };
       }
     }
-    try { fs.writeFileSync(path.join(SAVED_DIR, `${uid}.json`), JSON.stringify(existing), { mode: 0o600 }); }
-    catch (e) { console.error('[saved] write failed:', e.message); }
+
+    // Validate url fields
+    for (const f of pending.fields) {
+      if (f.type === 'url' && clean[f.name]) {
+        try {
+          const u = new URL(clean[f.name]);
+          if (!['http:', 'https:'].includes(u.protocol)) throw new Error();
+        } catch { return { status: 400, body: { error: `invalid URL for field: ${f.name}` } }; }
+      }
+    }
+
+    // One-time link: claim it before saving so concurrent submissions cannot both succeed.
+    if (!claimPending(token)) return { status: 403, body: { error: 'invalid or expired token' } };
+
+    if (pending.wallet) {
+      const wallet = pending.wallet;
+      const scope = { owner_id: wallet.owner_id, profile_id: wallet.profile_id };
+      const digest = crypto.createHmac('sha256', token).update(canonicalJson(clean)).digest('hex');
+      try {
+        const connection = await walletCall('GET', `/internal/connections/${wallet.connection_id}`, null, scope);
+        if (connection.state === 'revoked' || connection.openbao_path !== wallet.openbao_path) {
+          releaseClaim(token);
+          return { status: 409, body: { error: 'wallet connection unavailable' } };
+        }
+        let written;
+        try { written = JSON.parse(fs.readFileSync(walletWritePath(token), 'utf8')); } catch {}
+        if (written && written.digest !== digest) {
+          releaseClaim(token);
+          return { status: 409, body: { error: 'submission differs from saved write' } };
+        }
+        if (!written) {
+          const base = NAMED_DESTINATIONS[wallet.destination];
+          if (!base || destinationFingerprint(base) !== wallet.destination_sha256) {
+            releaseClaim(token);
+            return { status: 409, body: { error: 'destination_changed' } };
+          }
+          const destination = walletDestination({ ...scope, destination: wallet.destination }, wallet.openbao_path);
+          const result = await saveToDestination(destination, { ...clean }, saveOptsFor(pending));
+          if (!Number.isInteger(result?.version) || result.version < 1) throw new Error('openbao_write_receipt_missing');
+          const receipt = signPayload(SIGNING_KEY, {
+            v: 1, type: 'zerocreds.receipt', form_id: token,
+            handle: pending.form.handle, kind: pending.form.kind,
+            owner: pending.integrator_id, manifest_id: pending.form.manifest_id,
+            fields: pending.fields.map(f => f.name).filter(n => clean[n] !== undefined),
+            destination: describeDestination(pending.destination, pending),
+            destination_ref: wallet.connection_id,
+            wallet: { owner_id: scope.owner_id, profile_id: scope.profile_id,
+              connection_id: wallet.connection_id, kv_version: result.version },
+            submitted_via: via, submitted_at: new Date().toISOString(),
+            server: { version: VERSION, commit: COMMIT },
+          });
+          written = { digest, version: result.version, receipt,
+            receipt_ref: sha256Hex(canonicalJson(receipt)) };
+          const temp = `${walletWritePath(token)}.${crypto.randomBytes(6).toString('hex')}`;
+          fs.writeFileSync(temp, JSON.stringify(written), { mode: 0o600, flag: 'wx' });
+          fs.renameSync(temp, walletWritePath(token));
+        }
+        await walletCall('POST', `/internal/forms/${token}/complete`, {
+          owner_id: scope.owner_id, profile_id: scope.profile_id,
+          manifest_id: pending.form.manifest_id, kv_version: written.version,
+          receipt_ref: written.receipt_ref,
+        });
+        fs.writeFileSync(pendingPath(token, 'done'), JSON.stringify({
+          connection_id: wallet.connection_id, version: written.version,
+          receipt_ref: written.receipt_ref, handle: pending.form.handle,
+          receipt: written.receipt, _integrator_id: pending.integrator_id,
+        }), { mode: 0o600 });
+        dropClaim(token);
+        try { fs.unlinkSync(walletWritePath(token)); } catch {}
+        return { status: 200, body: { ok: true, connection_id: wallet.connection_id,
+          handle: pending.form.handle, receipt: written.receipt } };
+      } catch (e) {
+        releaseClaim(token);
+        console.error('[wallet] completion failed:', e.message);
+        return { status: 503, body: { error: 'wallet save unavailable; retry with the same values' } };
+      }
+    }
+
+    let saveResult;
+    try {
+      const saveOpts = saveOptsFor(pending);
+      if (pending.destinations_by_level) {
+        // Group fields by level, route each group to its destination
+        const groups = {};
+        for (const f of pending.fields) {
+          const level = f.level || 'default';
+          if (!groups[level]) groups[level] = {};
+          if (clean[f.name] !== undefined) groups[level][f.name] = clean[f.name];
+        }
+        const secretIds = {};
+        for (const [level, groupFields] of Object.entries(groups)) {
+          if (Object.keys(groupFields).length === 0) continue;
+          const dest = destinationForField(pending, { level });
+          if (!dest) {
+            console.warn(`[dynamic] no destination for level "${level}", skipping:`, Object.keys(groupFields));
+            continue;
+          }
+          const r = await saveToDestination(dest, groupFields, saveOpts);
+          if (r?.secret_id) secretIds[level] = r.secret_id;
+        }
+        saveResult = { secret_ids: secretIds };
+      } else {
+        let destinationForWrite = pending.destination;
+        if (pending.destination_ref) {
+          destinationForWrite = resolvePendingNamedDestination(pending.destination_ref, pending.integrator_id);
+          if (!destinationForWrite || destinationFingerprint(destinationForWrite) !== pending.destination_sha256) {
+            releaseClaim(token);
+            return { status: 409, body: { error: 'destination_changed' } };
+          }
+        }
+        saveResult = await saveToDestination(destinationForWrite, { ...clean }, saveOpts);
+        if (pending.destination_ref && (!Number.isInteger(saveResult?.version) || saveResult.version < 1)) {
+          throw new Error('openbao_write_receipt_missing');
+        }
+      }
+    } catch (e) {
+      // Let the user retry with the same link; never echo upstream details back.
+      releaseClaim(token);
+      console.error('[dynamic] save failed:', e.message);
+      return { status: 500, body: { error: 'failed to save credentials' } };
+    }
+
+    dropClaim(token);
+
+    // Forms get a signed receipt with the handle: what was saved and where, never the values.
+    let formResult = null;
+    if (pending.form) {
+      const receipt = signPayload(SIGNING_KEY, {
+        v: 1,
+        type: 'zerocreds.receipt',
+        form_id: token,
+        handle: pending.form.handle,
+        kind: pending.form.kind,
+        owner: pending.integrator_id,
+        manifest_id: pending.form.manifest_id,
+        fields: pending.fields.map(f => f.name).filter(n => clean[n] !== undefined),
+        destination: describeDestination(pending.destination, pending),
+        destination_ref: typeof saveResult?.secret_id === 'string' ? saveResult.secret_id : null,
+        submitted_via: via,
+        submitted_at: new Date().toISOString(),
+        server: { version: VERSION, commit: COMMIT },
+      });
+      formResult = { handle: pending.form.handle, receipt };
+    }
+
+    // .done file stores destination references — never the credentials themselves
+    try {
+      fs.writeFileSync(
+        pendingPath(token, 'done'),
+        JSON.stringify({ ...(saveResult || {}), ...(formResult || {}), _integrator_id: pending.integrator_id }),
+        { mode: 0o600 },
+      );
+    } catch {}
+    console.info('[session-migration] completed auth=%s',
+      ['anonymous', 'admin', 'integrator'].includes(pending._audit_auth) ? pending._audit_auth : 'unknown');
+
+    if (pending.notify?.tg_bot_token) {
+      tgNotify(pending.notify.tg_bot_token, pending.notify.tg_chat_id,
+        `✅ ${pending.title}: credentials received and saved.`);
+    }
+    return { status: 200, body: { ok: true, ...(formResult || {}) } };
   }
 
-  function writeSavedRef(uid, pending, secretId) {
-    if (!uid || !secretId) return;
-    const existing = readSaved(uid);
-    const fp = `__ref__${pending.title}`;
-    existing[fp] = secretId;
-    try { fs.writeFileSync(path.join(SAVED_DIR, `${uid}.json`), JSON.stringify(existing), { mode: 0o600 }); }
-    catch (e) { console.error('[saved-ref] write failed:', e.message); }
-  }
-
-  const server = http.createServer(async (req, res) => {
+  async function handle(req, res) {
     const url = new URL(req.url, 'http://localhost');
 
     // CORS preflight for API
@@ -1042,8 +1768,7 @@ function createApp(config = {}) {
 
     // GET /about
     if (req.method === 'GET' && url.pathname === '/about') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(aboutHtml());
-      return;
+      return sendHtml(res, 200, aboutHtml());
     }
 
     // GET /health
@@ -1062,12 +1787,13 @@ function createApp(config = {}) {
 
     // POST /connect/nalog/code — confirm 2FA (must be before connectMatch)
     if (req.method === 'POST' && url.pathname === '/connect/nalog/code') {
-      const body = await readBody(req);
-      let payload;
-      try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
+      const payload = await readJson(req);
+      if (!payload) return json(res, 400, { error: 'bad json' });
       const { session, code } = payload;
-      if (!session || !code) return json(res, 400, { error: 'missing session or code' });
-      if (!/^[a-f0-9]{32}$/.test(session)) return json(res, 400, { error: 'invalid session' });
+      if (typeof session !== 'string' || typeof code !== 'string' || !session || !code) {
+        return json(res, 400, { error: 'missing session or code' });
+      }
+      if (!TOKEN_RE.test(session)) return json(res, 400, { error: 'invalid session' });
       if (!/^\d{4,8}$/.test(code.trim())) return json(res, 400, { error: 'invalid code format' });
 
       const result = await confirmNalogCode(session, code.trim());
@@ -1093,17 +1819,19 @@ function createApp(config = {}) {
       if (service === 'nalog') {
         if (req.method === 'GET') {
           const t = url.searchParams.get('t') || '';
-          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(nalogFormHtml(t));
-          return;
+          if (!TOKEN_RE.test(t)) return sendHtml(res, 400, expiredHtml());
+          const nonce = newNonce();
+          return sendHtml(res, 200, nalogFormHtml(t, nonce), nonce);
         }
 
         if (req.method === 'POST') {
-          const body = await readBody(req);
-          let payload;
-          try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
+          const payload = await readJson(req);
+          if (!payload) return json(res, 400, { error: 'bad json' });
           const { t, login, password } = payload;
-          if (!t || !login || !password) return json(res, 400, { error: 'missing fields' });
-          if (!/^[a-f0-9]{32}$/.test(t)) return json(res, 400, { error: 'invalid token' });
+          if (typeof t !== 'string' || typeof login !== 'string' || typeof password !== 'string' || !t || !login || !password) {
+            return json(res, 400, { error: 'missing fields' });
+          }
+          if (!TOKEN_RE.test(t)) return json(res, 400, { error: 'invalid token' });
 
           const pending = readPending(t);
           if (!pending) return json(res, 403, { error: 'invalid or expired token' });
@@ -1111,7 +1839,8 @@ function createApp(config = {}) {
           if (pending.service !== 'nalog') return json(res, 403, { error: 'service mismatch' });
           if (!/^-?[a-zA-Z0-9_-]{1,128}$/.test(pending.uid)) return json(res, 403, { error: 'invalid uid' });
 
-          deletePending(t);
+          if (!claimPending(t)) return json(res, 403, { error: 'invalid or expired token' });
+          dropClaim(t);
 
           const result = await startNalogLogin(pending.uid, login, password, {
             tgBotToken: pending.tg_bot_token,
@@ -1143,29 +1872,24 @@ function createApp(config = {}) {
       }
 
       // ── generic token services ─────────────────────────────────────────────────
-      const meta = SERVICE_META[service];
+      const meta = Object.hasOwn(SERVICE_META, service) ? SERVICE_META[service] : null;
       if (!meta) { res.writeHead(404).end('Unknown service'); return; }
 
       if (req.method === 'GET') {
         const t = url.searchParams.get('t') || '';
-        if (t && /^[a-f0-9]{32}$/.test(t)) {
-          const p = readPending(t);
-          if (!p || p.expires < Date.now()) {
-            res.writeHead(410, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
-            return;
-          }
-        }
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(connectFormHtml(service, meta, t));
-        return;
+        if (!TOKEN_RE.test(t)) return sendHtml(res, 400, expiredHtml());
+        const p = readPending(t);
+        if (!p || p.expires < Date.now()) return sendHtml(res, 410, expiredHtml());
+        const nonce = newNonce();
+        return sendHtml(res, 200, connectFormHtml(service, meta, t, nonce), nonce);
       }
 
       if (req.method === 'POST') {
-        const body = await readBody(req);
-        let payload;
-        try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
+        const payload = await readJson(req);
+        if (!payload) return json(res, 400, { error: 'bad json' });
         const { t, value } = payload;
-        if (!t || !value) return json(res, 400, { error: 'missing t or value' });
-        if (!/^[a-f0-9]{32}$/.test(t)) return json(res, 400, { error: 'invalid token' });
+        if (typeof t !== 'string' || typeof value !== 'string' || !t || !value) return json(res, 400, { error: 'missing t or value' });
+        if (!TOKEN_RE.test(t)) return json(res, 400, { error: 'invalid token' });
 
         const pending = readPending(t);
         if (!pending) return json(res, 403, { error: 'invalid or expired token' });
@@ -1173,10 +1897,16 @@ function createApp(config = {}) {
         if (pending.service !== service) return json(res, 403, { error: 'service mismatch' });
         if (!/^-?[a-zA-Z0-9_-]{1,128}$/.test(pending.uid)) return json(res, 403, { error: 'invalid uid' });
 
-        const tokensDir = path.join(AGENT_TOKENS_DIR, pending.uid);
-        fs.mkdirSync(tokensDir, { recursive: true });
-        fs.writeFileSync(path.join(tokensDir, service), String(value).trim(), { mode: 0o600 });
-        deletePending(t);
+        if (!claimPending(t)) return json(res, 403, { error: 'invalid or expired token' });
+        try {
+          const tokensDir = path.join(AGENT_TOKENS_DIR, pending.uid);
+          fs.mkdirSync(tokensDir, { recursive: true, mode: 0o700 });
+          fs.writeFileSync(path.join(tokensDir, service), value.trim(), { mode: 0o600 });
+        } catch (e) {
+          releaseClaim(t);
+          throw e;
+        }
+        dropClaim(t);
 
         console.log(`[connect] saved ${service} token for uid=${pending.uid}`);
         json(res, 200, { ok: true });
@@ -1193,57 +1923,93 @@ function createApp(config = {}) {
     }
 
     // ── POST /api/register ────────────────────────────────────────────────────
+    // Self-registration only files a request: the token stays inactive until the
+    // admin approves it (POST /admin/integrators/approve).
     if (req.method === 'POST' && url.pathname === '/api/register') {
-      const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
+      const ip = clientIp(req);
       if (!checkRegisterLimit(ip)) return json(res, 429, { error: 'Too many registrations from this IP. Try again in an hour.' });
-      const body = await readBody(req);
-      let payload = {};
-      try { payload = JSON.parse(body); } catch {}
+      const payload = await readJson(req) || {};
       const { email, website, category } = payload;
-      if (!email || !email.includes('@')) return json(res, 400, { error: 'Valid email is required' });
+      if (typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+$/.test(email)) {
+        return json(res, 400, { error: 'Valid email is required' });
+      }
+      if (website !== undefined && (typeof website !== 'string' || website.length > 200)) {
+        return json(res, 400, { error: 'Invalid website' });
+      }
       const VALID_CATEGORIES = ['ai_agent', 'saas', 'internal', 'personal', 'other'];
-      if (!category || !VALID_CATEGORIES.includes(category)) return json(res, 400, { error: 'Category is required' });
+      if (!VALID_CATEGORIES.includes(category)) return json(res, 400, { error: 'Category is required' });
       const token = 'tok_' + crypto.randomBytes(20).toString('hex');
       const id = 'u_' + crypto.randomBytes(6).toString('hex');
-      INTEGRATORS[token] = { id, name: id, email, website: website || '', category, destinations: {}, created: new Date().toISOString() };
+      INTEGRATORS.set(tokenHash(token).toString('hex'), {
+        token, id, name: id, email, website: website || '', category, status: 'pending',
+        destinations: Object.create(null), created: new Date().toISOString(),
+      });
       saveIntegrators();
-      console.log(`[register] new integrator: ${id} email=${email} category=${category} from ${ip}`);
-      return json(res, 200, { token, base_url: BASE_URL });
+      console.log(`[register] integrator pending approval: ${id} category=${category}`);
+      return json(res, 200, { token, id, status: 'pending_approval', base_url: BASE_URL });
     }
 
     // ── POST /admin/integrators/create ────────────────────────────────────────
     if (req.method === 'POST' && url.pathname === '/admin/integrators/create') {
       const { isAdmin } = resolveAuth(req.headers['authorization']);
       if (!isAdmin) return json(res, 401, { error: 'admin token required' });
-      const body = await readBody(req);
-      let payload;
-      try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
+      const payload = await readJson(req);
+      if (!payload) return json(res, 400, { error: 'bad json' });
       const { id, name } = payload;
-      if (!id || !name) return json(res, 400, { error: 'missing id or name' });
-      if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id)) return json(res, 400, { error: 'invalid id' });
+      if (typeof id !== 'string' || typeof name !== 'string' || !id || !name) return json(res, 400, { error: 'missing id or name' });
+      if (!isSafeKey(id) || id === 'admin') return json(res, 400, { error: 'invalid id' });
+      if (name.length > 100) return json(res, 400, { error: 'name too long' });
+      if (findIntegratorById(id)) return json(res, 409, { error: 'integrator id already exists' });
       const token = 'tok_' + crypto.randomBytes(20).toString('hex');
-      INTEGRATORS[token] = { id, name, destinations: {}, created: new Date().toISOString() };
+      INTEGRATORS.set(tokenHash(token).toString('hex'),
+        { token, id, name, status: 'active', destinations: Object.create(null), created: new Date().toISOString() });
       saveIntegrators();
-      console.log(`[admin] created integrator: ${id} (${name})`);
+      console.log(`[admin] created integrator: ${id}`);
       return json(res, 200, { token, id, name });
     }
 
+    // ── POST /admin/integrators/approve ───────────────────────────────────────
+    if (req.method === 'POST' && url.pathname === '/admin/integrators/approve') {
+      const { isAdmin } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin) return json(res, 401, { error: 'admin token required' });
+      const payload = await readJson(req);
+      if (!payload) return json(res, 400, { error: 'bad json' });
+      const rec = typeof payload.id === 'string' ? findIntegratorById(payload.id) : null;
+      if (!rec) return json(res, 404, { error: 'unknown integrator id' });
+      rec.status = 'active';
+      saveIntegrators();
+      console.log(`[admin] approved integrator: ${rec.id}`);
+      return json(res, 200, { ok: true, id: rec.id, status: rec.status });
+    }
+
     // ── POST /api/destinations ─────────────────────────────────────────────────
+    // Destinations are admin-managed. The admin may attach one to an integrator via
+    // integrator_id. Integrators may only add their own when inline destinations are enabled.
     if (req.method === 'POST' && url.pathname === '/api/destinations') {
       const { isAdmin, integrator } = resolveAuth(req.headers['authorization']);
       if (!isAdmin && !integrator) return json(res, 401, { error: 'unauthorized' });
-      const body = await readBody(req);
-      let payload;
-      try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
-      const { name, destination } = payload;
+      if (!isAdmin && !ALLOW_INLINE_DESTINATIONS && !isLegacyIntegrator(integrator)) return json(res, 403, { error: 'destinations are managed by the server admin' });
+      const payload = await readJson(req);
+      if (!payload) return json(res, 400, { error: 'bad json' });
+      const { name, destination, integrator_id } = payload;
       if (!name || !destination?.type) return json(res, 400, { error: 'missing name or destination.type' });
-      if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) return json(res, 400, { error: 'invalid name' });
+      if (!isSafeKey(name)) return json(res, 400, { error: 'invalid name' });
+      if (!isAdmin && !isLegacyIntegrator(integrator) && SERVER_LOCAL_TYPES.has(destination.type)) {
+        return json(res, 403, { error: `${destination.type} destinations can only be added by the admin` });
+      }
+      const invalid = validateDestination(destination, DEST_OPTS);
+      if (invalid) return json(res, 400, { error: invalid });
 
-      if (isAdmin) {
+      if (isAdmin && integrator_id !== undefined) {
+        const rec = typeof integrator_id === 'string' ? findIntegratorById(integrator_id) : null;
+        if (!rec) return json(res, 404, { error: 'unknown integrator id' });
+        rec.destinations[name] = destination;
+        saveIntegrators();
+      } else if (isAdmin) {
         NAMED_DESTINATIONS[name] = destination;
         fs.writeFileSync(DESTINATIONS_FILE, JSON.stringify(NAMED_DESTINATIONS, null, 2), { mode: 0o600 });
       } else {
-        INTEGRATORS[integrator.token].destinations[name] = destination;
+        integrator.destinations[name] = destination;
         saveIntegrators();
       }
       return json(res, 200, { ok: true, name });
@@ -1252,17 +2018,32 @@ function createApp(config = {}) {
     // ── POST /api/session/create ───────────────────────────────────────────────
     if (req.method === 'POST' && url.pathname === '/api/session/create') {
       const { isAdmin, integrator } = resolveAuth(req.headers['authorization']);
-      if (ADMIN_TOKEN && !isAdmin && !integrator) return json(res, 401, { error: 'unauthorized' });
-      const body = await readBody(req);
-      let payload;
-      try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
+      if (!isAdmin && !integrator) return json(res, 401, { error: 'unauthorized' });
+      const payload = await readJson(req);
+      if (!payload) return json(res, 400, { error: 'bad json' });
 
-      let { title, description, fields, destination, destinations_by_level, ttl_minutes = 30, notify, allow_save, uid, service } = payload;
-      if (!title || !Array.isArray(fields) || fields.length === 0) {
+      const { title, description, destination, destinations_by_level, ttl_minutes = 30, notify, uid, service } = payload;
+      if (typeof title !== 'string' || !title.trim() || title.length > 200) {
         return json(res, 400, { error: 'missing title or fields' });
       }
+      if (description != null && (typeof description !== 'string' || description.length > 2000)) {
+        return json(res, 400, { error: 'description must be a string (max 2000 chars)' });
+      }
+      const validated = validateFields(payload.fields);
+      if (validated.error) return json(res, 400, { error: validated.error });
+      const fields = validated.fields;
       if (!destination && !destinations_by_level) {
         return json(res, 400, { error: 'missing destination or destinations_by_level' });
+      }
+      if (typeof ttl_minutes !== 'number' || !Number.isFinite(ttl_minutes)) {
+        return json(res, 400, { error: 'ttl_minutes must be a number' });
+      }
+      if (notify != null && (typeof notify !== 'object' || Array.isArray(notify) ||
+          typeof notify.tg_bot_token !== 'string' || !['string', 'number'].includes(typeof notify.tg_chat_id))) {
+        return json(res, 400, { error: 'notify must be { tg_bot_token, tg_chat_id }' });
+      }
+      if (uid != null && (!['string', 'number'].includes(typeof uid) || String(uid).length > 128)) {
+        return json(res, 400, { error: 'invalid uid' });
       }
 
       // Resolve destinations_by_level if provided
@@ -1273,76 +2054,41 @@ function createApp(config = {}) {
         }
         resolvedByLevel = {};
         for (const [level, dest] of Object.entries(destinations_by_level)) {
-          const r = resolveDestination(dest, integrator);
-          if (r === null) {
-            return json(res, 400, { error: typeof dest === 'string'
-              ? `unknown named destination for level "${level}": ${dest}`
-              : `destination.type required for level "${level}"` });
-          }
-          if (!r?.type) return json(res, 400, { error: `destination.type required for level "${level}"` });
-          if (r.type === 'vault' && r.preflight_path_prefix) {
-            return json(res, 400, { error: 'openbao_preflight_requires_single_destination' });
-          }
-          resolvedByLevel[level] = r;
+          if (level !== 'default' && !FIELD_LEVELS.includes(level)) return json(res, 400, { error: `invalid level: ${level.slice(0, 32)}` });
+          const r = resolveDestination(dest, integrator, isAdmin, true);
+          const err = r.error || validateDestination(r.dest, DEST_OPTS);
+          if (err) return json(res, 400, { error: `${err} (level "${level}")` });
+          if (r.dest.type === 'vault' && r.dest.preflight_path_prefix) return json(res, 400, { error: 'openbao_preflight_requires_single_destination' });
+          resolvedByLevel[level] = r.dest;
+
         }
       }
 
       // Resolve single destination if provided
       const destinationName = typeof destination === 'string' ? destination : null;
+      let resolvedDest = null;
       if (destination) {
-        if (typeof destination !== 'string' && destination.type === 'vault' && destination.preflight_path_prefix) {
-          return json(res, 400, { error: 'openbao_preflight_requires_named_destination' });
-        }
-        const resolved = resolveDestination(destination, integrator);
-        if (resolved === null) {
-          return json(res, 400, { error: typeof destination === 'string'
-            ? `unknown named destination: ${destination}`
-            : 'destination.type is required' });
-        }
-        destination = resolved;
-        if (!destination?.type) {
-          return json(res, 400, { error: 'destination.type is required' });
-        }
-      }
+        if (typeof destination !== 'string' && destination.type === 'vault' && destination.preflight_path_prefix) return json(res, 400, { error: 'openbao_preflight_requires_named_destination' });
+        const r = resolveDestination(destination, integrator, isAdmin, true);
+        const err = r.error || validateDestination(r.dest, DEST_OPTS);
+        if (err) return json(res, 400, { error: err });
+        resolvedDest = r.dest;
 
-      // Validate fields
-      const VALID_TYPES = ['text', 'password', 'email', 'number', 'tel', 'textarea', 'url'];
-      const VALID_LEVELS = ['secret', 'pii', 'attribute', 'credential'];
-      for (const f of fields) {
-        if (!f.name || !f.label) return json(res, 400, { error: `field missing name or label: ${JSON.stringify(f)}` });
-        if (!/^[a-zA-Z0-9_]{1,64}$/.test(f.name)) return json(res, 400, { error: `invalid field name: ${f.name}` });
-        if (f.type && !VALID_TYPES.includes(f.type)) return json(res, 400, { error: `invalid field type: ${f.type}` });
-        if (f.level && !VALID_LEVELS.includes(f.level)) return json(res, 400, { error: `invalid field level: ${f.level}` });
       }
 
       // Preflight: test destination reachability before creating the session.
       // Default: on. Opt-out with test_destination: false in the request.
       // Only runs for http_post destinations (no external service to probe for others).
-      // Catches misconfigured URLs, wrong auth, and bad network paths before the user sees the form.
-      const openbaoPreflight = destination?.type === 'vault' && !!destination.preflight_path_prefix;
-      if (openbaoPreflight && payload.test_destination === false) {
-        return json(res, 400, { error: 'openbao_preflight_required' });
-      }
-      let preflightResult;
-      if (openbaoPreflight || (payload.test_destination !== false && destination?.type === 'http_post')) {
-        try {
-          preflightResult = await testDestination(destination, fields);
-        } catch (e) {
-          return json(res, 400, {
-            error: 'destination_unreachable',
-            detail: openbaoPreflight ? e.message : e.message.slice(0, 300),
-            hint: openbaoPreflight
-              ? 'Check the configured OpenBao writer, owner probe path and metadata/cleanup policy.'
-              : 'Check destination URL and Authorization header. Pass test_destination: false to skip this check.',
-          });
-        }
-      }
+      // The upstream response body is never returned — only the HTTP status.
+      const preflight = await preflightDestination(resolvedDest, payload, fields);
+      if (preflight?.error) return json(res, 400, preflight);
+
 
       const integrator_id = integrator?.id || 'admin';
 
       // Deterministic URL: integrators may pass uid + service for idempotent sessions
-      const useDeterministic = integrator && uid && service;
-      if (useDeterministic && !/^[a-zA-Z0-9_-]{1,64}$/.test(service)) {
+      const useDeterministic = integrator && uid != null && uid !== '' && service;
+      if (useDeterministic && (typeof service !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(service))) {
         return json(res, 400, { error: 'invalid service: must match [a-zA-Z0-9_-]{1,64}' });
       }
 
@@ -1367,29 +2113,30 @@ function createApp(config = {}) {
       const token = crypto.randomBytes(16).toString('hex');
       const expires = Date.now() + Math.min(Math.max(ttl_minutes, 1), 1440) * 60 * 1000;
 
-      const pendingDestination = destination ? { ...destination } : null;
+      const openbaoPreflight = !!preflight?.preflight;
+      const pendingDestination = resolvedDest ? { ...resolvedDest } : null;
       if (pendingDestination && openbaoPreflight) {
-        for (const key of ['token', 'role_id', 'secret_id', 'preflight_metadata_token']) {
-          delete pendingDestination[key];
-        }
+        for (const key of ['token', 'role_id', 'secret_id', 'preflight_metadata_token']) delete pendingDestination[key];
       }
-      const pending = { token, title, description, fields,
+      const pending = { token, title, description: description || '', fields,
         destination: pendingDestination,
-        ...(openbaoPreflight ? { preflight: { checked: !!preflightResult?.checked, at: new Date().toISOString() } } : {}),
+        ...(openbaoPreflight ? { preflight: preflight.preflight } : {}),
         ...(openbaoPreflight ? {
           destination_ref: destinationName,
-          destination_sha256: destinationFingerprint(destination),
+          destination_sha256: destinationFingerprint(resolvedDest),
         } : {}),
-        destinations_by_level: resolvedByLevel || null,
-        expires, notify,
+        destinations_by_level: resolvedByLevel,
+        expires,
+        notify: notify ? { tg_bot_token: notify.tg_bot_token, tg_chat_id: notify.tg_chat_id } : null,
+
         integrator_id,
         _audit_auth: integrator ? 'integrator' : isAdmin ? 'admin' : 'anonymous',
-        uid: uid || null,
-        allowSave: allow_save !== false,
+        requester: integrator ? String(integrator.name || integrator.id).slice(0, 100) : null,
+        uid: uid != null ? String(uid) : null,
         ...(useDeterministic ? { service_slug, user_hash, integrator_slug: integrator_id } : {}),
       };
-      fs.mkdirSync(CONNECT_PENDING_DIR, { recursive: true });
-      fs.writeFileSync(path.join(CONNECT_PENDING_DIR, `${token}.json`), JSON.stringify(pending), { mode: 0o600 });
+      fs.mkdirSync(CONNECT_PENDING_DIR, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(pendingPath(token), JSON.stringify(pending), { mode: 0o600 });
       console.info('[session-migration] created auth=%s destination=%s', pending._audit_auth,
         destinationName ? 'named' : 'inline');
 
@@ -1403,25 +2150,275 @@ function createApp(config = {}) {
       });
     }
 
+    // ── GET /.well-known/zerocreds-signing-key ─────────────────────────────────
+    // Public key that verifies form manifests and submission receipts.
+    if (req.method === 'GET' && url.pathname === '/.well-known/zerocreds-signing-key') {
+      return json(res, 200, { alg: 'Ed25519', key_id: SIGNING_KEY.keyId, public_key_pem: SIGNING_KEY.publicKeyPem });
+    }
+
+    // Wallet form API: a host-issued token pins owner/profile and the OpenBao
+    // writer. The agent supplies only the requested credential shape.
+    if (req.method === 'POST' && url.pathname === '/api/wallet/forms') {
+      const scope = await walletScope(req.headers.authorization, 'wallet.forms.create');
+      if (!scope) return json(res, 401, { error: 'unauthorized' });
+      const payload = await readJson(req);
+      if (!payload) return json(res, 400, { error: 'bad json' });
+      const { provider, kind = 'token', title, description, ttl_minutes = 30, idempotency_key } = payload;
+      if (typeof provider !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(provider)
+        || !Object.hasOwn(FORM_KINDS, kind) || (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 200))
+        || (description !== undefined && (typeof description !== 'string' || description.length > 2000))
+        || !Number.isInteger(ttl_minutes) || ttl_minutes < 1 || ttl_minutes > 1440
+        || (idempotency_key !== undefined && (typeof idempotency_key !== 'string' || !/^[a-zA-Z0-9_-]{16,128}$/.test(idempotency_key)))
+      ) return json(res, 400, { error: 'invalid wallet form' });
+      const validated = validateFields(payload.fields === undefined ? FORM_KINDS[kind] : payload.fields);
+      if (validated.error) return json(res, 400, { error: validated.error });
+      const requestFingerprint = sha256Hex(canonicalJson({ provider, kind,
+        title: title || `Connect ${provider}`, description: description || '',
+        fields: validated.fields, ttl_minutes }));
+      let allocation, destination;
+      try {
+        allocation = await walletCall('POST', '/internal/connections/allocate', {
+          owner_id: scope.owner_id, profile_id: scope.profile_id, provider,
+          idempotency_key: idempotency_key || crypto.randomBytes(24).toString('hex'),
+        });
+        if (allocation.state !== 'allocated') return json(res, 409, { error: 'connection_already_used' });
+        for (const file of fs.readdirSync(CONNECT_PENDING_DIR)) {
+          if (!file.endsWith('.json')) continue;
+          let previous;
+          try { previous = JSON.parse(fs.readFileSync(path.join(CONNECT_PENDING_DIR, file), 'utf8')); } catch { continue; }
+          if (previous.wallet?.connection_id !== allocation.connection_id) continue;
+          if (previous.wallet.owner_id !== scope.owner_id || previous.wallet.profile_id !== scope.profile_id
+            || previous.wallet.request_fingerprint !== requestFingerprint || previous.expires < Date.now()) {
+            return json(res, 409, { error: 'wallet_form_conflict' });
+          }
+          return json(res, 200, { form_id: previous.token, connection_id: allocation.connection_id,
+            url: `${BASE_URL}/f/${previous.token}`,
+            status_url: `${BASE_URL}/api/wallet/forms/${previous.token}/status`,
+            expires_at: new Date(previous.expires).toISOString(), state: 'pending' });
+        }
+        destination = walletDestination(scope, allocation.openbao_path);
+        const destErr = validateDestination(destination, DEST_OPTS);
+        if (destErr) return json(res, 503, { error: 'wallet destination unavailable' });
+      } catch (e) {
+        console.error('[wallet] allocation failed:', e.message);
+        return json(res, 503, { error: 'wallet unavailable' });
+      }
+      const preflight = await preflightDestination(destination, payload, validated.fields);
+      if (preflight?.error) return json(res, 503, { error: 'wallet destination unavailable' });
+      const formId = crypto.randomBytes(16).toString('hex');
+      const submitToken = 'zcs_' + crypto.randomBytes(24).toString('hex');
+      const expires = Date.now() + ttl_minutes * 60_000;
+      const pending = {
+        token: formId, title: title || `Connect ${provider}`, description: description || '',
+        fields: validated.fields, destination: Object.fromEntries(Object.entries(destination)
+          .filter(([key]) => !['token', 'role_id', 'secret_id', 'preflight_metadata_token'].includes(key))),
+        preflight: preflight.preflight, destinations_by_level: null, expires, notify: null,
+        integrator_id: `wallet_${scope.owner_id}`, requester: String(scope.requester || 'ServerlessAgence').slice(0, 100),
+        uid: null, form: { name: provider, kind, handle: `cred:${provider}`,
+          submit_token_hash: tokenHash(submitToken).toString('hex') },
+        wallet: { owner_id: scope.owner_id, profile_id: scope.profile_id,
+          connection_id: allocation.connection_id, openbao_path: allocation.openbao_path,
+          request_fingerprint: requestFingerprint,
+          destination: scope.destination,
+          destination_sha256: destinationFingerprint(NAMED_DESTINATIONS[scope.destination]) },
+      };
+      const manifest = signedManifest(formId, pending);
+      pending.form.manifest_id = manifest.manifest_id;
+      try {
+        await walletCall('POST', '/internal/forms', {
+          form_id: formId, connection_id: allocation.connection_id,
+          owner_id: scope.owner_id, profile_id: scope.profile_id,
+          manifest_id: manifest.manifest_id, expires_at: expires,
+        });
+        fs.writeFileSync(pendingPath(formId), JSON.stringify(pending), { mode: 0o600, flag: 'wx' });
+      } catch (e) {
+        console.error('[wallet] form registration failed:', e.message);
+        return json(res, 503, { error: 'wallet unavailable' });
+      }
+      return json(res, 200, { form_id: formId, connection_id: allocation.connection_id,
+        url: `${BASE_URL}/f/${formId}`, status_url: `${BASE_URL}/api/wallet/forms/${formId}/status`,
+        expires_at: new Date(expires).toISOString(), state: 'pending' });
+    }
+
+    const walletStatus = /^\/api\/wallet\/forms\/([a-f0-9]{32})\/status$/.exec(url.pathname);
+    if (walletStatus && req.method === 'GET') {
+      const scope = await walletScope(req.headers.authorization, 'wallet.forms.status');
+      if (!scope) return json(res, 401, { error: 'unauthorized' });
+      const formId = walletStatus[1];
+      let pending = readPending(formId);
+      if (!pending) {
+        try { pending = JSON.parse(fs.readFileSync(pendingPath(formId, 'claimed'), 'utf8')); } catch {}
+      }
+      let done;
+      try { done = JSON.parse(fs.readFileSync(pendingPath(formId, 'done'), 'utf8')); } catch {}
+      const wallet = pending?.wallet;
+      if (wallet && (wallet.owner_id !== scope.owner_id || wallet.profile_id !== scope.profile_id)) {
+        return json(res, 404, { error: 'form_unavailable' });
+      }
+      const connectionId = wallet?.connection_id || done?.connection_id;
+      if (!connectionId) return json(res, 404, { error: 'form_unavailable' });
+      try {
+        const connection = await walletCall('GET', `/internal/connections/${connectionId}`, null, scope);
+        return json(res, 200, { form_id: formId, connection_id: connectionId,
+          status: connection.state === 'revoked' ? 'revoked' : done ? 'done'
+            : pending.expires < Date.now() ? 'expired' : 'pending',
+          ...(done ? { kv_version: done.version, receipt_ref: done.receipt_ref } : {}) });
+      } catch { return json(res, 503, { error: 'wallet unavailable' }); }
+    }
+
+    const walletConnection = /^\/api\/wallet\/connections\/([a-zA-Z0-9_-]{1,100})(\/revoke)?$/.exec(url.pathname);
+    if (walletConnection && (req.method === 'GET' && !walletConnection[2]
+      || req.method === 'POST' && walletConnection[2])) {
+      const scope = await walletScope(req.headers.authorization,
+        req.method === 'POST' ? 'wallet.connections.revoke' : 'wallet.connections.status');
+      if (!scope) return json(res, 401, { error: 'unauthorized' });
+      try {
+        const connectionId = walletConnection[1];
+        if (req.method === 'POST') {
+          const result = await walletCall('POST', `/internal/connections/${connectionId}/revoke`, {
+            owner_id: scope.owner_id, profile_id: scope.profile_id,
+          });
+          return json(res, 200, { connection_id: result.connection_id, state: result.state });
+        }
+        const result = await walletCall('GET', `/internal/connections/${connectionId}`, null, scope);
+        return json(res, 200, { connection_id: result.connection_id, provider: result.provider,
+          state: result.state, kv_version: result.kv_version, updated_at: result.updated_at });
+      } catch (e) {
+        return json(res, e.status === 404 ? 404 : 503,
+          { error: e.status === 404 ? 'connection_unavailable' : 'wallet unavailable' });
+      }
+    }
+
+    // ── POST /api/forms — form spec ────────────────────────────────────────────
+    // One spec, two ways in: the human URL (/f/{form_id}) and the machine endpoint
+    // (/api/forms/{form_id}/submit). Same auth, validation and destination rules as sessions.
+    if (req.method === 'POST' && url.pathname === '/api/forms') {
+      const { isAdmin, integrator } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin && !integrator) return json(res, 401, { error: 'unauthorized' });
+      const payload = await readJson(req);
+      if (!payload) return json(res, 400, { error: 'bad json' });
+
+      const { name, kind = 'token', title, description, destination, ttl_minutes = 30 } = payload;
+      if (typeof name !== 'string' || !HANDLE_NAME_RE.test(name)) {
+        return json(res, 400, { error: 'name must match [a-z0-9][a-z0-9_.-]{0,63} (it becomes the handle cred:<name>)' });
+      }
+      if (typeof kind !== 'string' || !Object.hasOwn(FORM_KINDS, kind)) {
+        return json(res, 400, { error: `kind must be one of: ${Object.keys(FORM_KINDS).join(', ')}` });
+      }
+      if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 200)) {
+        return json(res, 400, { error: 'title must be a non-empty string (max 200 chars)' });
+      }
+      if (description != null && (typeof description !== 'string' || description.length > 2000)) {
+        return json(res, 400, { error: 'description must be a string (max 2000 chars)' });
+      }
+      const validated = validateFields(payload.fields === undefined ? FORM_KINDS[kind] : payload.fields);
+      if (validated.error) return json(res, 400, { error: validated.error });
+      if (destination === undefined || destination === null || destination === '') {
+        return json(res, 400, { error: 'missing destination' });
+      }
+      if (typeof ttl_minutes !== 'number' || !Number.isFinite(ttl_minutes)) {
+        return json(res, 400, { error: 'ttl_minutes must be a number' });
+      }
+      const r = resolveDestination(destination, integrator, isAdmin);
+      const destErr = r.error || validateDestination(r.dest, DEST_OPTS);
+      if (destErr) return json(res, 400, { error: destErr });
+      if (typeof destination !== 'string' && r.dest.type === 'vault' && r.dest.preflight_path_prefix) {
+        return json(res, 400, { error: 'openbao_preflight_requires_named_destination' });
+      }
+      const preflight = await preflightDestination(r.dest, payload, validated.fields);
+      if (preflight?.error) return json(res, 400, preflight);
+
+      const formId = crypto.randomBytes(16).toString('hex');
+      const submitToken = 'zcs_' + crypto.randomBytes(24).toString('hex');
+      const pending = {
+        token: formId,
+        title: title || `Save ${name}`,
+        description: description || '',
+        fields: validated.fields,
+        destination: preflight?.preflight ? Object.fromEntries(Object.entries(r.dest).filter(([k]) => !['token', 'role_id', 'secret_id', 'preflight_metadata_token'].includes(k))) : r.dest,
+        ...(preflight?.preflight ? {
+          preflight: preflight.preflight,
+          destination_ref: destination,
+          destination_sha256: destinationFingerprint(r.dest),
+        } : {}),
+        destinations_by_level: null,
+        expires: Date.now() + Math.min(Math.max(ttl_minutes, 1), 1440) * 60 * 1000,
+        notify: null,
+        integrator_id: integrator?.id || 'admin',
+        requester: integrator ? String(integrator.name || integrator.id).slice(0, 100) : null,
+        uid: null,
+        form: { name, kind, handle: `cred:${name}`, submit_token_hash: tokenHash(submitToken).toString('hex') },
+      };
+      const manifest = signedManifest(formId, pending);
+      pending.form.manifest_id = manifest.manifest_id;
+      fs.mkdirSync(CONNECT_PENDING_DIR, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(pendingPath(formId), JSON.stringify(pending), { mode: 0o600 });
+
+      return json(res, 200, {
+        form_id: formId,
+        handle: pending.form.handle,
+        url: `${BASE_URL}/f/${formId}`,
+        submit_url: `${BASE_URL}/api/forms/${formId}/submit`,
+        status_url: `${BASE_URL}/api/session/${formId}/status`,
+        submit_token: submitToken,
+        expires_at: new Date(pending.expires).toISOString(),
+        manifest,
+        api_example: formApiSnippets(formId, pending, BASE_URL),
+      });
+    }
+
+    // ── POST /api/forms/:id/submit — machine submit ────────────────────────────
+    // Auth: the owner's key (the integrator that created the form, or admin) or the
+    // form's one-time submit token. Returns the same signed receipt as the human form.
+    const formSubmitMatch = url.pathname.match(/^\/api\/forms\/([a-f0-9]{32})\/submit$/);
+    if (formSubmitMatch && req.method === 'POST') {
+      const formId = formSubmitMatch[1];
+      const pending = readPending(formId);
+      if (!pending?.form || !Array.isArray(pending.fields)) return json(res, 404, { error: 'invalid or expired form' });
+
+      const authHeader = req.headers['authorization'];
+      const bearer = typeof authHeader === 'string' && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+      const { isAdmin, integrator } = resolveAuth(authHeader);
+      const isOwner = isAdmin || (integrator !== null && integrator.id === pending.integrator_id);
+      const hasSubmitToken = SUBMIT_TOKEN_RE.test(bearer) &&
+        crypto.timingSafeEqual(tokenHash(bearer), Buffer.from(String(pending.form.submit_token_hash), 'hex'));
+      if (!isOwner && !hasSubmitToken) return json(res, 401, { error: 'owner key or submit token required' });
+
+      if (pending.expires < Date.now()) { deletePending(formId); return json(res, 404, { error: 'invalid or expired form' }); }
+      const payload = await readJson(req);
+      if (!payload) return json(res, 400, { error: 'bad json' });
+      if (payload.manifest_id !== undefined && payload.manifest_id !== pending.form.manifest_id) {
+        return json(res, 409, { error: 'manifest_id does not match this form' });
+      }
+      const result = await submitPending(formId, pending, payload.fields, 'api');
+      return json(res, result.status, result.body);
+    }
+
     // ── GET /api/session/:token/status ─────────────────────────────────────────
+    // Integrators only see their own sessions; anything else looks like an unknown token.
     const statusMatch = url.pathname.match(/^\/api\/session\/([a-f0-9]{32})\/status$/);
     if (statusMatch && req.method === 'GET') {
       const { isAdmin, integrator } = resolveAuth(req.headers['authorization']);
-      if (ADMIN_TOKEN && !isAdmin && !integrator) return json(res, 401, { error: 'unauthorized' });
+      if (!isAdmin && !integrator) return json(res, 401, { error: 'unauthorized' });
       const token = statusMatch[1];
-      const pendingFile = path.join(CONNECT_PENDING_DIR, `${token}.json`);
-      const doneFile = path.join(CONNECT_PENDING_DIR, `${token}.done`);
+      const owns = (ownerId) => isAdmin || (ownerId !== undefined && ownerId === integrator.id);
 
+      const doneFile = pendingPath(token, 'done');
       if (fs.existsSync(doneFile)) {
         let doneData = {};
         try { doneData = JSON.parse(fs.readFileSync(doneFile, 'utf8')); } catch {}
-        return json(res, 200, { status: 'done', ...doneData });
+        const { _integrator_id, ...result } = doneData;
+        // Old .done markers predate owner recording. Their 128-bit URL token was
+        // the status capability; keep that contract for pre-existing keys only.
+        const legacyDone = _integrator_id === undefined && isLegacyIntegrator(integrator);
+        if (!owns(_integrator_id) && !legacyDone) return json(res, 200, { status: 'expired' });
+        return json(res, 200, { status: 'done', ...result });
       }
-      if (!fs.existsSync(pendingFile)) return json(res, 200, { status: 'expired' });
-      try {
-        const p = JSON.parse(fs.readFileSync(pendingFile, 'utf8'));
-        if (p.expires < Date.now()) return json(res, 200, { status: 'expired' });
-      } catch {}
+      let p = readPending(token);
+      if (!p) {
+        try { p = JSON.parse(fs.readFileSync(pendingPath(token, 'claimed'), 'utf8')); } catch {}
+      }
+      if (!p || !owns(p.integrator_id) || p.expires < Date.now()) return json(res, 200, { status: 'expired' });
       return json(res, 200, { status: 'pending' });
     }
 
@@ -1432,15 +2429,15 @@ function createApp(config = {}) {
       // Build destinations map: only expose type (no credentials)
       const adminDests = {};
       for (const [name, dest] of Object.entries(NAMED_DESTINATIONS)) {
-        adminDests[name] = { type: dest.type };
+        adminDests[name] = { type: dest?.type };
       }
       if (isAdmin) {
         return json(res, 200, { destinations: adminDests });
       }
       // Integrator: merge admin destinations with integrator's own (integrator overrides)
       const merged = { ...adminDests };
-      for (const [name, dest] of Object.entries(integrator.destinations || {})) {
-        merged[name] = { type: dest.type };
+      for (const [name, dest] of Object.entries(integrator.destinations)) {
+        merged[name] = { type: dest?.type };
       }
       return json(res, 200, { destinations: merged });
     }
@@ -1452,129 +2449,27 @@ function createApp(config = {}) {
 
       if (req.method === 'GET') {
         const pending = readPending(token);
-        if (!pending || !pending.fields) {
-          res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
-          return;
-        }
-        if (pending.expires < Date.now()) {
-          res.writeHead(410, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
-          return;
-        }
-        const { uid } = getOrCreateUid(req);
-        const savedValues = readSaved(uid);
-        res.writeHead(200, {
-          'Content-Type': 'text/html; charset=utf-8',
-          'Set-Cookie': cookieSetHeader(uid, req),
-        }).end(dynamicFormHtml(token, pending, savedValues, req.headers.host || ''));
-        return;
+        if (!pending || !pending.fields) return sendHtml(res, 404, expiredHtml());
+        if (pending.expires < Date.now()) return sendHtml(res, 410, expiredHtml());
+        return renderDynamicForm(res, req, token, pending);
       }
 
       if (req.method === 'POST') {
-        const body = await readBody(req);
-        let payload;
-        try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
-        const { t, fields: submitted, save } = payload;
-        if (!t || !submitted || typeof submitted !== 'object') return json(res, 400, { error: 'missing t or fields' });
+        const payload = await readJson(req);
+        if (!payload) return json(res, 400, { error: 'bad json' });
+        const { t, fields: submitted } = payload;
+        if (typeof t !== 'string' || !submitted || typeof submitted !== 'object' || Array.isArray(submitted)) {
+          return json(res, 400, { error: 'missing t or fields' });
+        }
         if (t !== token) return json(res, 400, { error: 'token mismatch' });
 
         const pending = readPending(token);
-        if (!pending || !pending.fields) return json(res, 403, { error: 'invalid or expired token' });
+        if (!pending || !Array.isArray(pending.fields)) return json(res, 403, { error: 'invalid or expired token' });
         if (pending.expires < Date.now()) { deletePending(token); return json(res, 403, { error: 'link expired' }); }
 
-        // Validate all required fields are present
-        for (const f of pending.fields) {
-          if (f.required !== false && !submitted[f.name]) {
-            return json(res, 400, { error: `missing required field: ${f.name}` });
-          }
-        }
+        const r = await submitPending(token, pending, submitted, 'form');
+        return json(res, r.status, r.body);
 
-        // Only keep declared field names — strip anything extra
-        const clean = {};
-        for (const f of pending.fields) {
-          if (submitted[f.name] !== undefined) clean[f.name] = String(submitted[f.name]);
-        }
-
-        // Validate url fields
-        for (const f of pending.fields) {
-          if (f.type === 'url' && clean[f.name]) {
-            try {
-              const u = new URL(clean[f.name]);
-              if (!['http:', 'https:'].includes(u.protocol)) throw new Error();
-            } catch { return json(res, 400, { error: `invalid URL for field: ${f.name}` }); }
-          }
-        }
-
-        let saveResult;
-        try {
-          if (pending.destinations_by_level) {
-            // Group fields by level, route each group to its destination
-            const groups = {};
-            for (const f of pending.fields) {
-              const level = f.level || 'default';
-              if (!groups[level]) groups[level] = {};
-              if (clean[f.name] !== undefined) groups[level][f.name] = clean[f.name];
-            }
-            const secretIds = {};
-            for (const [level, groupFields] of Object.entries(groups)) {
-              if (Object.keys(groupFields).length === 0) continue;
-              const dest = pending.destinations_by_level[level]
-                || pending.destinations_by_level['default']
-                || pending.destination;
-              if (!dest) {
-                console.warn(`[dynamic] no destination for level "${level}", skipping:`, Object.keys(groupFields));
-                continue;
-              }
-              const r = await saveToDestination(dest, groupFields, { tokensDir: AGENT_TOKENS_DIR, context: { uid: pending.uid, service: pending.service_slug } });
-              if (r?.secret_id) secretIds[level] = r.secret_id;
-            }
-            saveResult = { secret_ids: secretIds };
-          } else {
-            let destinationForWrite = pending.destination;
-            if (pending.destination_ref) {
-              destinationForWrite = resolvePendingNamedDestination(pending.destination_ref, pending.integrator_id);
-              if (!destinationForWrite || destinationFingerprint(destinationForWrite) !== pending.destination_sha256) {
-                return json(res, 409, { error: 'destination_changed' });
-              }
-            }
-            saveResult = await saveToDestination(destinationForWrite, clean, { tokensDir: AGENT_TOKENS_DIR, context: { uid: pending.uid, service: pending.service_slug } });
-            if (pending.destination_ref && (!Number.isInteger(saveResult?.version) || saveResult.version < 1)) {
-              throw new Error('openbao_write_receipt_missing');
-            }
-          }
-        } catch (e) {
-          console.error('[dynamic] save failed:', e.message);
-          return json(res, 500, { error: 'failed to save credentials', detail: e.message.slice(0, 200) });
-        }
-
-        deletePending(token);
-        // .done file stores destination references — never the credentials themselves
-        try {
-          fs.writeFileSync(
-            path.join(CONNECT_PENDING_DIR, `${token}.done`),
-            JSON.stringify(saveResult || {}),
-            { mode: 0o600 },
-          );
-        } catch {}
-        console.info('[session-migration] completed auth=%s',
-          ['anonymous', 'admin', 'integrator'].includes(pending._audit_auth) ? pending._audit_auth : 'unknown');
-
-        const { uid, hadCookie } = getOrCreateUid(req);
-        const primarySecretId = saveResult?.secret_id
-          || (saveResult?.secret_ids ? Object.values(saveResult.secret_ids)[0] : undefined);
-        if (save && pending.allowSave && primarySecretId) {
-          writeSavedRef(uid, pending, primarySecretId);
-        } else if (save && pending.allowSave) {
-          writeSaved(uid, clean, pending.fields);
-        }
-
-        const respHeaders = (save || hadCookie) ? { 'Set-Cookie': cookieSetHeader(uid, req) } : {};
-        json(res, 200, { ok: true }, respHeaders);
-
-        if (pending.notify?.tg_bot_token) {
-          tgNotify(pending.notify.tg_bot_token, pending.notify.tg_chat_id,
-            `✅ ${pending.title}: credentials received and saved.`);
-        }
-        return;
       }
 
       res.writeHead(405).end(); return;
@@ -1588,40 +2483,47 @@ function createApp(config = {}) {
       const gen = url.searchParams.get('gen');
 
       let pending;
-      if (gen && /^[a-f0-9]{32}$/.test(gen)) {
+      if (gen && TOKEN_RE.test(gen)) {
         pending = readPending(gen);
         if (!pending || pending.integrator_slug !== slug || pending.service_slug !== svc || pending.user_hash !== hash) {
-          res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
-          return;
+          return sendHtml(res, 404, expiredHtml());
         }
       } else {
         pending = findActiveSession(slug, svc, hash);
         if (pending) {
-          res.writeHead(302, { Location: `${BASE_URL}/${slug}/${svc}/${hash}?gen=${pending.token}` }).end();
+          res.writeHead(302, { Location: `${BASE_URL}/${slug}/${svc}/${hash}?gen=${pending.token}`, 'Cache-Control': 'no-store' }).end();
           return;
         }
       }
 
-      if (!pending || !pending.fields) {
-        res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
-        return;
-      }
-      if (pending.expires < Date.now()) {
-        res.writeHead(410, { 'Content-Type': 'text/html; charset=utf-8' }).end(expiredHtml());
-        return;
-      }
+      if (!pending || !pending.fields) return sendHtml(res, 404, expiredHtml());
+      if (pending.expires < Date.now()) return sendHtml(res, 410, expiredHtml());
+      if (!TOKEN_RE.test(String(pending.token))) return sendHtml(res, 404, expiredHtml());
 
-      const { uid: cookieUid } = getOrCreateUid(req);
-      const savedValues = readSaved(cookieUid);
-      res.writeHead(200, {
-        'Content-Type': 'text/html; charset=utf-8',
-        'Set-Cookie': cookieSetHeader(cookieUid, req),
-      }).end(dynamicFormHtml(pending.token, pending, savedValues, req.headers.host || ''));
-      return;
+      return renderDynamicForm(res, req, pending.token, pending);
     }
 
     json(res, 404, { error: 'not found' });
+  }
+
+  // Any exception inside a request becomes a 500 for that request — never a process crash.
+  const server = http.createServer((req, res) => {
+    handle(req, res).catch(err => {
+      if (err instanceof HttpError) {
+        if (!res.headersSent) json(res, err.status, { error: err.message }, { Connection: 'close' });
+        return;
+      }
+      console.error('[server] request failed:', err?.stack || err);
+      if (!res.headersSent) json(res, 500, { error: 'internal error' });
+      else res.destroy();
+    });
   });
+
+  sweepPending();
+  const sweepTimer = setInterval(() => sweepPending(), SWEEP_INTERVAL_MS);
+  sweepTimer.unref();
+  server.on('close', () => clearInterval(sweepTimer));
+  server.sweepPending = sweepPending;
 
   return server;
 }
@@ -1629,8 +2531,17 @@ function createApp(config = {}) {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 if (require.main === module) {
+  process.on('unhandledRejection', (reason) => {
+    console.error('[server] unhandled rejection:', reason?.stack || reason);
+  });
   const PORT = process.env.PORT || 3456;
-  const server = createApp();
+  let server;
+  try {
+    server = createApp();
+  } catch (e) {
+    console.error(`[server] ${e.message}`);
+    process.exit(1);
+  }
   server.listen(PORT, () => {
     const addr = server.address();
     console.log(`zerocreds-server v${VERSION} (${COMMIT}) listening on :${addr.port}`);

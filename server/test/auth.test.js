@@ -1,30 +1,47 @@
 'use strict';
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
 const { startServer, request } = require('./helpers');
+const { createApp } = require('../src/server');
 
 let ctx;
 before(async () => { ctx = await startServer(); });
 after(async () => { await ctx.stop(); });
 
 const adminAuth = () => ({ Authorization: `Bearer ${ctx.adminToken}` });
+const bearer = (t) => ({ Authorization: `Bearer ${t}` });
 const localDest = { type: 'local_file', uid: '99005', filename: 'auth-test' };
+const sessionBody = { title: 'T', fields: [{ name: 'tok', label: 'L' }], destination: localDest };
 
-// Use unique fake IPs per test group to avoid polluting each other's rate-limit counters
+// The proxy-set X-Real-IP is trusted from loopback (the test client), so each test
+// group gets its own address and rate-limit bucket.
 let ipCounter = 1;
-const freshIp = () => ({ 'X-Forwarded-For': `10.0.${Math.floor(ipCounter / 255)}.${ipCounter++ % 255}` });
+const freshIp = () => ({ 'X-Real-IP': `10.0.${Math.floor(ipCounter / 255)}.${ipCounter++ % 255}` });
 
-test('POST /api/register — valid email + category → 200 { token, base_url }', async () => {
-  const r = await request(ctx.port, 'POST', '/api/register',
-    { email: 'test@example.com', category: 'ai_agent' }, freshIp());
+async function register(email = 'test@example.com') {
+  const r = await request(ctx.port, 'POST', '/api/register', { email, category: 'ai_agent' }, freshIp());
   assert.equal(r.status, 200);
-  assert.ok(r.body.token, 'should return token');
-  assert.ok(r.body.base_url, 'should return base_url');
+  return r.body;
+}
+
+test('POST /api/register — valid email + category → 200, token pending approval', async () => {
+  const body = await register();
+  assert.ok(body.token, 'should return token');
+  assert.ok(body.base_url, 'should return base_url');
+  assert.equal(body.status, 'pending_approval');
 });
 
 test('POST /api/register — without email → 400', async () => {
   const r = await request(ctx.port, 'POST', '/api/register',
     { category: 'ai_agent' }, freshIp());
+  assert.equal(r.status, 400);
+});
+
+test('POST /api/register — non-string email → 400 (no crash)', async () => {
+  const r = await request(ctx.port, 'POST', '/api/register',
+    { email: ['a@b'], category: 'ai_agent' }, freshIp());
   assert.equal(r.status, 400);
 });
 
@@ -34,8 +51,8 @@ test('POST /api/register — invalid category → 400', async () => {
   assert.equal(r.status, 400);
 });
 
-test('rate limit — 4th registration from same IP → 429', async () => {
-  const ip = { 'X-Forwarded-For': '192.0.2.1' };
+test('rate limit — 4th registration from same proxy-reported IP → 429', async () => {
+  const ip = { 'X-Real-IP': '192.0.2.1' };
   for (let i = 0; i < 3; i++) {
     const r = await request(ctx.port, 'POST', '/api/register',
       { email: `user${i}@example.com`, category: 'personal' }, ip);
@@ -46,53 +63,255 @@ test('rate limit — 4th registration from same IP → 429', async () => {
   assert.equal(r.status, 429);
 });
 
-test('integrator token — can create a session', async () => {
-  // Register a new integrator
-  const regR = await request(ctx.port, 'POST', '/api/register',
-    { email: 'int@example.com', category: 'saas' }, freshIp());
-  assert.equal(regR.status, 200);
-  const intToken = regR.body.token;
-
-  const r = await request(ctx.port, 'POST', '/api/session/create',
-    { title: 'T', fields: [{ name: 'tok', label: 'L' }], destination: localDest },
-    { Authorization: `Bearer ${intToken}` });
-  assert.equal(r.status, 200);
+test('rate limit — rotating X-Forwarded-For does not bypass the limit', async () => {
+  const srv = await startServer();
+  try {
+    const statuses = [];
+    for (let i = 0; i < 5; i++) {
+      const r = await request(srv.port, 'POST', '/api/register',
+        { email: `xff${i}@example.com`, category: 'personal' }, { 'X-Forwarded-For': `203.0.113.${i}` });
+      statuses.push(r.status);
+    }
+    assert.deepEqual(statuses, [200, 200, 200, 429, 429]);
+  } finally {
+    await srv.stop();
+  }
 });
 
-test('POST /admin/integrators/create — admin → 200 { token, id, name }', async () => {
+test('self-registered integrator cannot create sessions until approved', async () => {
+  const { token, id } = await register('pending@example.com');
+  const r1 = await request(ctx.port, 'POST', '/api/session/create', sessionBody, bearer(token));
+  assert.equal(r1.status, 401);
+
+  const approve = await request(ctx.port, 'POST', '/admin/integrators/approve', { id }, adminAuth());
+  assert.equal(approve.status, 200);
+  assert.equal(approve.body.status, 'active');
+
+  const r2 = await request(ctx.port, 'POST', '/api/session/create',
+    { ...sessionBody, destination: 'shared' }, bearer(token));
+  // Authenticated now: fails only on the (unknown) destination, not on auth.
+  assert.equal(r2.status, 400);
+  assert.match(r2.body.error, /unknown named destination/);
+});
+
+test('approve endpoint requires the admin token', async () => {
+  const { token, id } = await register('selfapprove@example.com');
+  const r = await request(ctx.port, 'POST', '/admin/integrators/approve', { id }, bearer(token));
+  assert.equal(r.status, 401);
+});
+
+test('legacy integrator keys retain access while new registrations require approval', async () => {
+  const integrators = {
+    tok_legacy_selfreg: { id: 'u_legacy', name: 'u_legacy', email: 'old@example.com', category: 'other', destinations: {} },
+    tok_legacy_admin: { id: 'legacy-admin-made', name: 'Legacy', destinations: {} },
+  };
+  const srv = await startServer({ integrators });
+  try {
+    const selfReg = await request(srv.port, 'POST', '/api/session/create',
+      { ...sessionBody, destination: 'x' }, bearer('tok_legacy_selfreg'));
+    assert.equal(selfReg.status, 400, 'legacy self-registered key remains authorized');
+    assert.match(selfReg.body.error, /unknown named destination/);
+    const adminMade = await request(srv.port, 'POST', '/api/session/create',
+      { ...sessionBody, destination: 'x' }, bearer('tok_legacy_admin'));
+    assert.equal(adminMade.status, 400, 'admin-created legacy integrator stays active');
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('legacy session destination behavior stays available only on legacy endpoints', async () => {
+  const legacy = 'tok_legacy_inline';
+  const modern = 'tok_modern_active';
+  const srv = await startServer({ strict: true, integrators: {
+    [legacy]: { id: 'legacy-inline', name: 'Legacy', email: 'old@example.com', destinations: {} },
+    [modern]: { id: 'modern-inline', name: 'Modern', status: 'active', destinations: {} },
+  } });
+  try {
+    const oldSession = await request(srv.port, 'POST', '/api/session/create', sessionBody, bearer(legacy));
+    assert.equal(oldSession.status, 200, JSON.stringify(oldSession.body));
+    const oldLevels = await request(srv.port, 'POST', '/api/session/create',
+      { title: 'T', fields: sessionBody.fields, destinations_by_level: { default: localDest } }, bearer(legacy));
+    assert.equal(oldLevels.status, 200, JSON.stringify(oldLevels.body));
+    const modernSession = await request(srv.port, 'POST', '/api/session/create', sessionBody, bearer(modern));
+    assert.equal(modernSession.status, 400);
+    assert.match(modernSession.body.error, /inline destinations are disabled/);
+
+    const oldNamed = await request(srv.port, 'POST', '/api/destinations',
+      { name: 'old-file', destination: localDest }, bearer(legacy));
+    assert.equal(oldNamed.status, 200, JSON.stringify(oldNamed.body));
+    const modernNamed = await request(srv.port, 'POST', '/api/destinations',
+      { name: 'new-file', destination: localDest }, bearer(modern));
+    assert.equal(modernNamed.status, 403);
+
+    const newForm = await request(srv.port, 'POST', '/api/forms',
+      { name: 'legacy-form', kind: 'token', destination: localDest }, bearer(legacy));
+    assert.equal(newForm.status, 400, 'new form API still requires a named destination');
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('legacy keys can read historical ownerless done markers by session token', async () => {
+  const legacy = 'tok_legacy_done';
+  const modern = 'tok_modern_done';
+  const srv = await startServer({ integrators: {
+    [legacy]: { id: 'legacy-done', name: 'Legacy', destinations: {} },
+    [modern]: { id: 'modern-done', name: 'Modern', status: 'active', destinations: {} },
+  } });
+  try {
+    const historical = 'a'.repeat(32);
+    fs.writeFileSync(path.join(srv.pendingDir, `${historical}.done`),
+      JSON.stringify({ secret_id: 'old-result' }), { mode: 0o600 });
+    const legacyStatus = await request(srv.port, 'GET', `/api/session/${historical}/status`,
+      undefined, bearer(legacy));
+    assert.deepEqual(legacyStatus.body, { status: 'done', secret_id: 'old-result' });
+    const modernStatus = await request(srv.port, 'GET', `/api/session/${historical}/status`,
+      undefined, bearer(modern));
+    assert.deepEqual(modernStatus.body, { status: 'expired' });
+    const anonymousStatus = await request(srv.port, 'GET', `/api/session/${historical}/status`);
+    assert.equal(anonymousStatus.status, 401);
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('Object.prototype property names are never accepted as tokens', async () => {
+  for (const t of ['toString', 'constructor', '__proto__', 'hasOwnProperty', 'valueOf']) {
+    const create = await request(ctx.port, 'POST', '/api/session/create', sessionBody, bearer(t));
+    assert.equal(create.status, 401, `session create with "${t}"`);
+    const dest = await request(ctx.port, 'POST', '/api/destinations',
+      { name: 'x', destination: localDest }, bearer(t));
+    assert.equal(dest.status, 401, `destinations with "${t}"`);
+    const list = await request(ctx.port, 'GET', '/api/destinations', undefined, bearer(t));
+    assert.equal(list.status, 401, `list destinations with "${t}"`);
+    const status = await request(ctx.port, 'GET', `/api/session/${'c'.repeat(32)}/status`, undefined, bearer(t));
+    assert.equal(status.status, 401, `status with "${t}"`);
+  }
+  const health = await request(ctx.port, 'GET', '/health');
+  assert.equal(health.status, 200, 'server still up');
+});
+
+test('createApp refuses to start without an admin token', () => {
+  const saved = process.env.ZEROCREDS_ADMIN_TOKEN;
+  delete process.env.ZEROCREDS_ADMIN_TOKEN;
+  try {
+    const missing = path.join(ctx.tmpDir, 'missing-admin-token');
+    assert.throws(() => createApp({ adminTokenFile: missing, pendingDir: path.join(ctx.tmpDir, 'p2'), tokensDir: path.join(ctx.tmpDir, 't2') }),
+      /ZEROCREDS_ADMIN_TOKEN or a private admin token file is required/);
+    assert.throws(() => createApp({ adminToken: '', adminTokenFile: missing }), /ZEROCREDS_ADMIN_TOKEN or a private admin token file is required/);
+  } finally {
+    if (saved !== undefined) process.env.ZEROCREDS_ADMIN_TOKEN = saved;
+  }
+});
+
+test('private admin token file authenticates; unsafe files are rejected', async () => {
+  const file = path.join(ctx.tmpDir, 'admin-token');
+  const token = 'a'.repeat(64);
+  fs.writeFileSync(file, `${token}\n`, { mode: 0o600 });
+  const srv = await startServer({ strict: true, app: { adminToken: '', adminTokenFile: file } });
+  try {
+    const accepted = await request(srv.port, 'POST', '/api/session/create', {}, bearer(token));
+    assert.equal(accepted.status, 400);
+    const denied = await request(srv.port, 'POST', '/api/session/create', {});
+    assert.equal(denied.status, 401);
+  } finally {
+    await srv.stop();
+  }
+  fs.chmodSync(file, 0o644);
+  assert.throws(() => createApp({ adminToken: '', adminTokenFile: file }), /private regular file/);
+  fs.chmodSync(file, 0o600);
+  const link = path.join(ctx.tmpDir, 'admin-token-link');
+  fs.symlinkSync(file, link);
+  assert.throws(() => createApp({ adminToken: '', adminTokenFile: link }));
+});
+
+test('no Authorization → 401 on session create', async () => {
+  const r = await request(ctx.port, 'POST', '/api/session/create', sessionBody);
+  assert.equal(r.status, 401);
+});
+
+test('POST /admin/integrators/create — admin → 200 { token, id, name }, active immediately', async () => {
   const r = await request(ctx.port, 'POST', '/admin/integrators/create',
     { id: 'test-int', name: 'Test Integrator' }, adminAuth());
   assert.equal(r.status, 200);
   assert.ok(r.body.token);
   assert.equal(r.body.id, 'test-int');
   assert.equal(r.body.name, 'Test Integrator');
+  const dup = await request(ctx.port, 'POST', '/admin/integrators/create',
+    { id: 'test-int', name: 'Dup' }, adminAuth());
+  assert.equal(dup.status, 409);
 });
 
 test('admin endpoint with integrator token → 401', async () => {
-  const regR = await request(ctx.port, 'POST', '/api/register',
-    { email: 'nonadmin@example.com', category: 'internal' }, freshIp());
-  const intToken = regR.body.token;
-
+  const createR = await request(ctx.port, 'POST', '/admin/integrators/create',
+    { id: 'nonadmin', name: 'x' }, adminAuth());
   const r = await request(ctx.port, 'POST', '/admin/integrators/create',
-    { id: 'x', name: 'x' }, { Authorization: `Bearer ${intToken}` });
+    { id: 'x', name: 'x' }, bearer(createR.body.token));
   assert.equal(r.status, 401);
 });
 
-test('integrator uses their own named destinations', async () => {
-  // Create integrator via admin
+test('admin assigns a destination to an integrator; integrator local_file writes are scoped to it', async () => {
   const createR = await request(ctx.port, 'POST', '/admin/integrators/create',
     { id: 'scoped-int', name: 'Scoped' }, adminAuth());
   const intToken = createR.body.token;
 
-  // Register a named destination for this integrator
   const destR = await request(ctx.port, 'POST', '/api/destinations',
-    { name: 'my-store', destination: localDest },
-    { Authorization: `Bearer ${intToken}` });
+    { name: 'my-store', destination: { type: 'local_file', uid: '99005', filename: 'scoped' }, integrator_id: 'scoped-int' },
+    adminAuth());
   assert.equal(destR.status, 200);
 
-  // Use the named destination in a session — should route correctly
   const sessionR = await request(ctx.port, 'POST', '/api/session/create',
-    { title: 'T', fields: [{ name: 'tok', label: 'L' }], destination: 'my-store' },
-    { Authorization: `Bearer ${intToken}` });
+    { title: 'T', fields: [{ name: 'tok', label: 'L' }], destination: 'my-store' }, bearer(intToken));
   assert.equal(sessionR.status, 200);
+  const token = sessionR.body.token;
+  const submit = await request(ctx.port, 'POST', `/f/${token}`, { t: token, fields: { tok: 'v' } });
+  assert.equal(submit.status, 200);
+
+  assert.ok(fs.existsSync(path.join(ctx.tokensDir, '_integrators', 'scoped-int', '99005', 'scoped')),
+    'written under the integrator subtree');
+  assert.ok(!fs.existsSync(path.join(ctx.tokensDir, '99005', 'scoped')), 'not in the shared uid directory');
+});
+
+test('integrator cannot add server-local destinations itself, nor use inline local_file', async () => {
+  const createR = await request(ctx.port, 'POST', '/admin/integrators/create',
+    { id: 'no-local', name: 'NoLocal' }, adminAuth());
+  const intToken = createR.body.token;
+
+  const destR = await request(ctx.port, 'POST', '/api/destinations',
+    { name: 'mine', destination: localDest }, bearer(intToken));
+  assert.equal(destR.status, 403);
+
+  const inline = await request(ctx.port, 'POST', '/api/session/create', sessionBody, bearer(intToken));
+  assert.equal(inline.status, 400);
+  assert.match(inline.body.error, /only available to the admin/);
+});
+
+test('reserved destination names are rejected', async () => {
+  const r = await request(ctx.port, 'POST', '/api/destinations',
+    { name: '__proto__', destination: localDest }, adminAuth());
+  assert.equal(r.status, 400);
+});
+
+test('status — integrator cannot read another integrator\'s session', async () => {
+  const a = await request(ctx.port, 'POST', '/admin/integrators/create', { id: 'owner-a', name: 'A' }, adminAuth());
+  const b = await request(ctx.port, 'POST', '/admin/integrators/create', { id: 'owner-b', name: 'B' }, adminAuth());
+  await request(ctx.port, 'POST', '/api/destinations',
+    { name: 'a-store', destination: { type: 'local_file', uid: '1', filename: 'a' }, integrator_id: 'owner-a' }, adminAuth());
+  const s = await request(ctx.port, 'POST', '/api/session/create',
+    { title: 'T', fields: [{ name: 'tok', label: 'L' }], destination: 'a-store' }, bearer(a.body.token));
+  assert.equal(s.status, 200);
+  const token = s.body.token;
+
+  const own = await request(ctx.port, 'GET', `/api/session/${token}/status`, undefined, bearer(a.body.token));
+  assert.equal(own.body.status, 'pending');
+  const other = await request(ctx.port, 'GET', `/api/session/${token}/status`, undefined, bearer(b.body.token));
+  assert.equal(other.body.status, 'expired', 'looks like an unknown token');
+
+  await request(ctx.port, 'POST', `/f/${token}`, { t: token, fields: { tok: 'v' } });
+  const ownDone = await request(ctx.port, 'GET', `/api/session/${token}/status`, undefined, bearer(a.body.token));
+  assert.equal(ownDone.body.status, 'done');
+  assert.equal(ownDone.body._integrator_id, undefined, 'internal owner field is not exposed');
+  const otherDone = await request(ctx.port, 'GET', `/api/session/${token}/status`, undefined, bearer(b.body.token));
+  assert.equal(otherDone.body.status, 'expired');
+  assert.equal(otherDone.body.secret_id, undefined);
 });

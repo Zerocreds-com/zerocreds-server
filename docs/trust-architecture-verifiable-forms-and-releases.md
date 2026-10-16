@@ -63,9 +63,11 @@ At `POST /api/session/create`, the server builds a **manifest** and freezes it:
 
 ### Destination rules that make the manifest meaningful
 
-- **Production: no inline destinations.** Only named destinations registered by an
-  identified integrator. Registration is itself a transparency-log entry, so the form
-  can say "registered 12 days ago".
+- **New production forms: no inline destinations.** Only named destinations registered
+  by an identified integrator. Existing status-less integrator keys retain inline
+  destinations only on legacy session endpoints until they are migrated and rotated.
+  Registration is intended to become a transparency-log entry, so the form can say
+  "registered 12 days ago".
 - `http_post` only to an allowlisted host per integrator. No private/metadata IPs
   (SSRF), and https only.
 - The manifest shows `access` (write-only claim) **and** how to check it (the policy

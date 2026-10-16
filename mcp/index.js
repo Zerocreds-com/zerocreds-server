@@ -3,9 +3,11 @@
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { z } = require('zod');
+const { createWalletProvider, bindingForOperation, API_OPERATIONS } = require('./provider');
 
 const BASE_URL = (process.env.ZEROCREDS_URL || 'https://zerocreds.ru').replace(/\/$/, '');
 const ADMIN_TOKEN = process.env.ZEROCREDS_ADMIN_TOKEN || '';
+const WALLET_API_TOKEN = process.env.ZEROCREDS_WALLET_API_TOKEN || '';
 
 async function apiCall(method, path, body) {
   const res = await fetch(`${BASE_URL}${path}`, {
@@ -23,6 +25,12 @@ async function apiCall(method, path, body) {
     throw new Error(`HTTP ${res.status}: ${text}`);
   }
 }
+
+const walletProvider = createWalletProvider({ baseUrl: BASE_URL });
+const walletHandlers = new Map(walletProvider.tools.map(tool => [tool.name, tool.handler]));
+const legacyWalletContext = (toolName) => ({ bindings: {
+  [bindingForOperation(API_OPERATIONS[toolName])]: WALLET_API_TOKEN,
+} });
 
 const server = new McpServer({
   name: 'zerocreds',
@@ -44,12 +52,12 @@ server.tool(
       level: z.enum(['secret', 'pii', 'attribute', 'credential']).optional().describe('Sensitivity badge shown on the form. "secret" = passwords/tokens (never logged, badge: SECRET); "pii" = personal data like username/email/domain (anonymised in logs, badge: PII DATA); "attribute" = open config the AI can see freely (badge: CONFIG); "credential" = session-scoped tokens, used once (never logged, badge: SESSION). Omit to fall back to "default" grouping.'),
     })).describe('List of fields to collect. level is optional — fields without it fall back to "default" grouping in destinations_by_level.'),
     destination: z.union([
-      z.string().describe('Named destination from zerocreds-destinations.json'),
+      z.string().describe('Named destination configured by the server admin (the default and, on production servers, the only option)'),
       z.object({
         type: z.enum(['local_file', 'gcp_secret_manager', 'aws_secrets_manager', 'vault']),
         uid: z.string().optional(),
         filename: z.string().optional(),
-      }).passthrough().describe('Inline destination config'),
+      }).passthrough().describe('Inline destination config — only accepted when the server sets ZEROCREDS_ALLOW_INLINE_DESTINATIONS=1'),
     ]).describe('Where to save the credentials'),
     ttl_minutes: z.number().int().min(1).max(1440).optional().describe('Link expiry in minutes (default: 30)'),
     notify: z.object({
@@ -96,6 +104,50 @@ server.tool(
       }],
     };
   }
+);
+
+server.tool(
+  'zerocreds_wallet_form_create',
+  'Request a credential form in the current user profile. Returns a one-time URL and connection_id. The agent never sees credential values or chooses the storage destination.',
+  {
+    provider: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/).describe('Service slug, for example github or tilda'),
+    kind: z.enum(['token', 'ssh', 'login']).default('token'),
+    title: z.string().max(200).optional(),
+    description: z.string().max(2000).optional(),
+    fields: z.array(z.object({
+      name: z.string(), label: z.string(),
+      type: z.enum(['text', 'password', 'email', 'tel', 'number', 'textarea', 'url']).optional(),
+      required: z.boolean().optional(),
+    })).min(1).optional(),
+    ttl_minutes: z.number().int().min(1).max(1440).optional(),
+    idempotency_key: z.string().regex(/^[a-zA-Z0-9_-]{16,128}$/).optional(),
+  },
+  async (input) => ({ content: [{ type: 'text', text: JSON.stringify(
+    await walletHandlers.get('zerocreds_wallet_form_create')(input, legacyWalletContext('zerocreds_wallet_form_create')), null, 2) }] }),
+);
+
+server.tool(
+  'zerocreds_wallet_form_status',
+  'Check whether a wallet form was completed. Returns only status, connection_id and version metadata; never credential values.',
+  { form_id: z.string().regex(/^[a-f0-9]{32}$/) },
+  async ({ form_id }) => ({ content: [{ type: 'text', text: JSON.stringify(
+    await walletHandlers.get('zerocreds_wallet_form_status')({ form_id }, legacyWalletContext('zerocreds_wallet_form_status')), null, 2) }] }),
+);
+
+server.tool(
+  'zerocreds_wallet_connection_status',
+  'Check a saved connection by ID after the form link has expired. Returns metadata only, never credential values.',
+  { connection_id: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/) },
+  async ({ connection_id }) => ({ content: [{ type: 'text', text: JSON.stringify(
+    await walletHandlers.get('zerocreds_wallet_connection_status')({ connection_id }, legacyWalletContext('zerocreds_wallet_connection_status')), null, 2) }] }),
+);
+
+server.tool(
+  'zerocreds_wallet_connection_revoke',
+  'Mark a saved connection revoked when the user explicitly requests it. Trusted brokers must deny future use; this does not return or erase credential values.',
+  { connection_id: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/) },
+  async ({ connection_id }) => ({ content: [{ type: 'text', text: JSON.stringify(
+    await walletHandlers.get('zerocreds_wallet_connection_revoke')({ connection_id }, legacyWalletContext('zerocreds_wallet_connection_revoke')), null, 2) }] }),
 );
 
 async function main() {

@@ -66,3 +66,4 @@ jobs:
         run: |
           cd server && node --test test/*.test.js
           cd ../wallet-worker && npm test
+          cd ../mcp && node --test test/*.test.js
