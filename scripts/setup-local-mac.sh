@@ -58,6 +58,7 @@ node <<'NODE'
 const fs = require('fs');
 const e = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 const env = {
+  PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
   ZEROCREDS_LOCAL_MODE: '1',
   ZEROCREDS_ADMIN_TOKEN_FILE: `${process.env.ZC_CONFIG}/admin-token`,
   ZEROCREDS_DESTINATIONS_FILE: `${process.env.ZC_CONFIG}/destinations.json`,
