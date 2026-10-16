@@ -7,6 +7,27 @@ func fail(_ message: String) -> Never {
 }
 
 let action = CommandLine.arguments[1]
+if action == "health" {
+  guard CommandLine.arguments.count == 2 else { fail("usage: zerocreds-keychain health") }
+  // Ask Security.framework whether the login keychain can answer a metadata-only
+  // query. Never request or return secret data for this diagnostic.
+  let query: [String: Any] = [
+    kSecClass as String: kSecClassGenericPassword,
+    kSecReturnAttributes as String: true,
+    kSecMatchLimit as String: kSecMatchLimitOne,
+  ]
+  var result: CFTypeRef?
+  let status = SecItemCopyMatching(query as CFDictionary, &result)
+  let state: String
+  switch status {
+  case errSecSuccess, errSecItemNotFound: state = "accessible"
+  case errSecInteractionNotAllowed, errSecAuthFailed: state = "locked"
+  default: state = "unavailable"
+  }
+  let output = try! JSONSerialization.data(withJSONObject: ["status": state], options: [.sortedKeys])
+  FileHandle.standardOutput.write(output)
+  exit(state == "accessible" ? 0 : state == "locked" ? 4 : 5)
+}
 if action == "list" {
   guard CommandLine.arguments.count == 2 else { fail("usage: zerocreds-keychain list") }
   var output: [[String: String]] = []

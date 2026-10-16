@@ -93,6 +93,10 @@ test('local Deepgram verification returns and persists grant diagnostics without
     assert.equal(verified.body.verification, 'valid');
     assert.deepEqual(verified.body.identity, { grant_capable: true });
     assert.deepEqual(verified.body.diagnostic, { upstream_status: 200, grant_expires_in: 30 });
+    assert.deepEqual(verified.body.credential_hint, {
+      character_count: 'must-never-escape-test-secret'.length,
+      masked: 'mus…cret',
+    });
     assert.ok(!JSON.stringify(verified.body).includes(accessToken));
     assert.ok(!JSON.stringify(verified.body).includes('must-never-escape-test-secret'));
 
@@ -100,6 +104,7 @@ test('local Deepgram verification returns and persists grant diagnostics without
     assert.equal(list.status, 200);
     assert.equal(list.body.connections[0].verification_status, 'valid');
     assert.deepEqual(list.body.connections[0].verification_diagnostic, { upstream_status: 200, grant_expires_in: 30 });
+    assert.ok(!JSON.stringify(list.body.connections[0]).includes('credential_hint'), 'masked fragments are never persisted');
     assert.ok(list.body.connections[0].last_verified_at);
   }, {
     provider: 'deepgram',

@@ -163,7 +163,7 @@ server.tool(
 
 if (LOCAL_MODE) server.tool(
   'zerocreds_connection_verify',
-  'Verify a saved GitHub, Cloudflare or Deepgram credential from the trusted local ZeroCreds server. For Deepgram this safely tests whether the key can mint a default 30-second grant, then discards the token; it does not make a billable transcription request. Returns safe status/diagnostics only and never returns credential or grant values. This verifies the Mac Keychain credential, not whether a separate Cloudflare Worker secret was updated.',
+  'Verify a saved GitHub, Cloudflare or Deepgram credential from the trusted local ZeroCreds server. For Deepgram this safely tests whether the key can mint a default 30-second grant, then discards the token; it does not make a billable transcription request. The one-time verify result includes a masked 3-character prefix/4-character suffix and length for alias comparison; this hint is not persisted or logged. The tool never returns the credential or grant value. This verifies the Mac Keychain credential, not whether a separate Cloudflare Worker secret was updated.',
   {
     provider: z.enum(['github', 'cloudflare', 'deepgram']),
     account_alias: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
@@ -176,6 +176,61 @@ if (LOCAL_MODE) server.tool(
 );
 
 if (LOCAL_MODE) {
+  server.tool('zerocreds_doctor',
+    'Diagnose the local ZeroCreds path without reading or returning credential values. Checks that this MCP call reaches the local server, the private Keychain helper is installed, macOS Keychain answers a metadata-only query, the configured default destination is an OS Keychain, and the local catalog is readable. If a check fails, follow its action and rerun this tool. Then use zerocreds_connection_verify for a specific provider/account; that separate check proves provider acceptance only for the selected local credential, not a different Worker secret.',
+    {},
+    async () => {
+      const data = await apiCall('GET', '/api/local/doctor');
+      if (data.error) throw new Error(data.error);
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+    });
+
+  server.tool('zerocreds_playground_scenarios',
+    'List the local ZeroCreds credential playground scenarios and supported validation rules. Synthetic only: it never contacts a provider or credential store. Use invented examples; never put real credentials into the playground.',
+    {},
+    async () => {
+      const data = await apiCall('GET', '/api/local/playground/scenarios');
+      if (data.error) throw new Error(data.error);
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+    });
+
+  server.tool('zerocreds_playground_run',
+    'Run deterministic synthetic credential-validation scenarios against generic rules such as regex, length, equals, contains or one_of. No network/provider/store calls happen and values are never returned. This is a simulator, not proof that a real credential works. Never supply real credentials.',
+    {
+      rules: z.array(z.discriminatedUnion('type', [
+        z.object({ type: z.literal('required') }),
+        z.object({ type: z.enum(['min_length', 'max_length']), value: z.number().int().min(0).max(8192) }),
+        z.object({ type: z.enum(['equals', 'contains']), value: z.string().max(256) }),
+        z.object({ type: z.literal('one_of'), values: z.array(z.string().max(128)).min(1).max(20) }),
+        z.object({ type: z.literal('matches'), pattern: z.string().min(1).max(128) }),
+      ])).max(12).optional(),
+      scenarios: z.array(z.enum(['valid', 'invalid', 'empty', 'expired', 'provider_timeout', 'storage_failure'])).min(1).max(20).optional(),
+    },
+    async ({ rules, scenarios }) => {
+      const data = await apiCall('POST', '/api/local/playground/run', { rules, scenarios });
+      if (data.error) throw new Error(data.error);
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+    });
+
+  server.tool('zerocreds_playground_form',
+    'Create an expiring local-only test form to exercise browser rendering, required-field validation, rule evaluation, submit and completion status. The page prominently says not to enter real credentials; values are only checked in memory and discarded. No provider or storage is called.',
+    {
+      rules: z.array(z.discriminatedUnion('type', [
+        z.object({ type: z.literal('required') }),
+        z.object({ type: z.enum(['min_length', 'max_length']), value: z.number().int().min(0).max(8192) }),
+        z.object({ type: z.enum(['equals', 'contains']), value: z.string().max(256) }),
+        z.object({ type: z.literal('one_of'), values: z.array(z.string().max(128)).min(1).max(20) }),
+        z.object({ type: z.literal('matches'), pattern: z.string().min(1).max(128) }),
+      ])).max(12).optional(),
+      title: z.string().max(200).optional(),
+      ttl_minutes: z.number().int().min(1).max(30).optional(),
+    },
+    async ({ rules, title, ttl_minutes }) => {
+      const data = await apiCall('POST', '/api/local/playground/forms', { rules, title, ttl_minutes });
+      if (data.error) throw new Error(data.error);
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+    });
+
   server.tool('zerocreds_discovery_sources',
     'First step when the user asks what access exists: detect supported credential sources and report availability. Read-only; does not catalog anything and never reads secret values. Then call zerocreds_discovery_preview to show candidate metadata. Browser password stores may be detected but are not read.',
     {},

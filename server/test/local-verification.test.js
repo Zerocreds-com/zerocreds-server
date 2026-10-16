@@ -2,7 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { verifyLocalCredential } = require('../src/local-verification');
+const { verifyLocalCredential, credentialHint } = require('../src/local-verification');
 
 test('GitHub verification returns provider identity and observed scopes, never the token', async () => {
   const token = 'synthetic-github-secret';
@@ -62,6 +62,11 @@ test('Deepgram verification checks grant capability and discards the temporary t
   });
   assert.ok(!JSON.stringify(result).includes(key));
   assert.ok(!JSON.stringify(result).includes(accessToken));
+  assert.deepEqual(credentialHint('deepgram', { DEEPGRAM_API_KEY: key }), {
+    character_count: key.length, masked: 'syn…-key',
+  });
+  assert.equal(credentialHint('deepgram', { DEEPGRAM_API_KEY: 'short' }).masked, '[too short to mask safely]');
+  assert.equal(credentialHint('github', { token: key }), null);
 });
 
 test('Deepgram verification distinguishes invalid keys and insufficient grant permissions', async () => {
