@@ -6,23 +6,33 @@ func fail(_ message: String) -> Never {
   exit(1)
 }
 
-guard CommandLine.arguments.count == 4 else { fail("usage: zerocreds-keychain set|exists SERVICE ACCOUNT") }
+guard CommandLine.arguments.count == 4 else { fail("usage: zerocreds-keychain set|exists|get SERVICE ACCOUNT") }
 let action = CommandLine.arguments[1]
 let service = CommandLine.arguments[2]
 let account = CommandLine.arguments[3]
-guard ["set", "exists"].contains(action), !service.isEmpty, !account.isEmpty else { fail("invalid request") }
+guard ["set", "exists", "get"].contains(action), !service.isEmpty, !account.isEmpty else { fail("invalid request") }
 
 let identity: [String: Any] = [
   kSecClass as String: kSecClassGenericPassword,
   kSecAttrService as String: service,
   kSecAttrAccount as String: account,
 ]
-if action == "exists" {
+if action == "exists" || action == "get" {
   var query = identity
-  query[kSecReturnAttributes as String] = true
+  if action == "get" {
+    query[kSecReturnData as String] = true
+  } else {
+    query[kSecReturnAttributes as String] = true
+  }
   query[kSecMatchLimit as String] = kSecMatchLimitOne
-  let status = SecItemCopyMatching(query as CFDictionary, nil)
-  if status == errSecSuccess { exit(0) }
+  var result: CFTypeRef?
+  let status = SecItemCopyMatching(query as CFDictionary, &result)
+  if status == errSecSuccess {
+    if action == "get", let data = result as? Data {
+      FileHandle.standardOutput.write(data)
+    }
+    exit(0)
+  }
   if status == errSecItemNotFound { exit(3) }
   if status == errSecInteractionNotAllowed || status == errSecAuthFailed { exit(4) }
   exit(5)

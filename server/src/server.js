@@ -3,6 +3,7 @@
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
+const { verifyLocalCredential } = require('./local-verification');
 const path = require('path');
 const crypto = require('crypto');
 const { startNalogLogin, confirmNalogCode } = require('./nalog-login');
@@ -1217,6 +1218,41 @@ function createApp(config = {}) {
     });
   }
 
+  function readLocalKeychainEntry(storage) {
+    if (typeof storage !== 'string') return Promise.reject(new Error('unavailable'));
+    const match = storage.match(/^keychain:([a-zA-Z0-9_@.-]{1,128})\/([a-zA-Z0-9_@.-]{1,128})$/);
+    if (!match || process.platform !== 'darwin') return Promise.reject(new Error('unavailable'));
+    const { spawn } = require('child_process');
+    const helper = process.env.ZEROCREDS_KEYCHAIN_HELPER || path.join(__dirname, '../bin/zerocreds-keychain');
+    return new Promise((resolve, reject) => {
+      const child = spawn(helper, ['get', match[1], match[2]], { stdio: ['ignore', 'pipe', 'ignore'] });
+      let output = Buffer.alloc(0);
+      let settled = false;
+      const finish = (error, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        error ? reject(error) : resolve(value);
+      };
+      const timer = setTimeout(() => { child.kill('SIGKILL'); finish(new Error('unavailable')); }, 5000);
+      child.stdout.on('data', (chunk) => {
+        if (output.length + chunk.length > 65536) {
+          child.kill('SIGKILL');
+          finish(new Error('invalid credential record'));
+        } else output = Buffer.concat([output, chunk]);
+      });
+      child.once('error', () => finish(new Error('unavailable')));
+      child.once('close', (code) => {
+        if (code !== 0 || !output.length) return finish(new Error(code === 4 ? 'keychain_locked' : 'unavailable'));
+        try {
+          const fields = JSON.parse(output.toString('utf8'));
+          if (!fields || typeof fields !== 'object' || Array.isArray(fields)) throw new Error('bad record');
+          finish(null, fields);
+        } catch { finish(new Error('invalid credential record')); }
+      });
+    });
+  }
+
   // Ed25519 key for form manifests and submission receipts (created on first start).
   const SIGNING_KEY = loadSigningKey(SIGNING_KEY_FILE);
 
@@ -2110,6 +2146,10 @@ function createApp(config = {}) {
         credential_expires_at: entry.credential_expires_at,
         expiry_status: entry.expiry_status,
         verification_status: entry.verification_status,
+        last_verified_at: entry.last_verified_at || null,
+        verified_identity: entry.verified_identity || null,
+        verified_permissions: Array.isArray(entry.verified_permissions) ? entry.verified_permissions : [],
+        permission_evidence: entry.permission_evidence || 'unknown',
         created_at: entry.created_at,
         updated_at: entry.updated_at,
         last_used_at: entry.last_used_at,
@@ -2129,6 +2169,59 @@ function createApp(config = {}) {
           : expired.length ? 'expired' : missing ? 'missing' : 'missing';
       return json(res, 200, { connections: safe, resolution,
         ...(resolution === 'ready' ? { connection: available[0] } : {}) });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/local/connections/verify') {
+      if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
+      const { isAdmin } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin) return json(res, 401, { error: 'unauthorized' });
+      const payload = await readJson(req);
+      if (!payload || typeof payload.provider !== 'string' || typeof payload.account_alias !== 'string') {
+        return json(res, 400, { error: 'provider and account_alias are required' });
+      }
+      let entries;
+      try { entries = readLocalCatalog(); }
+      catch { return json(res, 503, { error: 'local catalog unavailable' }); }
+      const provider = payload.provider.toLowerCase();
+      const alias = payload.account_alias.toLowerCase();
+      const index = entries.findIndex((entry) => String(entry.provider).toLowerCase() === provider
+        && String(entry.account_alias).toLowerCase() === alias);
+      if (index < 0) return json(res, 404, { error: 'connection not found' });
+      const entry = entries[index];
+      if (entry.state !== 'active') return json(res, 409, { verification: 'revoked' });
+      if (entry.credential_expires_at && Date.parse(entry.credential_expires_at) <= Date.now()) {
+        return json(res, 200, { verification: 'expired', connection_id: entry.connection_id });
+      }
+      let fields;
+      try { fields = await (config.localCredentialReader || readLocalKeychainEntry)(entry.storage); }
+      catch (error) {
+        const status = error.message === 'keychain_locked' ? 'keychain_locked' : 'unavailable_here';
+        return json(res, 200, { verification: status, connection_id: entry.connection_id });
+      }
+      const result = await (config.localCredentialVerifier || verifyLocalCredential)(provider, fields);
+      const verifiedAt = new Date().toISOString();
+      entry.last_verified_at = verifiedAt;
+      entry.verification_status = result.status;
+      entry.verified_identity = result.identity || null;
+      entry.verified_permissions = result.permissions || [];
+      entry.permission_evidence = result.permission_evidence || 'unknown';
+      if (result.provider_expires_at && Number.isFinite(Date.parse(result.provider_expires_at))) {
+        entry.credential_expires_at = new Date(result.provider_expires_at).toISOString();
+        entry.expiry_status = 'provider_verified';
+      }
+      entry.updated_at = verifiedAt;
+      try { writeLocalCatalog(entries); }
+      catch { return json(res, 503, { error: 'local catalog unavailable' }); }
+      console.info('[local-verify] provider=%s alias=%s outcome=%s', provider, alias, result.status);
+      return json(res, 200, {
+        verification: result.status,
+        connection_id: entry.connection_id,
+        verified_at: verifiedAt,
+        identity: entry.verified_identity,
+        permissions: entry.verified_permissions,
+        permission_evidence: entry.permission_evidence,
+        credential_expires_at: entry.credential_expires_at,
+      });
     }
 
     // ── POST /api/session/create ───────────────────────────────────────────────

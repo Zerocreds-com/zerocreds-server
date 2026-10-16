@@ -14,8 +14,8 @@ Restart Codex and OpenCode after setup. The installer backs up their existing co
 launchctl bootout "gui/$(id -u)/com.zerocreds.local-server"
 ```
 
-The local MCP exposes `zerocreds_create_session`, `zerocreds_check_status`, `zerocreds_connections_list` and `zerocreds_connection_resolve`. For a new credential, request a form with a provider slug and a distinct account alias (for example provider `github`, aliases `work` and `personal`). Include `credential_expires_at` only when the actual expiry is known; omit it otherwise. Credential expiry is independent of the one-time form link expiry.
+The local MCP exposes `zerocreds_create_session`, `zerocreds_check_status`, `zerocreds_connections_list`, `zerocreds_connection_resolve` and `zerocreds_connection_verify`. For a new credential, request a form with a provider slug and a distinct account alias (for example provider `github`, aliases `work` and `personal`). Include `credential_expires_at` only when the actual expiry is known; omit it otherwise. Credential expiry is independent of the one-time form link expiry.
 
-The form URL stays on the Mac. This local catalog is not synchronized to cloud Runner tasks. The first slice records declared expiry and marks provider verification as unknown; provider checks, credential use broker and cross-machine sync remain later work.
+The form URL stays on the Mac. This local catalog is not synchronized to cloud Runner tasks. `zerocreds_connection_verify` checks GitHub and Cloudflare credentials from the local server, records identity and only permissions explicitly returned by the provider, and never returns the token. Cloudflare token validity does not prove a particular resource permission. Other providers remain unverified until a provider-specific safe probe is implemented.
 
 To remove the local integration, remove the `zerocreds` MCP entry from Codex and OpenCode, unload the LaunchAgent, then remove `~/.config/zerocreds/local` and `~/Library/Application Support/ZeroCreds` after deciding whether to retain metadata. Credentials stored in Keychain are separate and can be removed through Keychain Access.

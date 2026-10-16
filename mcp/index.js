@@ -157,6 +157,20 @@ server.tool(
   },
 );
 
+if (LOCAL_MODE) server.tool(
+  'zerocreds_connection_verify',
+  'Verify a saved GitHub or Cloudflare credential against that provider from the trusted local ZeroCreds server. Returns identity, observed permissions and expiry only; never returns credential values.',
+  {
+    provider: z.enum(['github', 'cloudflare']),
+    account_alias: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+  },
+  async ({ provider, account_alias }) => {
+    const data = await apiCall('POST', '/api/local/connections/verify', { provider, account_alias });
+    if (data.error) throw new Error(data.error);
+    return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+  },
+);
+
 server.tool(
   'zerocreds_check_status',
   'Check whether the user has submitted the ZeroCreds form. Poll every 5–10 seconds until status is "done" or "expired".',
