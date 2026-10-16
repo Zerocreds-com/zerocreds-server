@@ -572,7 +572,7 @@ function describeDestination(dest, pending) {
     case 'http_post': return { kind: 'Web endpoint of the requester', target: urlHostPath(dest.url), note: 'Whoever runs this endpoint receives the values in readable form.' };
     case 'macos_keychain':
     case 'windows_credential_manager':
-    case 'os_keychain': return { kind: 'OS keychain on the ZeroCreds server', target: `${dest.service || 'zerocreds'}/${dest.account || 'default'}`, note: SERVER_READABLE_NOTE };
+    case 'os_keychain': return { kind: 'OS keychain on the ZeroCreds server', target: `${resolveTemplate(String(dest.service || 'zerocreds'), ctx)}/${resolveTemplate(String(dest.account || 'default'), ctx)}`, note: SERVER_READABLE_NOTE };
     default: return { kind: String(dest.type), target: '', note: '' };
   }
 }
@@ -1131,6 +1131,7 @@ function readAdminTokenFile(file) {
 }
 
 function createApp(config = {}) {
+  const LOCAL_MODE = config.localMode ?? envFlag('ZEROCREDS_LOCAL_MODE');
   let ADMIN_TOKEN = config.adminToken ?? process.env.ZEROCREDS_ADMIN_TOKEN ?? '';
   const ADMIN_TOKEN_FILE = config.adminTokenFile ?? process.env.ZEROCREDS_ADMIN_TOKEN_FILE ?? path.join(os.homedir(), '.config/zerocreds/admin-token');
   if (!ADMIN_TOKEN) {
@@ -1142,9 +1143,15 @@ function createApp(config = {}) {
   }
   const CONNECT_PENDING_DIR = config.pendingDir ?? process.env.ZEROCREDS_PENDING_DIR ?? path.join(os.homedir(), 'connect-pending');
   const AGENT_TOKENS_DIR = config.tokensDir ?? process.env.ZEROCREDS_TOKENS_DIR ?? path.join(os.homedir(), 'agent-tokens');
+  const LOCAL_CATALOG_FILE = config.localCatalogFile ?? process.env.ZEROCREDS_LOCAL_CATALOG_FILE ?? path.join(os.homedir(), '.config/zerocreds/local/connections.json');
   const DESTINATIONS_FILE = config.destinationsFile ?? process.env.ZEROCREDS_DESTINATIONS_FILE ?? path.join(os.homedir(), 'zerocreds-destinations.json');
   const INTEGRATORS_FILE = config.integratorsFile ?? process.env.ZEROCREDS_INTEGRATORS_FILE ?? path.join(os.homedir(), 'zerocreds-integrators.json');
-  const BASE_URL = config.baseUrl ?? process.env.ZEROCREDS_BASE_URL ?? 'https://zerocreds.ru';
+  const BASE_URL = config.baseUrl ?? process.env.ZEROCREDS_BASE_URL ?? (LOCAL_MODE ? 'http://127.0.0.1:3456' : 'https://zerocreds.ru');
+  const LOCAL_ORIGIN = new URL(BASE_URL).origin;
+  if (LOCAL_MODE && (!['127.0.0.1', 'localhost', '[::1]'].includes(new URL(BASE_URL).hostname)
+      || new URL(BASE_URL).protocol !== 'http:')) {
+    throw new Error('local mode requires an http loopback base URL');
+  }
   const SIGNING_KEY_FILE = config.signingKeyFile ?? process.env.ZEROCREDS_SIGNING_KEY_FILE ?? path.join(os.homedir(), 'zerocreds-signing-key.pem');
   const WALLET_WORKER_URL = config.walletWorkerUrl ?? process.env.ZEROCREDS_WALLET_WORKER_URL ?? '';
   const WALLET_SERVICE_TOKEN = config.walletServiceToken ?? process.env.ZEROCREDS_WALLET_SERVICE_TOKEN ?? '';
@@ -1176,6 +1183,39 @@ function createApp(config = {}) {
     }
   }
   loadNamedDestinations();
+
+  function readLocalCatalog() {
+    try {
+      const raw = JSON.parse(fs.readFileSync(LOCAL_CATALOG_FILE, 'utf8'));
+      return Array.isArray(raw) ? raw.filter((item) => item && typeof item === 'object') : [];
+    } catch (error) {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    }
+  }
+
+  function writeLocalCatalog(entries) {
+    fs.mkdirSync(path.dirname(LOCAL_CATALOG_FILE), { recursive: true, mode: 0o700 });
+    const temp = `${LOCAL_CATALOG_FILE}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+    fs.writeFileSync(temp, JSON.stringify(entries, null, 2), { mode: 0o600, flag: 'wx' });
+    fs.renameSync(temp, LOCAL_CATALOG_FILE);
+  }
+
+  function checkLocalKeychainEntry(storage) {
+    if (typeof storage !== 'string') return Promise.resolve('unavailable');
+    const match = storage.match(/^keychain:([a-zA-Z0-9_@.-]{1,128})\/([a-zA-Z0-9_@.-]{1,128})$/);
+    if (!match || process.platform !== 'darwin') return Promise.resolve('unavailable');
+    const { spawn } = require('child_process');
+    const helper = process.env.ZEROCREDS_KEYCHAIN_HELPER || path.join(__dirname, '../bin/zerocreds-keychain');
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (status) => { if (!settled) { settled = true; clearTimeout(timer); resolve(status); } };
+      const child = spawn(helper, ['exists', match[1], match[2]], { stdio: ['ignore', 'ignore', 'ignore'] });
+      const timer = setTimeout(() => { child.kill('SIGKILL'); finish('unavailable'); }, 5000);
+      child.once('error', () => finish('unavailable'));
+      child.once('close', (code) => finish(code === 0 ? 'present' : code === 3 ? 'missing' : code === 4 ? 'locked' : 'unavailable'));
+    });
+  }
 
   // Ed25519 key for form manifests and submission receipts (created on first start).
   const SIGNING_KEY = loadSigningKey(SIGNING_KEY_FILE);
@@ -1710,6 +1750,34 @@ function createApp(config = {}) {
       return { status: 500, body: { error: 'failed to save credentials' } };
     }
 
+    if (LOCAL_MODE && pending.service_slug && pending.uid) {
+      try {
+        const entries = readLocalCatalog();
+        const index = entries.findIndex((item) => item.provider === pending.service_slug && item.account_alias === pending.uid);
+        const previous = index >= 0 ? entries[index] : null;
+        const entry = {
+          connection_id: previous?.connection_id || crypto.randomBytes(16).toString('hex'),
+          provider: pending.service_slug,
+          account_alias: pending.uid,
+          storage: typeof saveResult?.secret_id === 'string' ? saveResult.secret_id : null,
+          state: 'active',
+          credential_expires_at: pending.credential_expires_at || null,
+          expiry_status: pending.credential_expires_at ? 'declared' : 'unknown',
+          verification_status: 'unknown',
+          created_at: previous?.created_at || new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          last_used_at: previous?.last_used_at || null,
+        };
+        if (index >= 0) entries[index] = entry;
+        else entries.push(entry);
+        writeLocalCatalog(entries);
+      } catch (error) {
+        console.error('[local-catalog] metadata write failed:', error.message);
+        releaseClaim(token);
+        return { status: 503, body: { error: 'credential saved but local catalog update failed; retry this form' } };
+      }
+    }
+
     dropClaim(token);
 
     // Forms get a signed receipt with the handle: what was saved and where, never the values.
@@ -1754,9 +1822,15 @@ function createApp(config = {}) {
   async function handle(req, res) {
     const url = new URL(req.url, 'http://localhost');
 
+    if (LOCAL_MODE && req.headers.host !== new URL(BASE_URL).host) {
+      return json(res, 403, { error: 'invalid local host' });
+    }
+
     // CORS preflight for API
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type,Authorization', 'Access-Control-Allow-Methods': 'GET,POST' }).end();
+      const origin = req.headers.origin;
+      if (LOCAL_MODE && origin && origin !== LOCAL_ORIGIN) return json(res, 403, { error: 'cross-origin request denied' });
+      res.writeHead(204, { ...(LOCAL_MODE ? (origin ? { 'Access-Control-Allow-Origin': LOCAL_ORIGIN } : {}) : { 'Access-Control-Allow-Origin': '*' }), 'Access-Control-Allow-Headers': 'Content-Type,Authorization', 'Access-Control-Allow-Methods': 'GET,POST' }).end();
       return;
     }
 
@@ -2015,6 +2089,48 @@ function createApp(config = {}) {
       return json(res, 200, { ok: true, name });
     }
 
+    if (req.method === 'GET' && url.pathname === '/api/local/connections') {
+      if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
+      const { isAdmin } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin) return json(res, 401, { error: 'unauthorized' });
+      let entries;
+      try { entries = readLocalCatalog(); }
+      catch { return json(res, 503, { error: 'local catalog unavailable' }); }
+      const provider = (url.searchParams.get('provider') || '').toLowerCase();
+      const alias = (url.searchParams.get('account_alias') || '').toLowerCase();
+      const matching = entries.filter((entry) =>
+        (!provider || String(entry.provider).toLowerCase() === provider)
+        && (!alias || String(entry.account_alias).toLowerCase() === alias));
+      const safe = matching.map((entry) => ({
+        connection_id: entry.connection_id,
+        provider: entry.provider,
+        account_alias: entry.account_alias,
+        storage: entry.storage,
+        state: entry.state,
+        credential_expires_at: entry.credential_expires_at,
+        expiry_status: entry.expiry_status,
+        verification_status: entry.verification_status,
+        created_at: entry.created_at,
+        updated_at: entry.updated_at,
+        last_used_at: entry.last_used_at,
+      }));
+      const eligible = safe.filter((entry) => entry.state === 'active'
+        && (!entry.credential_expires_at || Date.parse(entry.credential_expires_at) > Date.now()));
+      const expired = safe.filter((entry) => entry.state === 'active'
+        && entry.credential_expires_at && Date.parse(entry.credential_expires_at) <= Date.now());
+      if (url.searchParams.get('resolve') !== '1') return json(res, 200, { connections: safe, resolution: 'not_checked' });
+      await Promise.all(eligible.map(async (entry) => { entry.keychain_status = await checkLocalKeychainEntry(entry.storage); }));
+      const available = eligible.filter((entry) => entry.keychain_status === 'present');
+      const locked = eligible.some((entry) => entry.keychain_status === 'locked');
+      const unavailable = eligible.some((entry) => entry.keychain_status === 'unavailable');
+      const missing = eligible.some((entry) => entry.keychain_status === 'missing');
+      const resolution = available.length === 1 ? 'ready' : available.length > 1 ? 'ambiguous'
+        : locked ? 'keychain_locked' : unavailable ? 'unavailable_here'
+          : expired.length ? 'expired' : missing ? 'missing' : 'missing';
+      return json(res, 200, { connections: safe, resolution,
+        ...(resolution === 'ready' ? { connection: available[0] } : {}) });
+    }
+
     // ── POST /api/session/create ───────────────────────────────────────────────
     if (req.method === 'POST' && url.pathname === '/api/session/create') {
       const { isAdmin, integrator } = resolveAuth(req.headers['authorization']);
@@ -2022,7 +2138,7 @@ function createApp(config = {}) {
       const payload = await readJson(req);
       if (!payload) return json(res, 400, { error: 'bad json' });
 
-      const { title, description, destination, destinations_by_level, ttl_minutes = 30, notify, uid, service } = payload;
+      const { title, description, destination, destinations_by_level, ttl_minutes = 30, notify, uid, service, credential_expires_at } = payload;
       if (typeof title !== 'string' || !title.trim() || title.length > 200) {
         return json(res, 400, { error: 'missing title or fields' });
       }
@@ -2044,6 +2160,13 @@ function createApp(config = {}) {
       }
       if (uid != null && (!['string', 'number'].includes(typeof uid) || String(uid).length > 128)) {
         return json(res, 400, { error: 'invalid uid' });
+      }
+      if (service != null && (typeof service !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(service))) {
+        return json(res, 400, { error: 'invalid service: must match [a-zA-Z0-9_-]{1,64}' });
+      }
+      if (credential_expires_at != null && (typeof credential_expires_at !== 'string'
+          || !Number.isFinite(Date.parse(credential_expires_at)) || !/^\d{4}-\d{2}-\d{2}T/.test(credential_expires_at))) {
+        return json(res, 400, { error: 'credential_expires_at must be an ISO timestamp' });
       }
 
       // Resolve destinations_by_level if provided
@@ -2133,6 +2256,8 @@ function createApp(config = {}) {
         _audit_auth: integrator ? 'integrator' : isAdmin ? 'admin' : 'anonymous',
         requester: integrator ? String(integrator.name || integrator.id).slice(0, 100) : null,
         uid: uid != null ? String(uid) : null,
+        ...(service ? { service_slug: service } : {}),
+        ...(credential_expires_at ? { credential_expires_at: new Date(credential_expires_at).toISOString() } : {}),
         ...(useDeterministic ? { service_slug, user_hash, integrator_slug: integrator_id } : {}),
       };
       fs.mkdirSync(CONNECT_PENDING_DIR, { recursive: true, mode: 0o700 });
@@ -2542,10 +2667,12 @@ if (require.main === module) {
     console.error(`[server] ${e.message}`);
     process.exit(1);
   }
-  server.listen(PORT, () => {
+  const onListening = () => {
     const addr = server.address();
     console.log(`zerocreds-server v${VERSION} (${COMMIT}) listening on :${addr.port}`);
-  });
+  };
+  if (process.env.ZEROCREDS_LOCAL_MODE === '1') server.listen(PORT, '127.0.0.1', onListening);
+  else server.listen(PORT, onListening);
   const shutdown = () => {
     server.close(() => process.exit(0));
     try { require('./nalog-login').closeAll(); } catch {}
