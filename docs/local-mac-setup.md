@@ -8,7 +8,7 @@ From a clean checkout on macOS:
 ./scripts/setup-local-mac.sh
 ```
 
-Restart Codex and OpenCode after setup. The installer backs up their existing configuration before adding the local MCP server. To stop the service:
+Restart Codex and OpenCode after setup. The installer backs up their existing configuration before adding the local MCP server. It also registers a local OpenCode plugin: after `zerocreds_create_session`, it listens for the form completion event and resumes that same session. The event contains status only; OpenCode then checks the form status through MCP. Codex and hosted agents continue using their existing status/event flow. To stop the service:
 
 ```sh
 launchctl bootout "gui/$(id -u)/com.zerocreds.local-server"

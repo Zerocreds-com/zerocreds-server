@@ -1196,6 +1196,18 @@ function createApp(config = {}) {
   const SWEEP_INTERVAL_MS = 10 * 60 * 1000;
   const LOCAL_BROKER_GRANTS = new Map();
   const LOCAL_BROKER_GRANT_TTL_MS = 60_000;
+  const LOCAL_FORM_EVENT_STREAMS = new Map();
+
+  function publishLocalFormEvent(token, event) {
+    const streams = LOCAL_FORM_EVENT_STREAMS.get(token);
+    if (!streams) return;
+    const data = `event: ${event}\ndata: {"status":"${event}"}\n\n`;
+    for (const res of streams) res.write(data);
+    if (event !== 'pending') {
+      for (const res of streams) res.end();
+      LOCAL_FORM_EVENT_STREAMS.delete(token);
+    }
+  }
 
   for (const dir of [CONNECT_PENDING_DIR, AGENT_TOKENS_DIR]) {
     try { fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch {}
@@ -1968,6 +1980,7 @@ function createApp(config = {}) {
       tgNotify(pending.notify.tg_bot_token, pending.notify.tg_chat_id,
         `✅ ${pending.title}: credentials received and saved.`);
     }
+    if (LOCAL_MODE) publishLocalFormEvent(token, 'done');
     return { status: 200, body: { ok: true, ...(formResult || {}) } };
   }
 
@@ -2959,6 +2972,39 @@ function createApp(config = {}) {
       }
       if (!p || !owns(p.integrator_id) || p.expires < Date.now()) return json(res, 200, { status: 'expired' });
       return json(res, 200, { status: 'pending' });
+    }
+
+    // Local OpenCode plugin signal. The admin token never leaves loopback and the
+    // event contains status only; credential values remain in the chosen store.
+    const eventsMatch = url.pathname.match(/^\/api\/session\/([a-f0-9]{32})\/events$/);
+    if (LOCAL_MODE && eventsMatch && req.method === 'GET') {
+      if (!isLoopback(req.socket.remoteAddress)) return json(res, 404, { error: 'not found' });
+      const { isAdmin } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin) return json(res, 401, { error: 'unauthorized' });
+      const token = eventsMatch[1];
+      const current = readPending(token);
+      let done = false;
+      try { done = fs.existsSync(pendingPath(token, 'done')); } catch {}
+      const state = done ? 'done' : (!current || current.expires < Date.now() ? 'expired' : 'pending');
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      res.write(`event: ${state}\ndata: {"status":"${state}"}\n\n`);
+      if (state !== 'pending') { res.end(); return; }
+      if (!LOCAL_FORM_EVENT_STREAMS.has(token)) LOCAL_FORM_EVENT_STREAMS.set(token, new Set());
+      LOCAL_FORM_EVENT_STREAMS.get(token).add(res);
+      const heartbeat = setInterval(() => { if (!res.destroyed) res.write(': keepalive\n\n'); }, 15_000);
+      const cleanup = () => {
+        clearInterval(heartbeat);
+        const streams = LOCAL_FORM_EVENT_STREAMS.get(token);
+        streams?.delete(res);
+        if (streams?.size === 0) LOCAL_FORM_EVENT_STREAMS.delete(token);
+      };
+      res.on('close', cleanup);
+      return;
     }
 
     // ── GET /api/destinations ──────────────────────────────────────────────────
