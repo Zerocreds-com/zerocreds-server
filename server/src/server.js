@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const { startNalogLogin, confirmNalogCode } = require('./nalog-login');
 const { saveToDestination, testDestination, validateDestination, resolveTemplate } = require('./destinations');
 const { canonicalJson, sha256Hex, loadSigningKey, signPayload } = require('./receipts');
+const { discoverCredentialSources, searchCredentialMetadata } = require('./credential-discovery');
 
 // ── Module-level pure helpers ──────────────────────────────────────────────────
 
@@ -1145,6 +1146,8 @@ function createApp(config = {}) {
   const CONNECT_PENDING_DIR = config.pendingDir ?? process.env.ZEROCREDS_PENDING_DIR ?? path.join(os.homedir(), 'connect-pending');
   const AGENT_TOKENS_DIR = config.tokensDir ?? process.env.ZEROCREDS_TOKENS_DIR ?? path.join(os.homedir(), 'agent-tokens');
   const LOCAL_CATALOG_FILE = config.localCatalogFile ?? process.env.ZEROCREDS_LOCAL_CATALOG_FILE ?? path.join(os.homedir(), '.config/zerocreds/local/connections.json');
+  const LOCAL_DISCOVERY_CATALOG_FILE = config.localDiscoveryCatalogFile ?? process.env.ZEROCREDS_LOCAL_DISCOVERY_CATALOG_FILE ?? path.join(os.homedir(), '.config/zerocreds/local/discovery-catalog.json');
+  const LOCAL_DISCOVERY_PREVIEWS = new Map();
   const LOCAL_PROVIDER_POLICIES_FILE = config.localProviderPoliciesFile ?? process.env.ZEROCREDS_LOCAL_PROVIDER_POLICIES_FILE ?? path.join(os.homedir(), '.config/zerocreds/local/provider-policies.json');
   const DESTINATIONS_FILE = config.destinationsFile ?? process.env.ZEROCREDS_DESTINATIONS_FILE ?? path.join(os.homedir(), 'zerocreds-destinations.json');
   const INTEGRATORS_FILE = config.integratorsFile ?? process.env.ZEROCREDS_INTEGRATORS_FILE ?? path.join(os.homedir(), 'zerocreds-integrators.json');
@@ -1196,6 +1199,30 @@ function createApp(config = {}) {
       if (error.code === 'ENOENT') return [];
       throw error;
     }
+  }
+
+  function readDiscoveryCatalog() {
+    try {
+      const stat = fs.statSync(LOCAL_DISCOVERY_CATALOG_FILE);
+      if (!stat.isFile() || (stat.mode & 0o077) || (process.getuid && stat.uid !== process.getuid()) || stat.size > 5 * 1024 * 1024) {
+        throw new Error('unsafe local discovery catalog');
+      }
+      const raw = JSON.parse(fs.readFileSync(LOCAL_DISCOVERY_CATALOG_FILE, 'utf8'));
+      return Array.isArray(raw) ? raw.filter((item) => item && typeof item === 'object') : [];
+    } catch (error) {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    }
+  }
+
+  function writeDiscoveryCatalog(entries) {
+    fs.mkdirSync(path.dirname(LOCAL_DISCOVERY_CATALOG_FILE), { recursive: true, mode: 0o700 });
+    const tmp = `${LOCAL_DISCOVERY_CATALOG_FILE}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(entries, null, 2), { mode: 0o600, flag: 'wx' });
+      fs.renameSync(tmp, LOCAL_DISCOVERY_CATALOG_FILE);
+      fs.chmodSync(LOCAL_DISCOVERY_CATALOG_FILE, 0o600);
+    } finally { try { fs.unlinkSync(tmp); } catch {} }
   }
 
   function getLocalProviderPolicy(provider) {
@@ -2230,6 +2257,96 @@ function createApp(config = {}) {
           : expired.length ? 'expired' : rejected.length ? 'invalid' : missing ? 'missing' : 'missing';
       return json(res, 200, { connections: safe, resolution,
         ...(resolution === 'ready' ? { connection: available[0] } : {}) });
+    }
+
+    if (url.pathname.startsWith('/api/local/discovery/')) {
+      if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
+      const { isAdmin } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin) return json(res, 401, { error: 'admin token required' });
+      if (req.method === 'POST' && url.pathname === '/api/local/discovery/preview') {
+        const payload = await readJson(req);
+        if (payload && payload.source_ids !== undefined
+            && (!Array.isArray(payload.source_ids) || payload.source_ids.some((id) => typeof id !== 'string' || id.length > 64))) {
+          return json(res, 400, { error: 'source_ids must be an array of source identifiers' });
+        }
+        let scan;
+        try { scan = await (config.localCredentialDiscovery || discoverCredentialSources)(config.localCredentialDiscoveryOptions || {}); }
+        catch { return json(res, 503, { error: 'credential source discovery failed safely' }); }
+        const selected = payload?.source_ids?.length
+          ? scan.candidates.filter((item) => payload.source_ids.includes(item.source_id)) : scan.candidates;
+        if (selected.length > 200) return json(res, 413, { error: 'too many candidates; select a source or search the preview' });
+        const previewId = crypto.randomBytes(18).toString('hex');
+        const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+        LOCAL_DISCOVERY_PREVIEWS.set(previewId, { candidates: selected, expires: Date.now() + 10 * 60 * 1000 });
+        for (const [id, preview] of LOCAL_DISCOVERY_PREVIEWS) if (preview.expires <= Date.now()) LOCAL_DISCOVERY_PREVIEWS.delete(id);
+        return json(res, 200, { preview_id: previewId, expires_at: expiresAt, sources: scan.sources,
+          candidate_count: selected.length, candidates: selected,
+          requires_user_confirmation_to_catalog: true, secret_values_collected: false });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/local/discovery/catalog') {
+        const payload = await readJson(req);
+        if (!payload || typeof payload.preview_id !== 'string' || !Array.isArray(payload.refs)
+            || payload.refs.length < 1 || payload.refs.length > 200
+            || payload.refs.some((ref) => typeof ref !== 'string' || !/^disc_[a-f0-9]{24}$/.test(ref))) {
+          return json(res, 400, { error: 'preview_id and 1–200 valid refs are required' });
+        }
+        const preview = LOCAL_DISCOVERY_PREVIEWS.get(payload.preview_id);
+        if (!preview || preview.expires <= Date.now()) {
+          LOCAL_DISCOVERY_PREVIEWS.delete(payload.preview_id);
+          return json(res, 410, { error: 'discovery preview expired; run preview again' });
+        }
+        const selectedRefs = new Set(payload.refs);
+        const selected = preview.candidates.filter((item) => selectedRefs.has(item.ref));
+        if (selected.length !== selectedRefs.size) return json(res, 400, { error: 'one or more refs are not in this preview' });
+        if (selected.some((item) => !['github', 'cloudflare', 'google_cloud', 'keychain'].includes(item.provider)
+            || typeof item.source_id !== 'string' || typeof item.account !== 'string' || typeof item.label !== 'string'
+            || !Array.isArray(item.scopes) || item.scopes.some((scope) => typeof scope !== 'string'))) {
+          return json(res, 400, { error: 'preview contains unsupported metadata' });
+        }
+        let catalog;
+        try { catalog = readDiscoveryCatalog(); }
+        catch { return json(res, 503, { error: 'local discovery catalog unavailable' }); }
+        const now = new Date().toISOString();
+        let added = 0;
+        for (const item of selected) {
+          const existing = catalog.find((record) => record.ref === item.ref);
+          if (existing) { existing.last_seen_at = now; continue; }
+          catalog.push({ ref: item.ref, provider: item.provider, source_id: item.source_id,
+            account: item.account, label: item.label, scopes: item.scopes,
+            authentication_status: item.authentication_status || 'unknown', active: item.active ?? null,
+            first_seen_at: now, last_seen_at: now });
+          added++;
+        }
+        try { writeDiscoveryCatalog(catalog); }
+        catch { return json(res, 503, { error: 'local discovery catalog unavailable' }); }
+        LOCAL_DISCOVERY_PREVIEWS.delete(payload.preview_id);
+        return json(res, 200, { catalogued: added, already_present: selected.length - added,
+          total_catalog_entries: catalog.length, secret_values_stored: false });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/local/discovery/search') {
+        const query = (url.searchParams.get('q') || '').slice(0, 256);
+        const limit = Number(url.searchParams.get('limit') || 50);
+        if (!query || !Number.isInteger(limit) || limit < 1 || limit > 100) return json(res, 400, { error: 'q and limit (1–100) are required' });
+        const previewId = url.searchParams.get('preview_id');
+        if (previewId) {
+          const preview = LOCAL_DISCOVERY_PREVIEWS.get(previewId);
+          if (!preview || preview.expires <= Date.now()) return json(res, 410, { error: 'discovery preview expired; run preview again' });
+          return json(res, 200, { scope: 'preview', requires_user_confirmation_to_catalog: true,
+            results: searchCredentialMetadata(preview.candidates, query, limit) });
+        }
+        let catalog;
+        try { catalog = readDiscoveryCatalog(); }
+        catch { return json(res, 503, { error: 'local discovery catalog unavailable' }); }
+        return json(res, 200, { scope: 'catalog', results: searchCredentialMetadata(catalog, query, limit) });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/local/discovery/sources') {
+        let scan;
+        try { scan = await (config.localCredentialDiscovery || discoverCredentialSources)(config.localCredentialDiscoveryOptions || {}); }
+        catch { return json(res, 503, { error: 'credential source discovery failed safely' }); }
+        return json(res, 200, { sources: scan.sources, secret_values_collected: false,
+          catalog_changes: 0, next_step: 'preview candidates, present them to the user, then catalog only selected refs after explicit confirmation' });
+      }
+      return json(res, 404, { error: 'not found' });
     }
 
     if (req.method === 'POST' && url.pathname === '/api/local/connections/verify') {

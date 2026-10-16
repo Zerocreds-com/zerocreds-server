@@ -6,8 +6,37 @@ func fail(_ message: String) -> Never {
   exit(1)
 }
 
-guard CommandLine.arguments.count == 4 else { fail("usage: zerocreds-keychain set|exists|get SERVICE ACCOUNT") }
 let action = CommandLine.arguments[1]
+if action == "list" {
+  guard CommandLine.arguments.count == 2 else { fail("usage: zerocreds-keychain list") }
+  var output: [[String: String]] = []
+  for itemClass in [kSecClassGenericPassword, kSecClassInternetPassword] {
+    let query: [String: Any] = [
+      kSecClass as String: itemClass,
+      kSecReturnAttributes as String: true,
+      kSecMatchLimit as String: kSecMatchLimitAll,
+    ]
+    var result: CFTypeRef?
+    let status = SecItemCopyMatching(query as CFDictionary, &result)
+    if status == errSecItemNotFound { continue }
+    guard status == errSecSuccess else { exit(status == errSecInteractionNotAllowed || status == errSecAuthFailed ? 4 : 5) }
+    let items = (result as? [[String: Any]]) ?? (result as? [String: Any]).map { [$0] } ?? []
+    for item in items {
+      var safe: [String: String] = [:]
+      for (key, attr) in [("account", kSecAttrAccount), ("service", kSecAttrService),
+                          ("label", kSecAttrLabel), ("server", kSecAttrServer),
+                          ("path", kSecAttrPath)] {
+        if let value = item[attr as String] as? String, !value.isEmpty { safe[key] = value }
+      }
+      if !safe.isEmpty { output.append(safe) }
+      if output.count >= 2000 { break }
+    }
+  }
+  let data = try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys])
+  FileHandle.standardOutput.write(data)
+  exit(0)
+}
+guard CommandLine.arguments.count == 4 else { fail("usage: zerocreds-keychain set|exists|get SERVICE ACCOUNT") }
 let service = CommandLine.arguments[2]
 let account = CommandLine.arguments[3]
 guard ["set", "exists", "get"].contains(action), !service.isEmpty, !account.isEmpty else { fail("invalid request") }
