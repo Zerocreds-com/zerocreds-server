@@ -40,6 +40,7 @@ async function withLocalServer(run) {
   const port = await freePort();
   const token = 'local-test-token-' + 'x'.repeat(40);
   const catalogFile = path.join(root, 'connections.json');
+  const discoveryCatalogFile = path.join(root, 'discovery-catalog.json');
   fs.writeFileSync(catalogFile, JSON.stringify([{
     connection_id: 'connection-1', provider: 'github', account_alias: 'work',
     storage: 'keychain:github-work', state: 'active', credential_expires_at: null,
@@ -50,6 +51,11 @@ async function withLocalServer(run) {
     localMode: true,
     baseUrl: `http://127.0.0.1:${port}`,
     localCatalogFile: catalogFile,
+    localDiscoveryCatalogFile: discoveryCatalogFile,
+    localCredentialDiscovery: async () => ({ sources: [{ source_id: 'github_cli', status: 'found', candidate_count: 1 }], candidates: [{
+      ref: 'disc_0123456789abcdef01234567', provider: 'github', source_id: 'github_cli', account: 'work-user',
+      label: 'github.com', scopes: ['repo'],
+    }] }),
     localProviderPolicies: { github: {
       login_url: 'https://github.com/login', auth_url: 'https://github.com/settings/profile',
       username_selector: '#login_field', password_selector: '#password',
@@ -67,7 +73,7 @@ async function withLocalServer(run) {
       permissions: ['repo'], permission_evidence: 'provider_verified' }),
   });
   await new Promise((resolve, reject) => { app.once('error', reject); app.listen(port, '127.0.0.1', resolve); });
-  try { await run({ port, token, catalogFile }); }
+  try { await run({ port, token, catalogFile, discoveryCatalogFile }); }
   finally {
     await new Promise((resolve) => app.close(resolve));
     fs.rmSync(root, { recursive: true, force: true });
@@ -119,5 +125,40 @@ test('local broker grants are connection-bound, short-lived, one-use and return 
     assert.equal(catalog[0].last_use.operation, 'browser_login');
     assert.equal(catalog[0].last_use.run_id, '12345678-1234-1234-1234-123456789abc');
     assert.equal(catalog[0].last_use.outcome, 'delivered');
+  });
+});
+
+
+test('discovery is previewed before explicit selection and persists metadata only', async () => {
+  await withLocalServer(async ({ port, token, discoveryCatalogFile }) => {
+    const unauthenticated = await call(port, 'GET', '/api/local/discovery/sources');
+    assert.equal(unauthenticated.status, 401);
+    const sources = await call(port, 'GET', '/api/local/discovery/sources', undefined, token);
+    assert.equal(sources.body.catalog_changes, 0);
+    const preview = await call(port, 'POST', '/api/local/discovery/preview', {}, token);
+    assert.equal(preview.status, 200);
+    assert.equal(preview.body.requires_user_confirmation_to_catalog, true);
+    assert.equal(preview.body.candidates.length, 1);
+    assert.equal(fs.existsSync(discoveryCatalogFile), false);
+    const searchedPreview = await call(port, 'GET', `/api/local/discovery/search?q=github&preview_id=${preview.body.preview_id}`, undefined, token);
+    assert.equal(searchedPreview.body.scope, 'preview');
+    const catalogued = await call(port, 'POST', '/api/local/discovery/catalog', {
+      preview_id: preview.body.preview_id, refs: ['disc_0123456789abcdef01234567'],
+    }, token);
+    assert.equal(catalogued.status, 200);
+    assert.equal(catalogued.body.catalogued, 1);
+    const search = await call(port, 'GET', '/api/local/discovery/search?q=github', undefined, token);
+    assert.equal(search.body.results[0].account, 'work-user');
+    assert.equal(fs.statSync(discoveryCatalogFile).mode & 0o777, 0o600);
+    assert.ok(!fs.readFileSync(discoveryCatalogFile, 'utf8').includes('secret_value_collected'));
+  });
+});
+
+test('discovery catalog endpoint accepts only references from its unexpired preview', async () => {
+  await withLocalServer(async ({ port, token }) => {
+    const invalid = await call(port, 'POST', '/api/local/discovery/catalog', {
+      preview_id: 'f'.repeat(36), refs: ['disc_0123456789abcdef01234567'],
+    }, token);
+    assert.equal(invalid.status, 410);
   });
 });
