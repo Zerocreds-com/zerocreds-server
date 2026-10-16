@@ -171,6 +171,47 @@ if (LOCAL_MODE) server.tool(
   },
 );
 
+if (LOCAL_MODE) {
+  server.tool('zerocreds_discovery_sources',
+    'First step when the user asks what access exists: detect supported credential sources and report availability. Read-only; does not catalog anything and never reads secret values. Then call zerocreds_discovery_preview to show candidate metadata. Browser password stores may be detected but are not read.',
+    {},
+    async () => {
+      const data = await apiCall('GET', '/api/local/discovery/sources');
+      if (data.error) throw new Error(data.error);
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+    });
+
+  server.tool('zerocreds_discovery_preview',
+    'Scan available local sources and show credential metadata candidates without saving them. Call when the user asks about available access. Present provider, account, source and scopes clearly; do not catalog yet. Ask which candidates the user wants added, then call zerocreds_discovery_catalog only for those refs after the user confirms.',
+    { source_ids: z.array(z.enum(['github_cli', 'cloudflare_cli', 'gcloud_cli', 'macos_keychain', 'chrome'])).optional() },
+    async ({ source_ids }) => {
+      const data = await apiCall('POST', '/api/local/discovery/preview', { source_ids });
+      if (data.error) throw new Error(data.error);
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+    });
+
+  server.tool('zerocreds_discovery_catalog',
+    'Add only explicitly selected metadata candidates from a recent discovery preview. This writes a searchable local metadata catalog, never copies secrets. Call only after the user has reviewed the preview and chosen these refs.',
+    { preview_id: z.string().regex(/^[a-f0-9]{36}$/), refs: z.array(z.string().regex(/^disc_[a-f0-9]{24}$/)).min(1).max(200) },
+    async ({ preview_id, refs }) => {
+      const data = await apiCall('POST', '/api/local/discovery/catalog', { preview_id, refs });
+      if (data.error) throw new Error(data.error);
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+    });
+
+  server.tool('zerocreds_credentials_search',
+    'Search the approved local credential metadata catalog by provider, account, source, label or scope. Search results describe where access may exist; they do not prove a credential is usable. Use discovery preview when the user asks for a fresh inventory. Optionally search an active preview before the user chooses what to catalog.',
+    { q: z.string().min(1).max(256), preview_id: z.string().regex(/^[a-f0-9]{36}$/).optional(), limit: z.number().int().min(1).max(100).optional() },
+    async ({ q, preview_id, limit }) => {
+      const query = new URLSearchParams({ q });
+      if (preview_id) query.set('preview_id', preview_id);
+      if (limit) query.set('limit', String(limit));
+      const data = await apiCall('GET', `/api/local/discovery/search?${query}`);
+      if (data.error) throw new Error(data.error);
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+    });
+}
+
 server.tool(
   'zerocreds_check_status',
   'Check whether the user has submitted the ZeroCreds form. Poll every 5–10 seconds until status is "done" or "expired".',
