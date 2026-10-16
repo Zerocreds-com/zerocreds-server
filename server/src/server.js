@@ -1145,6 +1145,7 @@ function createApp(config = {}) {
   const CONNECT_PENDING_DIR = config.pendingDir ?? process.env.ZEROCREDS_PENDING_DIR ?? path.join(os.homedir(), 'connect-pending');
   const AGENT_TOKENS_DIR = config.tokensDir ?? process.env.ZEROCREDS_TOKENS_DIR ?? path.join(os.homedir(), 'agent-tokens');
   const LOCAL_CATALOG_FILE = config.localCatalogFile ?? process.env.ZEROCREDS_LOCAL_CATALOG_FILE ?? path.join(os.homedir(), '.config/zerocreds/local/connections.json');
+  const LOCAL_PROVIDER_POLICIES_FILE = config.localProviderPoliciesFile ?? process.env.ZEROCREDS_LOCAL_PROVIDER_POLICIES_FILE ?? path.join(os.homedir(), '.config/zerocreds/local/provider-policies.json');
   const DESTINATIONS_FILE = config.destinationsFile ?? process.env.ZEROCREDS_DESTINATIONS_FILE ?? path.join(os.homedir(), 'zerocreds-destinations.json');
   const INTEGRATORS_FILE = config.integratorsFile ?? process.env.ZEROCREDS_INTEGRATORS_FILE ?? path.join(os.homedir(), 'zerocreds-integrators.json');
   const BASE_URL = config.baseUrl ?? process.env.ZEROCREDS_BASE_URL ?? (LOCAL_MODE ? 'http://127.0.0.1:3456' : 'https://zerocreds.ru');
@@ -1167,6 +1168,8 @@ function createApp(config = {}) {
   const DONE_TTL_MS = 24 * 60 * 60 * 1000;
   const CLAIM_STALE_MS = 60 * 60 * 1000;
   const SWEEP_INTERVAL_MS = 10 * 60 * 1000;
+  const LOCAL_BROKER_GRANTS = new Map();
+  const LOCAL_BROKER_GRANT_TTL_MS = 60_000;
 
   for (const dir of [CONNECT_PENDING_DIR, AGENT_TOKENS_DIR]) {
     try { fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch {}
@@ -1193,6 +1196,60 @@ function createApp(config = {}) {
       if (error.code === 'ENOENT') return [];
       throw error;
     }
+  }
+
+  function getLocalProviderPolicy(provider) {
+    let policies;
+    if (config.localProviderPolicies && typeof config.localProviderPolicies === 'object') {
+      policies = config.localProviderPolicies;
+    } else {
+      let fd;
+      let stat;
+      try {
+        fd = fs.openSync(LOCAL_PROVIDER_POLICIES_FILE, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+        stat = fs.fstatSync(fd);
+      }
+      catch { return null; }
+      try {
+        if (!stat.isFile() || (stat.mode & 0o077) !== 0
+            || (process.getuid && stat.uid !== process.getuid()) || stat.size > 65536) return null;
+        policies = JSON.parse(fs.readFileSync(fd, 'utf8'));
+      } catch { return null; }
+      finally { fs.closeSync(fd); }
+    }
+    if (!policies || typeof policies !== 'object' || Array.isArray(policies)) return null;
+    const policy = policies[provider];
+    if (!policy || typeof policy !== 'object' || Array.isArray(policy)) return null;
+    const { login_url, auth_url, username_selector, password_selector, submit_selector,
+      success_selector, username_field, password_field } = policy;
+    if (![login_url, username_selector, password_selector, submit_selector, success_selector, username_field, password_field]
+      .every((value) => typeof value === 'string' && value.length > 0 && value.length <= 512)) return null;
+    if (username_selector === password_selector || username_field === password_field) return null;
+    let login;
+    try { login = new URL(login_url); } catch { return null; }
+    const loginHost = login.hostname.replace(/^\[|\]$/g, '');
+    const loopbackHttp = login.protocol === 'http:' && ['127.0.0.1', 'localhost', '::1'].includes(loginHost);
+    if ((login.protocol !== 'https:' && !loopbackHttp) || login.username || login.password || login.hash) return null;
+    let auth = null;
+    if (auth_url != null) {
+      try { auth = new URL(auth_url); } catch { return null; }
+      if ((auth.protocol !== 'https:' && !(loopbackHttp && auth.protocol === 'http:'))
+          || auth.origin !== login.origin || auth.username || auth.password || auth.hash) return null;
+    }
+    for (const name of [username_field, password_field]) {
+      if (!/^[a-zA-Z0-9_]{1,64}$/.test(name)) return null;
+    }
+    return {
+      origin: login.origin,
+      login_url: login.href,
+      auth_url: auth?.href || null,
+      username_selector,
+      password_selector,
+      submit_selector,
+      success_selector,
+      username_field,
+      password_field,
+    };
   }
 
   function writeLocalCatalog(entries) {
@@ -2153,8 +2210,12 @@ function createApp(config = {}) {
         created_at: entry.created_at,
         updated_at: entry.updated_at,
         last_used_at: entry.last_used_at,
+        last_use: entry.last_use || null,
       }));
+      const rejected = safe.filter((entry) => entry.state === 'active'
+        && ['invalid', 'revoked'].includes(entry.verification_status));
       const eligible = safe.filter((entry) => entry.state === 'active'
+        && !['invalid', 'revoked'].includes(entry.verification_status)
         && (!entry.credential_expires_at || Date.parse(entry.credential_expires_at) > Date.now()));
       const expired = safe.filter((entry) => entry.state === 'active'
         && entry.credential_expires_at && Date.parse(entry.credential_expires_at) <= Date.now());
@@ -2166,7 +2227,7 @@ function createApp(config = {}) {
       const missing = eligible.some((entry) => entry.keychain_status === 'missing');
       const resolution = available.length === 1 ? 'ready' : available.length > 1 ? 'ambiguous'
         : locked ? 'keychain_locked' : unavailable ? 'unavailable_here'
-          : expired.length ? 'expired' : missing ? 'missing' : 'missing';
+          : expired.length ? 'expired' : rejected.length ? 'invalid' : missing ? 'missing' : 'missing';
       return json(res, 200, { connections: safe, resolution,
         ...(resolution === 'ready' ? { connection: available[0] } : {}) });
     }
@@ -2222,6 +2283,113 @@ function createApp(config = {}) {
         permission_evidence: entry.permission_evidence,
         credential_expires_at: entry.credential_expires_at,
       });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/local/broker/grants') {
+      if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
+      const { isAdmin } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin) return json(res, 401, { error: 'unauthorized' });
+      const payload = await readJson(req);
+      if (!payload || typeof payload.provider !== 'string' || typeof payload.account_alias !== 'string'
+          || typeof payload.run_id !== 'string' || !/^[a-f0-9-]{36}$/.test(payload.run_id)) {
+        return json(res, 400, { error: 'provider, account_alias and a generated run_id are required' });
+      }
+      const provider = payload.provider.toLowerCase();
+      const alias = payload.account_alias.toLowerCase();
+      if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(provider) || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(alias)
+          || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(payload.run_id)) {
+        return json(res, 400, { error: 'invalid provider, account_alias or run_id' });
+      }
+      const policy = getLocalProviderPolicy(provider);
+      if (!policy) return json(res, 403, { error: 'no approved browser login policy for this provider' });
+      let entries;
+      try { entries = readLocalCatalog(); }
+      catch { return json(res, 503, { error: 'local catalog unavailable' }); }
+      const matches = entries.filter((entry) => String(entry.provider).toLowerCase() === provider
+        && String(entry.account_alias).toLowerCase() === alias);
+      if (matches.length !== 1) return json(res, matches.length ? 409 : 404,
+        { error: matches.length ? 'connection is ambiguous' : 'connection not found' });
+      const entry = matches[0];
+      if (entry.state !== 'active') return json(res, 409, { error: 'connection is revoked' });
+      if (['invalid', 'revoked'].includes(entry.verification_status)) return json(res, 409, { error: 'connection credential is invalid or revoked' });
+      if (entry.credential_expires_at && Date.parse(entry.credential_expires_at) <= Date.now()) {
+        return json(res, 409, { error: 'connection is expired' });
+      }
+      const now = Date.now();
+      for (const [key, grant] of LOCAL_BROKER_GRANTS) {
+        if (grant.expires_at <= now) LOCAL_BROKER_GRANTS.delete(key);
+      }
+      if (LOCAL_BROKER_GRANTS.size >= 128) return json(res, 429, { error: 'local broker is busy' });
+      const grant = crypto.randomBytes(32).toString('hex');
+      LOCAL_BROKER_GRANTS.set(grant, {
+        connection_id: entry.connection_id,
+        provider,
+        account_alias: alias,
+        run_id: payload.run_id,
+        expires_at: now + LOCAL_BROKER_GRANT_TTL_MS,
+        username_field: policy.username_field,
+        password_field: policy.password_field,
+      });
+      return json(res, 200, {
+        grant,
+        expires_at: new Date(now + LOCAL_BROKER_GRANT_TTL_MS).toISOString(),
+        broker_url: `${LOCAL_ORIGIN}/api/local/broker/redeem`,
+        provider,
+        account_alias: alias,
+        run_id: payload.run_id,
+        approved_origin: policy.origin,
+        login_url: policy.login_url,
+        auth_url: policy.auth_url,
+        username_selector: policy.username_selector,
+        password_selector: policy.password_selector,
+        submit_selector: policy.submit_selector,
+        success_selector: policy.success_selector,
+      });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/local/broker/redeem') {
+      if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
+      const remote = String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+      if (remote !== '127.0.0.1' && remote !== '::1') return json(res, 403, { error: 'loopback client required' });
+      const payload = await readJson(req);
+      if (!payload || typeof payload.grant !== 'string' || !/^[a-f0-9]{64}$/.test(payload.grant)) {
+        return json(res, 400, { error: 'invalid grant' });
+      }
+      const grant = LOCAL_BROKER_GRANTS.get(payload.grant);
+      LOCAL_BROKER_GRANTS.delete(payload.grant); // Single use, including failed attempts.
+      if (!grant || grant.expires_at <= Date.now()) return json(res, 401, { error: 'grant expired or already used' });
+      let entries;
+      try { entries = readLocalCatalog(); }
+      catch { return json(res, 503, { error: 'local catalog unavailable' }); }
+      const index = entries.findIndex((entry) => entry.connection_id === grant.connection_id
+        && entry.provider === grant.provider && entry.account_alias === grant.account_alias);
+      if (index < 0 || entries[index].state !== 'active'
+          || ['invalid', 'revoked'].includes(entries[index].verification_status)) {
+        return json(res, 409, { error: 'connection is no longer active' });
+      }
+      const entry = entries[index];
+      if (entry.credential_expires_at && Date.parse(entry.credential_expires_at) <= Date.now()) {
+        return json(res, 409, { error: 'connection is expired' });
+      }
+      let fields;
+      try { fields = await (config.localCredentialReader || readLocalKeychainEntry)(entry.storage); }
+      catch (error) {
+        return json(res, 409, { error: error.message === 'keychain_locked' ? 'keychain is locked' : 'credential unavailable' });
+      }
+      const username = fields[grant.username_field];
+      const password = fields[grant.password_field];
+      if (typeof username !== 'string' || !username || username.length > 8192
+          || typeof password !== 'string' || !password || password.length > 8192) {
+        return json(res, 409, { error: 'approved credential fields are missing' });
+      }
+      const usedAt = new Date().toISOString();
+      entry.last_used_at = usedAt;
+      entry.last_use = { operation: 'browser_login', run_id: grant.run_id, outcome: 'delivered', at: usedAt };
+      entry.updated_at = usedAt;
+      try { writeLocalCatalog(entries); }
+      catch { return json(res, 503, { error: 'local catalog unavailable' }); }
+      console.info('[local-broker] provider=%s alias=%s operation=browser_login outcome=delivered', grant.provider, grant.account_alias);
+      return json(res, 200, { username, password });
     }
 
     // ── POST /api/session/create ───────────────────────────────────────────────

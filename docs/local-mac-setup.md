@@ -18,4 +18,25 @@ The local MCP exposes `zerocreds_create_session`, `zerocreds_check_status`, `zer
 
 The form URL stays on the Mac. This local catalog is not synchronized to cloud Runner tasks. `zerocreds_connection_verify` checks GitHub and Cloudflare credentials from the local server, records identity and only permissions explicitly returned by the provider, and never returns the token. Cloudflare token validity does not prove a particular resource permission. Other providers remain unverified until a provider-specific safe probe is implemented.
 
+The local server also exposes a broker protocol for safe-playwright. It is disabled for every provider until an operator adds a private mode-0600 entry to `~/.config/zerocreds/local/provider-policies.json`. A policy pins HTTPS login/auth URLs, username/password selectors and the exact source field names stored in Keychain. The model cannot choose the origin or selectors. The broker issues a one-use grant that expires in 60 seconds; safe-playwright's audited filler redeems it directly over loopback, and the ZeroCreds MCP process receives only the grant and non-secret policy metadata. Redemption rechecks that the connection is active and unexpired, returns only the two approved fields, and records a value-free `browser_login` use event. Grants are in-memory and are invalidated on server restart.
+
+Example policy shape (replace selectors and fields with values reviewed for the actual site):
+
+```json
+{
+  "example": {
+    "login_url": "https://accounts.example.com/login",
+    "auth_url": "https://accounts.example.com/api/session",
+    "username_selector": "input[name=email]",
+    "password_selector": "input[type=password]",
+    "submit_selector": "button[type=submit]",
+    "success_selector": "[data-authenticated=true]",
+    "username_field": "username",
+    "password_field": "password"
+  }
+}
+```
+
+The example is documentation only; no provider is broker-enabled by the installer. The current broker flow supports an approved username/password form. OTP/CAPTCHA, federated redirects and storage-state TTL/revocation require the safe-playwright side of the linked integration before using this for real accounts.
+
 To remove the local integration, remove the `zerocreds` MCP entry from Codex and OpenCode, unload the LaunchAgent, then remove `~/.config/zerocreds/local` and `~/Library/Application Support/ZeroCreds` after deciding whether to retain metadata. Credentials stored in Keychain are separate and can be removed through Keychain Access.
