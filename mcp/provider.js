@@ -11,14 +11,57 @@ const API_OPERATIONS = Object.freeze({
   zerocreds_wallet_connection_revoke: 'wallet.connections.revoke',
 });
 
+// These are conservative collection shapes, not claims about service-specific
+// scopes. Prefer each provider's own token UI when it offers OAuth or scoped PATs.
+const SERVICE_CATALOG = Object.freeze([
+  ['github', 'GitHub', 'token', 'GitHub token / fine-grained personal access token'],
+  ['gitlab', 'GitLab', 'token', 'GitLab personal or project access token'],
+  ['cloudflare', 'Cloudflare', 'token', 'Cloudflare API token'],
+  ['google_cloud', 'Google Cloud', 'token', 'Google Cloud service account key or API token'],
+  ['aws', 'Amazon Web Services', 'login', 'Access key ID and secret access key'],
+  ['openai', 'OpenAI', 'token', 'OpenAI API key'],
+  ['anthropic', 'Anthropic', 'token', 'Anthropic API key'],
+  ['slack', 'Slack', 'token', 'Slack app or bot token'],
+  ['notion', 'Notion', 'token', 'Notion integration token'],
+  ['npm', 'npm', 'token', 'npm access token'],
+  ['vercel', 'Vercel', 'token', 'Vercel access token'],
+  ['sentry', 'Sentry', 'token', 'Sentry auth token'],
+  ['stripe', 'Stripe', 'token', 'Stripe restricted or secret key'],
+  ['linear', 'Linear', 'token', 'Linear API key'],
+].map(([id, name, kind, credentialHint]) => Object.freeze({ id, name, kind, credentialHint })));
+const SERVICE_ALIASES = Object.freeze({
+  gh: 'github', 'github.com': 'github', gitlabcom: 'gitlab', 'gitlab.com': 'gitlab', cf: 'cloudflare', 'cloudflare.com': 'cloudflare',
+  gcp: 'google_cloud', 'google cloud': 'google_cloud', aws: 'aws', 'amazon aws': 'aws',
+  'open ai': 'openai', 'api.openai.com': 'openai', 'console.anthropic.com': 'anthropic',
+});
+function normalizeService(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
+  const alias = SERVICE_ALIASES[normalized];
+  if (alias) return alias;
+  return SERVICE_CATALOG.some(service => service.id === normalized) ? normalized : null;
+}
+function getServiceTemplate(value) {
+  const id = normalizeService(value);
+  return SERVICE_CATALOG.find(service => service.id === id) || null;
+}
+
 const tools = [
   {
+    name: 'zerocreds_service_catalog',
+    description: 'List supported credential collection templates. For a known service, create a form using its canonical slug; the server chooses the credential fields. Never ask for a secret in chat. For an unknown service, ask only the missing non-secret connection details, then draft a minimal form spec and create it with explicit fields.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+    operation: API_OPERATIONS.zerocreds_wallet_form_create,
+    local: true,
+    handler: async () => ({ services: SERVICE_CATALOG.map(({ id, name, kind, credentialHint }) => ({ id, name, kind, credential_hint: credentialHint })), unknown_service_flow: 'draft_minimal_spec_then_create_with_explicit_fields' }),
+  },
+  {
     name: 'zerocreds_wallet_form_create',
-    description: 'Request a credential form for the current owner and profile. Returns a one-time form URL and value-free connection metadata. The caller cannot select an owner, profile, or storage destination.',
+    description: 'Create a ZeroCreds credential form for the current owner and profile. For a known service in zerocreds_service_catalog, pass its canonical provider slug only; omit kind and fields so the server chooses the safe default. Unknown services require a minimal explicit non-secret form spec. Ask the user only for required non-secret context (for example which GitHub account or what access is needed); never ask for or accept credential values in chat. Do not use service configuration APIs to satisfy a connection request. Returns one-time form URL and value-free metadata.',
     inputSchema: {
       type: 'object', additionalProperties: false,
       properties: {
-        provider: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]{0,63}$', description: 'Service slug, for example github or tilda.' },
+        provider: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]{0,63}$', description: 'Use a canonical slug from zerocreds_service_catalog for known services. For an unknown service, use a normalized service slug only after preparing a minimal field spec and confirming its service label with the user.' },
         kind: { type: 'string', enum: ['token', 'ssh', 'login'], default: 'token' },
         title: { type: 'string', maxLength: 200 },
         description: { type: 'string', maxLength: 2000 },
@@ -113,9 +156,10 @@ function createWalletProvider({ baseUrl, fetchImpl = globalThis.fetch, timeoutMs
       name: definition.name,
       description: definition.description,
       inputSchema: definition.inputSchema,
-      requiredBindings: [bindingForOperation(definition.operation)],
+      requiredBindings: definition.local ? [] : [bindingForOperation(definition.operation)],
       providerId: PROVIDER_ID,
       handler: async (args, context = {}) => {
+        if (definition.local) return definition.handler(args, context);
         let endpointUrl;
         try { endpointUrl = new URL(endpoint); } catch {}
         const localHttp = endpointUrl?.protocol === 'http:'
@@ -153,4 +197,4 @@ function createWalletProvider({ baseUrl, fetchImpl = globalThis.fetch, timeoutMs
   };
 }
 
-module.exports = { createWalletProvider, PROVIDER_ID, PROVIDER_VERSION, BINDING, API_OPERATIONS, bindingForOperation, projectResponse };
+module.exports = { createWalletProvider, PROVIDER_ID, PROVIDER_VERSION, BINDING, API_OPERATIONS, bindingForOperation, projectResponse, SERVICE_CATALOG, normalizeService, getServiceTemplate };

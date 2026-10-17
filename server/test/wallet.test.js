@@ -43,6 +43,7 @@ test('wallet form: scoped agent request, OpenBao write, D1 completion, value-fre
       return send(res, 200, { connection_id: connectionId, openbao_path: openbaoPath, state: connectionState });
     }
     if (req.url === '/internal/forms') return send(res, 200, { state: 'pending' });
+    if (req.url.includes('/probes/')) return send(res, 200, { state: 'written', kv_version: 1 });
     if (req.url === `/internal/connections/${connectionId}`) {
       if (req.headers['x-wallet-owner'] !== owner || req.headers['x-wallet-profile'] !== profile) {
         return send(res, 404, { error: 'connection_unavailable' });
@@ -159,3 +160,45 @@ test('wallet form: scoped agent request, OpenBao write, D1 completion, value-fre
     await worker.close();
   }
 });
+
+test('known wallet service uses canonical safe form metadata and default fields', async () => {
+  const owner = 'owner_a';
+  const profile = 'main';
+  const token = 'test-wallet-api-token-12345678901234567890';
+  const serviceToken = 'wallet-service-token-12345678901234567890';
+  const connectionId = crypto.randomUUID();
+  const openbaoPath = `secret/data/owners/${owner}/connections/${connectionId}`;
+  const worker = await listen(async (req, res) => {
+    const payload = req.method === 'POST' ? await body(req) : {};
+    if (req.headers.authorization !== `Bearer ${serviceToken}`) return send(res, 401, { error: 'unauthorized' });
+    if (req.url === '/internal/connections/allocate') return send(res, 200, { connection_id: connectionId, openbao_path: openbaoPath, state: 'allocated' });
+    if (req.url === '/internal/forms') return send(res, 200, { state: 'pending' });
+    return send(res, 404, { error: 'not_found' });
+  });
+  const bao = await listen(async (req, res) => {
+    if (req.url === '/v1/sys/capabilities-self') return send(res, 200, { capabilities: ['create', 'update'] });
+    if (req.url.includes('/metadata/')) return send(res, req.method === 'DELETE' ? 204 : 200, req.method === 'DELETE' ? {} : { data: { current_version: 1 } });
+    if (req.method === 'POST') return send(res, 200, { data: { version: 1 } });
+    return send(res, 200, { data: { version: 1 } });
+  });
+  let srv;
+  try {
+    srv = await startServer({ namedDestinations: { wallet: {
+      type: 'vault', address: bao.url, path: 'secret/data/owners/placeholder/connections/placeholder',
+      preflight_path_prefix: 'secret/data/owners/placeholder/probes', token: 'writer-token', preflight_metadata_token: 'metadata-token',
+    } }, app: { walletWorkerUrl: worker.url, walletServiceToken: serviceToken,
+      walletClients: { [token]: { owner_id: owner, profile_id: profile, destination: 'wallet' } } } });
+    const created = await request(srv.port, 'POST', '/api/wallet/forms', { provider: 'https://github.com' }, { Authorization: `Bearer ${token}` });
+    assert.equal(created.status, 200, JSON.stringify(created.body));
+    const pending = JSON.parse(fs.readFileSync(path.join(srv.pendingDir, `${created.body.form_id}.json`), 'utf8'));
+    assert.equal(pending.form.name, 'github');
+    assert.equal(pending.form.kind, 'token');
+    assert.equal(pending.title, 'Connect GitHub');
+    assert.match(pending.description, /fine-grained token/);
+    assert.deepEqual(pending.fields.map(({ name, type }) => ({ name, type })), [{ name: 'token', type: 'password' }]);
+  } finally {
+    if (srv) await new Promise(resolve => srv.server.close(resolve));
+    await Promise.all([worker.close(), bao.close()]);
+  }
+});
+
