@@ -522,6 +522,30 @@ const FORM_KINDS = {
   ssh: [{ name: 'private_key', label: 'SSH private key', type: 'textarea' }],
   login: [{ name: 'username', label: 'Username' }, { name: 'password', label: 'Password', type: 'password' }],
 };
+// Canonical service templates keep agent-authored presentation text from
+// silently changing a known provider's identity or requesting excess scope.
+const WALLET_SERVICE_TEMPLATES = Object.freeze({
+  github: { kind: 'token', title: 'Connect GitHub', description: 'Enter a GitHub fine-grained token with only the access required for the requested task.' },
+  gitlab: { kind: 'token', title: 'Connect GitLab', description: 'Enter a GitLab access token with only the permissions required for the requested task.' },
+  cloudflare: { kind: 'token', title: 'Connect Cloudflare', description: 'Enter a Cloudflare API token scoped to the required account and permissions.' },
+  google_cloud: { kind: 'token', title: 'Connect Google Cloud', description: 'Enter the requested Google Cloud token or service account key. Prefer short-lived, narrowly scoped credentials where available.' },
+  aws: { kind: 'login', title: 'Connect Amazon Web Services', description: 'Enter the AWS access key ID as username and secret access key as password. Grant only the permissions required for the requested task.' },
+  openai: { kind: 'token', title: 'Connect OpenAI', description: 'Enter an OpenAI API key with only the access required for the requested task.' },
+  anthropic: { kind: 'token', title: 'Connect Anthropic', description: 'Enter an Anthropic API key with only the access required for the requested task.' },
+  slack: { kind: 'token', title: 'Connect Slack', description: 'Enter the Slack app or bot token for the requested workspace and task.' },
+  notion: { kind: 'token', title: 'Connect Notion', description: 'Enter the Notion integration token and share only the required pages with that integration.' },
+  npm: { kind: 'token', title: 'Connect npm', description: 'Enter an npm access token with only the required package permissions.' },
+  vercel: { kind: 'token', title: 'Connect Vercel', description: 'Enter a Vercel access token scoped to the required team and project where possible.' },
+  sentry: { kind: 'token', title: 'Connect Sentry', description: 'Enter a Sentry auth token with only the permissions required for the requested task.' },
+  stripe: { kind: 'token', title: 'Connect Stripe', description: 'Enter a Stripe restricted key with only the permissions required for the requested task.' },
+  linear: { kind: 'token', title: 'Connect Linear', description: 'Enter a Linear API key with only the access required for the requested task.' },
+});
+const WALLET_SERVICE_ALIASES = Object.freeze({ gh: 'github', 'github.com': 'github', 'gitlab.com': 'gitlab', cf: 'cloudflare', 'cloudflare.com': 'cloudflare', gcp: 'google_cloud', aws: 'aws', 'amazon aws': 'aws', 'open ai': 'openai' });
+function canonicalWalletProvider(value) {
+  if (typeof value !== 'string') return null;
+  const provider = value.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
+  return WALLET_SERVICE_ALIASES[provider] || (Object.hasOwn(WALLET_SERVICE_TEMPLATES, provider) ? provider : null);
+}
 // The handle is not a secret: cred:<name> in the owner's space.
 const HANDLE_NAME_RE = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
 const SUBMIT_TOKEN_RE = /^zcs_[a-f0-9]{48}$/;
@@ -2827,8 +2851,13 @@ function createApp(config = {}) {
       if (!scope) return json(res, 401, { error: 'unauthorized' });
       const payload = await readJson(req);
       if (!payload) return json(res, 400, { error: 'bad json' });
-      const { provider, kind = 'token', title, description, ttl_minutes = 30, idempotency_key } = payload;
-      if (typeof provider !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(provider)
+      const requestedProvider = payload.provider;
+      const provider = canonicalWalletProvider(requestedProvider) || requestedProvider;
+      const serviceTemplate = canonicalWalletProvider(requestedProvider) ? WALLET_SERVICE_TEMPLATES[canonicalWalletProvider(requestedProvider)] : null;
+      const { kind = serviceTemplate?.kind || 'token', title, description, ttl_minutes = 30, idempotency_key } = payload;
+      const resolvedTitle = serviceTemplate?.title || title || `Connect ${provider}`;
+      const resolvedDescription = serviceTemplate?.description || description || '';
+      if (typeof requestedProvider !== 'string' || !(canonicalWalletProvider(requestedProvider) || /^[a-z0-9][a-z0-9_-]{0,63}$/.test(requestedProvider))
         || !Object.hasOwn(FORM_KINDS, kind) || (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 200))
         || (description !== undefined && (typeof description !== 'string' || description.length > 2000))
         || !Number.isInteger(ttl_minutes) || ttl_minutes < 1 || ttl_minutes > 1440
@@ -2837,7 +2866,7 @@ function createApp(config = {}) {
       const validated = validateFields(payload.fields === undefined ? FORM_KINDS[kind] : payload.fields);
       if (validated.error) return json(res, 400, { error: validated.error });
       const requestFingerprint = sha256Hex(canonicalJson({ provider, kind,
-        title: title || `Connect ${provider}`, description: description || '',
+        title: resolvedTitle, description: resolvedDescription,
         fields: validated.fields, ttl_minutes }));
       let allocation, destination;
       try {
@@ -2873,7 +2902,7 @@ function createApp(config = {}) {
       const submitToken = 'zcs_' + crypto.randomBytes(24).toString('hex');
       const expires = Date.now() + ttl_minutes * 60_000;
       const pending = {
-        token: formId, title: title || `Connect ${provider}`, description: description || '',
+        token: formId, title: resolvedTitle, description: resolvedDescription,
         fields: validated.fields, destination: Object.fromEntries(Object.entries(destination)
           .filter(([key]) => !['token', 'role_id', 'secret_id', 'preflight_metadata_token'].includes(key))),
         preflight: preflight.preflight, destinations_by_level: null, expires, notify: null,
