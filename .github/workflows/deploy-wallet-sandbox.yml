@@ -49,12 +49,17 @@ jobs:
           const record = issuers['trained-assist-mcp-host-sandbox'];
           if (!record || !record.profiles || Object.keys(record.keys || {}).join(',') !== 'wallet-sandbox-20261016'
               || record.keys['wallet-sandbox-20261016'] !== process.env.PUBLIC_KEY) process.exit(1);
-          for (const profile of Object.values(record.profiles)) {
+          for (const profile of Object.values(record.profiles || {})) {
             if (!profile || !/^[A-Za-z0-9_-]{1,100}$/.test(profile.owner_id || '')
                 || !/^[A-Za-z0-9_-]{1,100}$/.test(profile.profile_id || '')
                 || profile.destination !== 'wallet_sandbox'
                 || !Array.isArray(profile.callers) || !profile.callers.includes('human')) process.exit(1);
           }
+          const scopes = record.sandboxProfilePrefixes || [];
+          if (!Array.isArray(scopes) || scopes.length !== 1) process.exit(1);
+          const scope = scopes[0];
+          if (!scope || scope.prefix !== 'sbx_' || !/^[A-Za-z0-9_-]{1,100}$/.test(scope.owner_id || '')
+              || scope.destination !== 'wallet_sandbox' || JSON.stringify(scope.callers) !== '["human"]') process.exit(1);
           NODE
       - name: Install sandbox metadata Worker dependencies
         if: ${{ inputs.dry_run == false }}

@@ -1499,7 +1499,23 @@ function createApp(config = {}) {
       profiles.set(profileId, Object.freeze({ owner_id: scope.owner_id, profile_id: profileId,
         destination: scope.destination, callers: new Set(scope.callers) }));
     }
-    WALLET_ASSERTION_ISSUERS.set(issuer, { keys, profiles });
+    const sandboxProfilePrefixes = [];
+    if (record.sandboxProfilePrefixes !== undefined && !Array.isArray(record.sandboxProfilePrefixes)) {
+      throw new Error('invalid wallet assertion sandbox profile prefixes');
+    }
+    for (const scope of record.sandboxProfilePrefixes || []) {
+      if (!scope || typeof scope !== 'object' || Object.keys(scope).sort().join(',') !== 'callers,destination,owner_id,prefix'
+        || !/^[A-Za-z0-9_-]{1,60}$/.test(scope.prefix || '')
+        || !/^[A-Za-z0-9_-]{1,100}$/.test(scope.owner_id || '')
+        || !isSafeKey(scope.destination || '') || !Object.hasOwn(NAMED_DESTINATIONS, scope.destination)
+        || !Array.isArray(scope.callers) || !scope.callers.length
+        || scope.callers.some(caller => !['human', 'machine'].includes(caller))) {
+        throw new Error('invalid wallet assertion sandbox profile prefix');
+      }
+      sandboxProfilePrefixes.push(Object.freeze({ prefix: scope.prefix, owner_id: scope.owner_id,
+        destination: scope.destination, callers: new Set(scope.callers) }));
+    }
+    WALLET_ASSERTION_ISSUERS.set(issuer, { keys, profiles, sandboxProfilePrefixes });
   }
   function parseWalletAssertion(token, operation) {
     try {
@@ -1529,7 +1545,10 @@ function createApp(config = {}) {
       if (claims.caller_class === 'machine') {
         if (!/^[A-Za-z0-9_.:-]{1,200}$/.test(claims.run_id || '')) return null;
       } else if (claims.run_id !== undefined) return null;
-      const profile = issuer.profiles.get(claims.profile_id);
+      const profile = issuer.profiles.get(claims.profile_id) || issuer.sandboxProfilePrefixes
+        .filter(scope => claims.profile_id.startsWith(scope.prefix))
+        .map(scope => Object.freeze({ owner_id: scope.owner_id, profile_id: claims.profile_id,
+          destination: scope.destination, callers: scope.callers }))[0];
       if (!profile || !profile.callers.has(claims.caller_class) || profile.owner_id !== claims.owner_id
         || claims.owner_id !== claims.owner_id.trim()) return null;
       return { issuer: claims.iss, profile, jti: claims.jti, exp: claims.exp };

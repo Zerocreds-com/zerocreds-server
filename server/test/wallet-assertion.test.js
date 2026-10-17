@@ -23,6 +23,8 @@ function jwt(privateKey, claims, kid = 'host-key-1') {
 test('wallet host assertions bind audience, owner, profile, caller, operation, expiry and one-time jti', async () => {
   const owner = 'owner_a';
   const profile = 'profile_a';
+  let expectedOwner = owner;
+  let expectedProfile = profile;
   const connectionId = 'connection_123';
   const serviceToken = 'wallet-service-token-12345678901234567890';
   const seenAssertions = new Set();
@@ -43,8 +45,8 @@ test('wallet host assertions bind audience, owner, profile, caller, operation, e
       }
       return;
     }
-    assert.equal(req.headers['x-wallet-owner'], owner);
-    assert.equal(req.headers['x-wallet-profile'], profile);
+    assert.equal(req.headers['x-wallet-owner'], expectedOwner);
+    assert.equal(req.headers['x-wallet-profile'], expectedProfile);
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ connection_id: connectionId, provider: 'github', state: 'active', kv_version: 2, updated_at: 123 }));
   });
@@ -56,6 +58,7 @@ test('wallet host assertions bind audience, owner, profile, caller, operation, e
         'https://trained-assist.example': {
           keys: { 'host-key-1': publicKey.export({ type: 'spki', format: 'pem' }).toString() },
           profiles: { [profile]: { owner_id: owner, profile_id: profile, destination: 'wallet', callers: ['human', 'machine'] } },
+          sandboxProfilePrefixes: [{ prefix: 'sbx_', owner_id: 'sandbox_owner', destination: 'wallet', callers: ['human'] }],
         },
       },
     } });
@@ -97,6 +100,16 @@ test('wallet host assertions bind audience, owner, profile, caller, operation, e
     const machine = claims({ caller_class: 'machine', aud: 'zerocreds-wallet:machine', run_id: 'run_20261016_01' });
     const machineResult = await request(srv.port, 'GET', `/api/wallet/connections/${connectionId}`, undefined, auth(machine));
     assert.equal(machineResult.status, 200);
+
+    expectedOwner = 'sandbox_owner';
+    expectedProfile = `sbx_${crypto.randomBytes(18).toString('hex')}`;
+    const sandboxHuman = claims({ owner_id: expectedOwner, profile_id: expectedProfile, jti: crypto.randomBytes(20).toString('base64url') });
+    const sandboxResult = await request(srv.port, 'GET', `/api/wallet/connections/${connectionId}`, undefined, auth(sandboxHuman));
+    assert.equal(sandboxResult.status, 200);
+    const sandboxMachine = { ...sandboxHuman, caller_class: 'machine', aud: 'zerocreds-wallet:machine', run_id: 'run_20261016_01', jti: crypto.randomBytes(20).toString('base64url') };
+    assert.equal((await request(srv.port, 'GET', `/api/wallet/connections/${connectionId}`, undefined, auth(sandboxMachine))).status, 401);
+    const wrongSandboxOwner = { ...sandboxHuman, owner_id: owner, jti: crypto.randomBytes(20).toString('base64url') };
+    assert.equal((await request(srv.port, 'GET', `/api/wallet/connections/${connectionId}`, undefined, auth(wrongSandboxOwner))).status, 401);
   } finally {
     await srv.stop();
     await worker.close();
