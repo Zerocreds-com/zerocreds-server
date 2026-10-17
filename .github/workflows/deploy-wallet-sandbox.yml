@@ -1,0 +1,109 @@
+name: Deploy ZeroCreds wallet sandbox
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Validate the metadata Worker configuration without deploying
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zerocreds-wallet-sandbox
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: sandbox
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Validate isolated sandbox inputs
+        if: ${{ inputs.dry_run == false }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          WALLET_SERVICE_TOKEN: ${{ secrets.WALLET_SERVICE_TOKEN }}
+          OPENBAO_ROOT_TOKEN: ${{ secrets.OPENBAO_ROOT_TOKEN }}
+          ZEROCREDS_ADMIN_TOKEN: ${{ secrets.ZEROCREDS_ADMIN_TOKEN }}
+          ZEROCREDS_WALLET_ASSERTION_ISSUERS_JSON: ${{ secrets.WALLET_ASSERTION_ISSUERS_JSON }}
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$WALLET_SERVICE_TOKEN" && test "${#WALLET_SERVICE_TOKEN}" -ge 32
+          test -n "$OPENBAO_ROOT_TOKEN" && test "${#OPENBAO_ROOT_TOKEN}" -ge 32
+          test -n "$ZEROCREDS_ADMIN_TOKEN" && test "${#ZEROCREDS_ADMIN_TOKEN}" -ge 32
+          PUBLIC_KEY=$(node -e "const fs=require('node:fs');const c=require('node:crypto');const j=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/zerocreds-host-signing-key.json'));process.stdout.write(c.createPublicKey({key:j,format:'jwk'}).export({type:'spki',format:'pem'}))")
+          export PUBLIC_KEY
+          export ISSUERS_JSON="$ZEROCREDS_WALLET_ASSERTION_ISSUERS_JSON"
+          node <<'NODE'
+          const issuers = JSON.parse(process.env.ISSUERS_JSON);
+          const record = issuers['trained-assist-mcp-host-sandbox'];
+          if (!record || !record.profiles || Object.keys(record.keys || {}).join(',') !== 'wallet-sandbox-20261016'
+              || record.keys['wallet-sandbox-20261016'] !== process.env.PUBLIC_KEY) process.exit(1);
+          for (const profile of Object.values(record.profiles)) {
+            if (!profile || !/^[A-Za-z0-9_-]{1,100}$/.test(profile.owner_id || '')
+                || !/^[A-Za-z0-9_-]{1,100}$/.test(profile.profile_id || '')
+                || profile.destination !== 'wallet_sandbox'
+                || !Array.isArray(profile.callers) || !profile.callers.includes('human')) process.exit(1);
+          }
+          NODE
+      - name: Install sandbox metadata Worker dependencies
+        if: ${{ inputs.dry_run == false }}
+        working-directory: wallet-worker
+        run: npm ci
+      - name: Apply sandbox metadata migrations (only on deploy)
+        working-directory: wallet-worker
+        if: ${{ inputs.dry_run == false }}
+        run: npx wrangler@4.146.0 d1 migrations apply zerocreds-wallet-sandbox --remote --config wrangler.sandbox.jsonc
+      - name: Validate API bundle without deployment
+        if: ${{ inputs.dry_run }}
+        working-directory: server
+        run: docker build -f Dockerfile -t zerocreds-wallet-sandbox .
+      - name: Deploy metadata Worker
+        working-directory: wallet-worker
+        if: ${{ inputs.dry_run == false }}
+        run: npx wrangler@4.146.0 deploy --config wrangler.sandbox.jsonc
+      - name: Set metadata Worker service token
+        working-directory: wallet-worker
+        if: ${{ inputs.dry_run == false }}
+        run: printf '%s' "$WALLET_SERVICE_TOKEN" | npx wrangler@4.146.0 secret put WALLET_SERVICE_TOKEN --config wrangler.sandbox.jsonc
+      - name: Install ZeroCreds API dependencies
+        if: ${{ inputs.dry_run == false }}
+        working-directory: server
+        run: npm ci --omit=dev
+      - name: Build wallet API container
+        working-directory: server
+        if: ${{ inputs.dry_run == false }}
+        run: docker build -f Dockerfile -t zerocreds-wallet-sandbox .
+      - name: Check metadata Worker bundle
+        if: ${{ inputs.dry_run }}
+        working-directory: wallet-worker
+        run: |
+          npm ci
+          npx wrangler@4.146.0 deploy --dry-run --config wrangler.sandbox.jsonc
+      - name: Deploy wallet API container
+        working-directory: server
+        if: ${{ inputs.dry_run == false }}
+        run: npx wrangler@4.146.0 deploy --config wrangler.sandbox.jsonc
+      - name: Set isolated disposable sandbox secrets
+        working-directory: server
+        if: ${{ inputs.dry_run == false }}
+        run: |
+          printf '%s' "$OPENBAO_ROOT_TOKEN" | npx wrangler@4.146.0 secret put OPENBAO_ROOT_TOKEN --config wrangler.sandbox.jsonc
+          printf '%s' "$ZEROCREDS_ADMIN_TOKEN" | npx wrangler@4.146.0 secret put ZEROCREDS_ADMIN_TOKEN --config wrangler.sandbox.jsonc
+          printf '%s' "$WALLET_SERVICE_TOKEN" | npx wrangler@4.146.0 secret put ZEROCREDS_WALLET_SERVICE_TOKEN --config wrangler.sandbox.jsonc
+          printf '%s' "$ZEROCREDS_WALLET_ASSERTION_ISSUERS_JSON" | npx wrangler@4.146.0 secret put ZEROCREDS_WALLET_ASSERTION_ISSUERS_JSON --config wrangler.sandbox.jsonc
+      - name: Report deployed revisions only
+        if: ${{ inputs.dry_run == false }}
+        run: |
+          npx wrangler@4.146.0 deployments list --name zerocreds-wallet-metadata-sandbox --config wallet-worker/wrangler.sandbox.jsonc
+          npx wrangler@4.146.0 deployments list --name zerocreds-wallet-api-sandbox --config server/wrangler.sandbox.jsonc
