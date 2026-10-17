@@ -8,21 +8,32 @@ const fs = require('node:fs');
 
 const MAX_OUTPUT = 1024 * 1024;
 const MAX_ITEMS = 2000;
+const COMMAND_TIMEOUT_MS = 5000;
 
-function run(command, args, options = {}) {
+function run(command, args, options = {}, timeoutMs = COMMAND_TIMEOUT_MS) {
   return new Promise((resolve) => {
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'ignore'], ...options });
     let stdout = '';
     let size = 0;
-  let settled = false;
-  const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
+    let settled = false;
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish({ ok: false, stdout: '' });
+    }, timeoutMs);
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
     child.stdout.on('data', (chunk) => {
+      if (settled) return;
       size += chunk.length;
-    if (size > MAX_OUTPUT) { child.kill(); finish({ ok: false, stdout: '' }); return; }
+      if (size > MAX_OUTPUT) { child.kill('SIGKILL'); finish({ ok: false, stdout: '' }); return; }
       stdout += chunk.toString('utf8');
     });
-  child.on('error', () => finish({ ok: false, stdout: '' }));
-  child.on('close', (code) => finish({ ok: code === 0 && size <= MAX_OUTPUT, stdout }));
+    child.on('error', () => finish({ ok: false, stdout: '' }));
+    child.on('close', (code) => finish({ ok: code === 0 && size <= MAX_OUTPUT, stdout }));
   });
 }
 
@@ -133,4 +144,4 @@ function searchCredentialMetadata(items, query, limit = 50) {
   }).filter((item) => item.search_score > 0).sort((a, b) => b.search_score - a.search_score).slice(0, Math.max(1, Math.min(100, limit)));
 }
 
-module.exports = { discoverCredentialSources, searchCredentialMetadata, makeCandidate };
+module.exports = { discoverCredentialSources, searchCredentialMetadata, makeCandidate, run };

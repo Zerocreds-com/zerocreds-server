@@ -2,7 +2,15 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { discoverCredentialSources, searchCredentialMetadata } = require('../src/credential-discovery');
+const { discoverCredentialSources, searchCredentialMetadata, run } = require('../src/credential-discovery');
+
+test('discovery subprocesses time out and discard partial output', async () => {
+  const started = Date.now();
+  const result = await run(process.execPath, ['-e', "process.stdout.write('partial'); setInterval(() => {}, 1000)"], {}, 50);
+  assert.equal(result.ok, false);
+  assert.equal(result.stdout, '');
+  assert.ok(Date.now() - started < 2000, 'hung provider CLI should not stall discovery');
+});
 
 test('discovery parses provider metadata without ever returning credential values', async () => {
   const responses = {
