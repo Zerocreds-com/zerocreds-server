@@ -41,9 +41,28 @@ function source(id, status, count = 0, reason = undefined) {
   return { source_id: id, status, candidate_count: count, ...(reason ? { reason } : {}) };
 }
 
-function makeCandidate(provider, sourceId, account, label, scopes = []) {
+// Candidate categories let the agent separate credential-shaped items from OS
+// noise (Wi-Fi SSIDs, Bluetooth keys, Apple internals) without hiding anything.
+const CATEGORIES = Object.freeze(['credential', 'wifi', 'bluetooth', 'apple-system', 'browser', 'vpn', 'other']);
+
+function classifyKeychainEntry(entry) {
+  const service = String(entry.service || entry.server || '').toLowerCase();
+  const haystack = `${service} ${String(entry.label || '').toLowerCase()} ${String(entry.account || '').toLowerCase()}`;
+  if (/airport/.test(service) || /\bwifi|wi-fi\b/.test(haystack)) return 'wifi';
+  if (/bluetooth/.test(haystack)) return 'bluetooth';
+  if (/vpn|wireguard|surfshark|proton|windscribe|openvpn|tailscale/.test(haystack)) return 'vpn';
+  if (/chrome|safari|firefox|safe storage|safe meeting|zoom|browser/.test(haystack)) return 'browser';
+  if (/^com\.apple\.|^apple |parallels|metadata|telephony|handoff|persistent state/.test(haystack)) return 'apple-system';
+  if (/token|secret|password|passwd|api[-_ ]?key|apikey|credential|pat\b|auth|hmac|encryption/.test(haystack)) return 'credential';
+  return 'other';
+}
+
+// `discriminator` participates in the ref but is never stored: two distinct
+// Keychain items can share account + label and differ only by service/server.
+function makeCandidate(provider, sourceId, account, label, scopes = [], discriminator = '') {
   const safeAccount = String(account || 'default').slice(0, 128);
-  const ref = crypto.createHash('sha256').update(`${sourceId}\0${provider}\0${safeAccount}\0${label || ''}`).digest('hex').slice(0, 24);
+  const identity = `${sourceId}\0${provider}\0${safeAccount}\0${label || ''}\0${discriminator}`;
+  const ref = crypto.createHash('sha256').update(identity).digest('hex').slice(0, 24);
   return {
     ref: `disc_${ref}`, provider, source_id: sourceId,
     account: safeAccount, label: String(label || provider).slice(0, 128),
@@ -67,6 +86,7 @@ async function scanGithub(runCommand = run) {
       candidates.push(makeCandidate('github', 'github_cli', entry.login, host, scopes));
       candidates.at(-1).active = entry.active === true;
       candidates.at(-1).authentication_status = state === 'success' ? 'authenticated' : 'unknown';
+      candidates.at(-1).category = 'credential';
     }
   }
   return { source: source('github_cli', candidates.length ? 'found' : 'empty', candidates.length), candidates: candidates.slice(0, MAX_ITEMS) };
@@ -80,6 +100,7 @@ async function scanCloudflare(runCommand = run) {
   const entries = [parsed.user, ...(Array.isArray(parsed.accounts) ? parsed.accounts : [])].filter((x) => x && typeof x === 'object');
   const candidates = entries.map((entry, i) => makeCandidate('cloudflare', 'cloudflare_cli',
     entry.email || entry.name || entry.id || `account-${i + 1}`, entry.name || 'Cloudflare account'));
+  for (const candidate of candidates) candidate.category = 'credential';
   return { source: source('cloudflare_cli', candidates.length ? 'found' : 'empty', candidates.length), candidates: candidates.slice(0, MAX_ITEMS) };
 }
 
@@ -90,6 +111,7 @@ async function scanGcloud(runCommand = run) {
   try { parsed = JSON.parse(result.stdout); } catch { return { source: source('gcloud_cli', 'unavailable', 0, 'status_unrecognized'), candidates: [] }; }
   const candidates = (Array.isArray(parsed) ? parsed : []).filter((x) => typeof x.account === 'string')
     .map((x) => makeCandidate('google_cloud', 'gcloud_cli', x.account, x.status === 'ACTIVE' ? 'Active Google Cloud account' : 'Google Cloud account'));
+  for (const candidate of candidates) candidate.category = 'credential';
   return { source: source('gcloud_cli', candidates.length ? 'found' : 'empty', candidates.length), candidates: candidates.slice(0, MAX_ITEMS) };
 }
 
@@ -118,8 +140,14 @@ function discoverCredentialSources(options = {}) {
       try { result = await keychainLister(helperPath); }
       catch { result = { available: false, reason: 'keychain_metadata_unavailable', items: [] }; }
       const found = (result.items || []).slice(0, MAX_ITEMS).filter((entry) => entry && (entry.account || entry.service || entry.label));
-      for (const entry of found) candidates.push(makeCandidate('keychain', 'macos_keychain',
-        entry.account || entry.server || 'unknown', entry.label || entry.service || 'Keychain item'));
+      for (const entry of found) {
+        const candidate = makeCandidate('keychain', 'macos_keychain',
+          entry.account || entry.server || 'unknown', entry.label || entry.service || 'Keychain item',
+          [], entry.service || entry.server || '');
+        candidate.category = classifyKeychainEntry(entry);
+        if (typeof entry.service === 'string' && entry.service) candidate.service = entry.service.slice(0, 128);
+        candidates.push(candidate);
+      }
       sources.push(source('macos_keychain', result.available ? (found.length ? 'found' : 'empty') : 'unavailable', found.length,
         result.available ? undefined : result.reason || 'keychain_metadata_unavailable'));
       const chrome = path.join(home, 'Library/Application Support/Google/Chrome');
@@ -130,7 +158,11 @@ function discoverCredentialSources(options = {}) {
       sources.push(source('macos_keychain', 'unsupported_platform'));
       sources.push(source('chrome', 'unsupported_platform'));
     }
-    return { sources, candidates: candidates.slice(0, MAX_ITEMS) };
+    // Defensive: a ref identifies one candidate. Keep the first occurrence so a
+    // duplicated identity can never break the preview → catalog handshake.
+    const byRef = new Map();
+    for (const candidate of candidates) if (!byRef.has(candidate.ref)) byRef.set(candidate.ref, candidate);
+    return { sources, candidates: [...byRef.values()].slice(0, MAX_ITEMS) };
   });
 }
 
@@ -138,10 +170,11 @@ function searchCredentialMetadata(items, query, limit = 50) {
   const terms = String(query || '').toLowerCase().split(/[^a-z0-9@._-]+/).filter(Boolean);
   if (!terms.length) return [];
   return items.map((item) => {
-    const haystack = [item.provider, item.source_id, item.account, item.label, ...(item.scopes || [])].join(' ').toLowerCase();
+    const haystack = [item.provider, item.source_id, item.account, item.label, item.service, item.category, ...(item.scopes || [])]
+      .filter((part) => typeof part === 'string').join(' ').toLowerCase();
     const score = terms.reduce((sum, term) => sum + (haystack.includes(term) ? (String(item.provider).toLowerCase() === term ? 5 : 1) : 0), 0);
     return { ...item, search_score: score };
   }).filter((item) => item.search_score > 0).sort((a, b) => b.search_score - a.search_score).slice(0, Math.max(1, Math.min(100, limit)));
 }
 
-module.exports = { discoverCredentialSources, searchCredentialMetadata, makeCandidate, run };
+module.exports = { discoverCredentialSources, searchCredentialMetadata, makeCandidate, classifyKeychainEntry, CATEGORIES, run };

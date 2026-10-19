@@ -11,7 +11,7 @@ const crypto = require('crypto');
 const { startNalogLogin, confirmNalogCode } = require('./nalog-login');
 const { saveToDestination, testDestination, validateDestination, resolveTemplate } = require('./destinations');
 const { canonicalJson, sha256Hex, loadSigningKey, signPayload } = require('./receipts');
-const { discoverCredentialSources, searchCredentialMetadata } = require('./credential-discovery');
+const { discoverCredentialSources, searchCredentialMetadata, CATEGORIES } = require('./credential-discovery');
 
 // ── Module-level pure helpers ──────────────────────────────────────────────────
 
@@ -2468,11 +2468,22 @@ function createApp(config = {}) {
             && (!Array.isArray(payload.source_ids) || payload.source_ids.some((id) => typeof id !== 'string' || id.length > 64))) {
           return json(res, 400, { error: 'source_ids must be an array of source identifiers' });
         }
+        if (payload && payload.categories !== undefined
+            && (!Array.isArray(payload.categories) || payload.categories.some((c) => typeof c !== 'string' || !CATEGORIES.includes(c)))) {
+          return json(res, 400, { error: `categories must be an array of: ${CATEGORIES.join(', ')}` });
+        }
         let scan;
         try { scan = await (config.localCredentialDiscovery || discoverCredentialSources)(config.localCredentialDiscoveryOptions || {}); }
         catch { return json(res, 503, { error: 'credential source discovery failed safely' }); }
-        const selected = payload?.source_ids?.length
+        const bySource = payload?.source_ids?.length
           ? scan.candidates.filter((item) => payload.source_ids.includes(item.source_id)) : scan.candidates;
+        const categoryCounts = {};
+        for (const item of bySource) {
+          const category = CATEGORIES.includes(item.category) ? item.category : 'other';
+          categoryCounts[category] = (categoryCounts[category] || 0) + 1;
+        }
+        const selected = payload?.categories?.length
+          ? bySource.filter((item) => payload.categories.includes(item.category || 'other')) : bySource;
         if (selected.length > 200) return json(res, 413, { error: 'too many candidates; select a source or search the preview' });
         const previewId = crypto.randomBytes(18).toString('hex');
         const previewExpiresAt = Date.now() + 6 * 60 * 60 * 1000;
@@ -2481,6 +2492,7 @@ function createApp(config = {}) {
         for (const [id, preview] of LOCAL_DISCOVERY_PREVIEWS) if (preview.expires <= Date.now()) LOCAL_DISCOVERY_PREVIEWS.delete(id);
         return json(res, 200, { preview_id: previewId, expires_at: expiresAt, sources: scan.sources,
           candidate_count: selected.length, candidates: selected,
+          category_counts: categoryCounts, filtered_out: bySource.length - selected.length,
           requires_user_confirmation_to_catalog: true, secret_values_collected: false });
       }
       if (req.method === 'POST' && url.pathname === '/api/local/discovery/catalog') {
@@ -2495,9 +2507,15 @@ function createApp(config = {}) {
           LOCAL_DISCOVERY_PREVIEWS.delete(payload.preview_id);
           return json(res, 410, { error: 'discovery preview expired; run preview again' });
         }
-        const selectedRefs = new Set(payload.refs);
-        const selected = preview.candidates.filter((item) => selectedRefs.has(item.ref));
-        if (selected.length !== selectedRefs.size) return json(res, 400, { error: 'one or more refs are not in this preview' });
+        // A ref identifies one candidate. Compare the *set* of requested refs
+        // against the refs actually present, and de-duplicate so a repeated ref
+        // can never be mistaken for "a ref that is not in this preview".
+        const requestedRefs = [...new Set(payload.refs)];
+        const byRef = new Map();
+        for (const item of preview.candidates) if (!byRef.has(item.ref)) byRef.set(item.ref, item);
+        const missing = requestedRefs.filter((ref) => !byRef.has(ref));
+        if (missing.length) return json(res, 400, { error: 'one or more refs are not in this preview' });
+        const selected = requestedRefs.map((ref) => byRef.get(ref));
         if (selected.some((item) => !['github', 'cloudflare', 'google_cloud', 'keychain'].includes(item.provider)
             || typeof item.source_id !== 'string' || typeof item.account !== 'string' || typeof item.label !== 'string'
             || !Array.isArray(item.scopes) || item.scopes.some((scope) => typeof scope !== 'string'))) {
@@ -2506,6 +2524,10 @@ function createApp(config = {}) {
         let catalog;
         try { catalog = readDiscoveryCatalog(); }
         catch { return json(res, 503, { error: 'local discovery catalog unavailable' }); }
+        // Drop legacy Keychain records that predate service-qualified refs: they
+        // can no longer be matched and would otherwise duplicate fresh entries.
+        const legacy = catalog.filter((record) => record.provider === 'keychain' && typeof record.service !== 'string');
+        if (legacy.length) catalog = catalog.filter((record) => !legacy.includes(record));
         const now = new Date().toISOString();
         let added = 0;
         for (const item of selected) {
@@ -2513,6 +2535,8 @@ function createApp(config = {}) {
           if (existing) { existing.last_seen_at = now; continue; }
           catalog.push({ ref: item.ref, provider: item.provider, source_id: item.source_id,
             account: item.account, label: item.label, scopes: item.scopes,
+            ...(typeof item.service === 'string' ? { service: item.service } : {}),
+            ...(typeof item.category === 'string' ? { category: item.category } : {}),
             authentication_status: item.authentication_status || 'unknown', active: item.active ?? null,
             first_seen_at: now, last_seen_at: now });
           added++;
@@ -2521,6 +2545,7 @@ function createApp(config = {}) {
         catch { return json(res, 503, { error: 'local discovery catalog unavailable' }); }
         LOCAL_DISCOVERY_PREVIEWS.delete(payload.preview_id);
         return json(res, 200, { catalogued: added, already_present: selected.length - added,
+          ...(legacy.length ? { migrated_legacy_entries: legacy.length } : {}),
           total_catalog_entries: catalog.length, secret_values_stored: false });
       }
       if (req.method === 'GET' && url.pathname === '/api/local/discovery/search') {
@@ -2556,6 +2581,13 @@ function createApp(config = {}) {
       const payload = await readJson(req);
       if (!payload || typeof payload.provider !== 'string' || typeof payload.account_alias !== 'string') {
         return json(res, 400, { error: 'provider and account_alias are required' });
+      }
+      // Match the MCP tool contract exactly: provider is a lowercase slug, alias
+      // is the case-insensitive `[a-zA-Z0-9_-]` the tool already enforces. This
+      // only rejects values the agent could not have produced.
+      if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(payload.provider.toLowerCase())
+          || !/^[a-zA-Z0-9_-]{1,64}$/.test(payload.account_alias)) {
+        return json(res, 400, { error: 'invalid provider or account_alias' });
       }
       let entries;
       try { entries = readLocalCatalog(); }

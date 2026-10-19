@@ -16,7 +16,7 @@ test('local discovery MCP exposes staged preview, catalog and search tools', asy
     calls.push({ method: req.method, url: req.url, body: raw ? JSON.parse(raw) : null });
     res.setHeader('content-type', 'application/json');
     if (req.url === '/api/local/discovery/sources') return res.end(JSON.stringify({ sources: [], catalog_changes: 0 }));
-    if (req.url === '/api/local/discovery/preview') return res.end(JSON.stringify({ preview_id: previewId, candidates: [], requires_user_confirmation_to_catalog: true }));
+    if (req.url === '/api/local/discovery/preview') return res.end(JSON.stringify({ preview_id: previewId, candidates: [], category_counts: {}, requires_user_confirmation_to_catalog: true }));
     if (req.url === '/api/local/discovery/catalog') return res.end(JSON.stringify({ catalogued: 1, secret_values_stored: false }));
     if (req.url.startsWith('/api/local/discovery/search?')) return res.end(JSON.stringify({ scope: 'catalog', results: [] }));
     res.writeHead(404).end(JSON.stringify({ error: 'not_found' }));
@@ -37,7 +37,7 @@ test('local discovery MCP exposes staged preview, catalog and search tools', asy
     }
     const sources = await client.callTool({ name: 'zerocreds_discovery_sources', arguments: {} });
     assert.equal(JSON.parse(sources.content[0].text).catalog_changes, 0);
-    const preview = await client.callTool({ name: 'zerocreds_discovery_preview', arguments: { source_ids: ['github_cli'] } });
+    const preview = await client.callTool({ name: 'zerocreds_discovery_preview', arguments: { source_ids: ['github_cli'], categories: ['credential'] } });
     assert.equal(JSON.parse(preview.content[0].text).preview_id, previewId);
     await client.callTool({ name: 'zerocreds_discovery_catalog', arguments: { preview_id: previewId, refs: ['disc_0123456789abcdef01234567'] } });
     await client.callTool({ name: 'zerocreds_credentials_search', arguments: { q: 'github' } });
@@ -45,6 +45,7 @@ test('local discovery MCP exposes staged preview, catalog and search tools', asy
       '/api/local/discovery/sources', '/api/local/discovery/preview', '/api/local/discovery/catalog', '/api/local/discovery/search',
     ]);
     assert.equal(calls[2].body.preview_id, previewId);
+    assert.deepEqual(calls[1].body.categories, ['credential'], 'the category filter is passed through to the server');
   } finally {
     await client.close();
     await new Promise(resolve => api.close(resolve));

@@ -107,11 +107,19 @@ fs.mkdirSync(path.dirname(configPath), { recursive: true, mode: 0o700 });
 let config = {};
 try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); }
 catch (error) { if (error.code !== 'ENOENT') throw error; }
-config.mcp = config.mcp || {};
-config.mcp.zerocreds = {
+// Hosts on the V2 config schema read MCP servers from `mcp.servers`. Mixing
+// legacy flat entries with a `servers` key inside one `mcp` object makes the
+// whole block unreadable, so migrate flat entries first and write V2 only.
+const existingMcp = config.mcp && typeof config.mcp === 'object' ? config.mcp : {};
+const servers = { ...(existingMcp.servers && typeof existingMcp.servers === 'object' ? existingMcp.servers : {}) };
+for (const [name, value] of Object.entries(existingMcp)) {
+  if (name === 'servers') continue;
+  if (value && typeof value === 'object' && typeof value.type === 'string') servers[name] = value;
+}
+config.mcp = { servers };
+config.mcp.servers.zerocreds = {
   type: 'local',
   command: [process.env.ZC_NODE, process.env.ZC_MCP],
-  enabled: true,
   environment: {
     ZEROCREDS_LOCAL_MODE: '1',
     ZEROCREDS_URL: 'http://127.0.0.1:3456',
