@@ -12,12 +12,10 @@ From a clean checkout on macOS:
 
 The service listens on `127.0.0.1:3456`. On top of that the installer sets up a small loopback-only reverse proxy (`scripts/local-proxy.js`, a root LaunchDaemon) so the address a human is handed — the credential-form link — reads `http://localhost/zerocreds` instead of a raw IP and a port. The proxy forwards the path unchanged and the server itself strips the mount prefix, so the same build answers both `/zerocreds/api/...` and `/api/...`.
 
-Port 80 is privileged, so the proxy needs one root step. When `sudo` is not available without a password, the installer prints the three commands to run by hand and keeps the direct address; re-running the installer afterwards switches over:
+Port 80 is privileged, so the proxy needs one root step. When `sudo` is not available without a password, the installer prints the command to run by hand and keeps the direct address; re-running the installer afterwards switches over:
 
 ```sh
-sudo cp ~/.config/zerocreds/local/local-proxy.plist /Library/LaunchDaemons/com.zerocreds.local-proxy.plist
-sudo chown root:wheel /Library/LaunchDaemons/com.zerocreds.local-proxy.plist
-sudo launchctl bootstrap system /Library/LaunchDaemons/com.zerocreds.local-proxy.plist
+sudo ./scripts/install-local-proxy.sh
 ```
 
 `ZEROCREDS_PROXY_MODE=off ./scripts/setup-local-mac.sh` skips the proxy and stays on `http://localhost:3456`.

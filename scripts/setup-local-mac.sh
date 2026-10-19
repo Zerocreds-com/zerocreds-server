@@ -17,12 +17,12 @@ UID_NUM="$(id -u)"
 # root LaunchDaemon (scripts/local-proxy.js) in front of the server; without it the
 # service is still reachable on the direct loopback port.
 PROXY_LABEL="com.zerocreds.local-proxy"
-PROXY_PLIST_SRC="$ROOT/scripts/local-proxy.plist"
 PROXY_PLIST_DST="/Library/LaunchDaemons/$PROXY_LABEL.plist"
 PROXY_MODE="${ZEROCREDS_PROXY_MODE:-auto}"
 PROXY_PORT="${ZEROCREDS_PROXY_PORT:-80}"
 DIRECT_URL="http://localhost:3456"
 PRETTY_URL="http://localhost/zerocreds"
+export ZEROCREDS_PROXY_PORT="$PROXY_PORT" ZEROCREDS_PROXY_TARGET="$DIRECT_URL"
 
 mkdir -p "$CONFIG" "$DATA/pending" "$DATA/tokens" "$LAUNCH_AGENTS"
 chmod 700 "$CONFIG" "$DATA" "$DATA/pending" "$DATA/tokens"
@@ -60,22 +60,9 @@ fi
 if [[ ! -d "$ROOT/server/node_modules" ]]; then (cd "$ROOT/server" && npm ci); fi
 if [[ ! -d "$ROOT/mcp/node_modules" ]]; then (cd "$ROOT/mcp" && npm ci); fi
 
-# The reverse proxy runs as root because port 80 is privileged. Stage a concrete
-# plist first, then either install it (when sudo is available) or print the exact
-# commands, so the readable address can also be enabled by hand later.
-STAGED_PROXY_PLIST="$CONFIG/local-proxy.plist"
-export ZC_PROXY_TPL="$PROXY_PLIST_SRC" ZC_PROXY_OUT="$STAGED_PROXY_PLIST"
-export ZC_NODE="$(command -v node)" ZC_ROOT="$ROOT" ZC_PROXY_PORT="$PROXY_PORT" ZC_PROXY_TARGET="$DIRECT_URL"
-node <<'NODE'
-const fs = require('fs');
-const out = fs.readFileSync(process.env.ZC_PROXY_TPL, 'utf8')
-  .replaceAll('__NODE__', process.env.ZC_NODE)
-  .replaceAll('__ROOT__', process.env.ZC_ROOT)
-  .replaceAll('__PORT__', process.env.ZC_PROXY_PORT)
-  .replaceAll('__TARGET__', process.env.ZC_PROXY_TARGET);
-fs.writeFileSync(process.env.ZC_PROXY_OUT, out, { mode: 0o644 });
-NODE
-
+# The reverse proxy runs as root because port 80 is privileged. Install it when
+# sudo is available without a password, otherwise print the one command to run
+# by hand so the readable address can be enabled later.
 proxy_running() {
   [[ -f "$PROXY_PLIST_DST" ]] && launchctl print "system/$PROXY_LABEL" >/dev/null 2>&1
 }
@@ -85,21 +72,15 @@ if [[ "$PROXY_MODE" != "off" ]]; then
   if proxy_running; then
     PROXY_OK=1
   elif sudo -n true 2>/dev/null; then
-    sudo cp "$STAGED_PROXY_PLIST" "$PROXY_PLIST_DST"
-    sudo chown root:wheel "$PROXY_PLIST_DST"
-    sudo chmod 644 "$PROXY_PLIST_DST"
-    sudo launchctl bootout "system/$PROXY_LABEL" >/dev/null 2>&1 || true
-    sudo launchctl bootstrap system "$PROXY_PLIST_DST"
+    sudo "$ROOT/scripts/install-local-proxy.sh"
     PROXY_OK=1
   else
     cat >&2 <<EOF
 
 The readable address $PRETTY_URL needs a reverse proxy on port 80, which requires
-root. Run these three commands and re-run this installer to switch over:
+root. Run this command and then re-run this installer to switch over:
 
-  sudo cp "$STAGED_PROXY_PLIST" "$PROXY_PLIST_DST"
-  sudo chown root:wheel "$PROXY_PLIST_DST"
-  sudo launchctl bootstrap system "$PROXY_PLIST_DST"
+  sudo "$ROOT/scripts/install-local-proxy.sh"
 
 Until then the service stays on $DIRECT_URL.
 
