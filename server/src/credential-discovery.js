@@ -59,9 +59,12 @@ function classifyKeychainEntry(entry) {
 
 // `discriminator` participates in the ref but is never stored: two distinct
 // Keychain items can share account + label and differ only by service/server.
+// An empty discriminator keeps the original identity string, so refs for
+// providers that have no such ambiguity stay exactly as they were.
 function makeCandidate(provider, sourceId, account, label, scopes = [], discriminator = '') {
   const safeAccount = String(account || 'default').slice(0, 128);
-  const identity = `${sourceId}\0${provider}\0${safeAccount}\0${label || ''}\0${discriminator}`;
+  const base = `${sourceId}\0${provider}\0${safeAccount}\0${label || ''}`;
+  const identity = discriminator ? `${base}\0${discriminator}` : base;
   const ref = crypto.createHash('sha256').update(identity).digest('hex').slice(0, 24);
   return {
     ref: `disc_${ref}`, provider, source_id: sourceId,

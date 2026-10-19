@@ -45,6 +45,22 @@ test('metadata search ranks provider and matches labels and scopes', () => {
   assert.equal(results.length, 1);
 });
 
+test('a candidate without a discriminator keeps the reference it already had', async () => {
+  // github_cli has no service ambiguity, so its ref must stay byte-identical to
+  // the one already written into existing local catalogs. A changed ref would
+  // orphan every catalogued GitHub entry and duplicate it on the next catalog.
+  const result = await discoverCredentialSources({
+    platform: 'darwin', home: '/nonexistent', chromeExists: () => false,
+    runCommand: async (command) => command === 'gh'
+      ? { ok: true, stdout: JSON.stringify({ hosts: { 'github.com': [
+        { login: 'kobzevvv', active: true, state: { name: 'success' }, scopes: ['repo'], token: 'SECRET' }] } }) }
+      : { ok: false, stdout: '' },
+    listKeychain: async () => ({ available: false, items: [] }),
+  });
+  const github = result.candidates.find((candidate) => candidate.provider === 'github');
+  assert.equal(github.ref, 'disc_efd277ac77bc32859321ee88');
+});
+
 test('keychain candidates with identical account and label stay distinct by service', async () => {
   const result = await discoverCredentialSources({
     platform: 'darwin', home: '/nonexistent', chromeExists: () => false,
