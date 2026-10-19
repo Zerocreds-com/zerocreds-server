@@ -31,7 +31,7 @@ function sessionTokenFrom(output) {
 }
 
 module.exports = async function ZeroCredsEvents(input, options = {}) {
-  const baseUrl = options.baseUrl || 'http://127.0.0.1:3456'
+  const baseUrl = (options.baseUrl || 'http://localhost/zerocreds').replace(/\/+$/, '')
   const url = new URL(baseUrl)
   if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) {
     throw new Error('ZeroCreds event plugin only supports a local loopback server')
@@ -41,13 +41,13 @@ module.exports = async function ZeroCredsEvents(input, options = {}) {
 
   return {
     'tool.execute.after': async (hook, result) => {
-      if (hook.tool !== 'zerocreds_create_session') return
+      if (hook.tool !== 'form_create') return
       const formToken = sessionTokenFrom(result)
       if (!formToken || active.has(formToken)) return
       active.add(formToken)
       void (async () => {
         try {
-          const response = await fetch(`${url.origin}/api/session/${formToken}/events`, {
+          const response = await fetch(`${baseUrl}/api/session/${formToken}/events`, {
             headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
             signal: AbortSignal.timeout(24 * 60 * 60 * 1000),
           })
@@ -66,7 +66,7 @@ module.exports = async function ZeroCredsEvents(input, options = {}) {
               if (event !== 'done') continue
               await input.client.session.promptAsync({
                 path: { id: hook.sessionID },
-                body: { parts: [{ type: 'text', text: 'The ZeroCreds form has been completed. Check its status with zerocreds_check_status using the session token from the earlier tool result. If the status is done, continue the user’s original task using the saved credential through the appropriate ZeroCreds tool. Never ask the user to paste the credential into chat.' }] },
+                body: { parts: [{ type: 'text', text: 'The ZeroCreds form has been completed. Check its status with form_status using the session token from the earlier tool result. If the status is done, continue the user’s original task using the saved credential through the appropriate ZeroCreds tool. Never ask the user to paste the credential into chat.' }] },
               })
               return
             }

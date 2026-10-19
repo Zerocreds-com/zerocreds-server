@@ -2,7 +2,7 @@
 
 ## Outcome
 
-A user or authorized agent sees the existing ZeroCreds wallet tools through `trained-assist-mcp-host`. Calling `zerocreds_wallet_form_create` with a provider and fields returns a one-time form URL, `form_id`, `connection_id` and expiry. After the person submits the form, `zerocreds_wallet_form_status` returns value-free readiness. Connection status and explicit revocation work through the same owner/profile scope. No credential value, OpenBao token, D1 service token, broad ZeroCreds admin token or static wallet API token is exposed to the model, MCP result, run artifact or log.
+A user or authorized agent sees the existing ZeroCreds wallet tools through `trained-assist-mcp-host`. Calling `wallet_form_create` with a provider and fields returns a one-time form URL, `form_id`, `connection_id` and expiry. After the person submits the form, `wallet_form_status` returns value-free readiness. Connection status and explicit revocation work through the same owner/profile scope. No credential value, OpenBao token, D1 service token, broad ZeroCreds admin token or static wallet API token is exposed to the model, MCP result, run artifact or log.
 
 Keep ZeroCreds as the owner of its API, form, OpenBao and wallet metadata logic. Do not copy its domain implementation into MCP Host. MCP Host composes a pinned ZeroCreds provider, authenticates the caller and authorizes each tool. Connected Apps is a later product layer over the same `connection_id`; this task must not add another credential store or depend on the unfinished Ladder Connected Apps branch.
 

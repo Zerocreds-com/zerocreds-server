@@ -45,20 +45,20 @@ test('agent MCP wallet tools create a form and poll value-free status', async ()
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    assert.ok(tools.tools.some(tool => tool.name === 'zerocreds_wallet_form_create'));
-    assert.ok(tools.tools.some(tool => tool.name === 'zerocreds_wallet_form_status'));
-    const created = await client.callTool({ name: 'zerocreds_wallet_form_create', arguments: {
+    assert.ok(tools.tools.some(tool => tool.name === 'wallet_form_create'));
+    assert.ok(tools.tools.some(tool => tool.name === 'wallet_form_status'));
+    const created = await client.callTool({ name: 'wallet_form_create', arguments: {
       provider: 'tilda', kind: 'login', fields: [
         { name: 'username', label: 'Username' }, { name: 'password', label: 'Password', type: 'password' },
       ],
     } });
     assert.ok(created.content[0].text.startsWith('{'), JSON.stringify(created));
     assert.equal(JSON.parse(created.content[0].text).connection_id, connectionId);
-    const status = await client.callTool({ name: 'zerocreds_wallet_form_status', arguments: { form_id: formId } });
+    const status = await client.callTool({ name: 'wallet_form_status', arguments: { form_id: formId } });
     assert.equal(JSON.parse(status.content[0].text).status, 'done');
-    const connection = await client.callTool({ name: 'zerocreds_wallet_connection_status', arguments: { connection_id: connectionId } });
+    const connection = await client.callTool({ name: 'wallet_connection_status', arguments: { connection_id: connectionId } });
     assert.equal(JSON.parse(connection.content[0].text).state, 'active');
-    const revoked = await client.callTool({ name: 'zerocreds_wallet_connection_revoke', arguments: { connection_id: connectionId } });
+    const revoked = await client.callTool({ name: 'wallet_connection_revoke', arguments: { connection_id: connectionId } });
     assert.equal(JSON.parse(revoked.content[0].text).state, 'revoked');
     assert.deepEqual(calls.map(c => c.path), ['/api/wallet/forms', `/api/wallet/forms/${formId}/status`,
       `/api/wallet/connections/${connectionId}`, `/api/wallet/connections/${connectionId}/revoke`]);

@@ -27,7 +27,7 @@ test('OpenCode plugin resumes the originating session on a value-free done event
       baseUrl: `http://127.0.0.1:${server.address().port}`, adminTokenFile: tokenFile,
     });
     const formToken = 'a'.repeat(32);
-    await hooks['tool.execute.after']({ tool: 'zerocreds_create_session', sessionID: 'session-123' }, {
+    await hooks['tool.execute.after']({ tool: 'form_create', sessionID: 'session-123' }, {
       title: 'Created', output: JSON.stringify({ token: formToken }), metadata: {},
     });
     for (let i = 0; i < 50 && resumed.length === 0; i++) await new Promise(resolve => setTimeout(resolve, 10));
@@ -35,7 +35,7 @@ test('OpenCode plugin resumes the originating session on a value-free done event
     assert.equal(requestPath, `/api/session/${formToken}/events`);
     assert.equal(resumed.length, 1);
     assert.equal(resumed[0].path.id, 'session-123');
-    assert.match(resumed[0].body.parts[0].text, /zerocreds_check_status/);
+    assert.match(resumed[0].body.parts[0].text, /form_status/);
     assert.doesNotMatch(resumed[0].body.parts[0].text, new RegExp(formToken));
   } finally {
     server.closeAllConnections();

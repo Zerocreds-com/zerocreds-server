@@ -83,7 +83,7 @@ async function diagnoseLocalSetup(options) {
     keychainStatus === 'accessible' ? 'Login Keychain answered a metadata-only health query.'
       : keychainStatus === 'locked' ? 'Login Keychain is locked or requires user interaction.'
         : `Keychain health status: ${keychainStatus}.`,
-    keychainStatus === 'locked' ? 'Unlock the macOS login Keychain, then rerun zerocreds_doctor.'
+    keychainStatus === 'locked' ? 'Unlock the macOS login Keychain, then rerun doctor.'
       : keychainStatus === 'accessible' ? undefined : 'Check macOS Keychain access and rerun scripts/setup-local-mac.sh.');
 
   const destination = options.destinations?.[options.defaultDestination];
@@ -108,8 +108,8 @@ async function diagnoseLocalSetup(options) {
     overall,
     checks,
     catalog: { connection_count: catalog.connection_count, active_count: catalog.active_count },
-    next: overall === 'ok' ? 'Run zerocreds_connection_verify for the specific provider/account to test credential validity and permissions.'
-      : 'Fix the checks marked warning/error, then rerun zerocreds_doctor.',
+    next: overall === 'ok' ? 'Run connection_verify for the specific provider/account to test credential validity and permissions.'
+      : 'Fix the checks marked warning/error, then rerun doctor.',
     credential_values_read: false,
     credential_values_returned: false,
   };

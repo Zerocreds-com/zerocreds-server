@@ -29,7 +29,7 @@ test('local credential form response gives the agent a friendly user-facing link
   });
   try {
     await client.connect(transport);
-    const result = await client.callTool({ name: 'zerocreds_create_session', arguments: {
+    const result = await client.callTool({ name: 'form_create', arguments: {
       title: 'Connect Deepgram',
       fields: [{ name: 'api_key', label: 'Deepgram API key', type: 'password', level: 'secret' }],
       service: 'deepgram', uid: 'work',

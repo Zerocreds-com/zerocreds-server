@@ -10,7 +10,7 @@ This checklist makes credential setup debuggable by separating each boundary. A 
 - Keychain health runs a metadata-only Security.framework query. Provider verification reads one selected Keychain item inside the server, performs a fixed provider request, bounds response size and timeout, rejects redirects, discards temporary Deepgram grants, and returns an allowlisted diagnostic only.
 - MCP errors and logs must not include request Authorization, form values, Keychain contents, raw upstream response bodies, cookies, browser storage, or unredacted URLs containing capabilities. Diagnostic IDs are correlation labels, not authorization credentials.
 - CI and smoke tests use synthetic credentials and mocked provider responses. Never test by printing, uploading, or putting production secrets in command-line arguments, prompts, fixtures, screenshots, or CI output.
-- On macOS, never run `security ... -g` or `security ... -w` in an agent-visible terminal: those options print the Keychain value. Use `zerocreds_connections_list`, `zerocreds_connection_verify`, and the local doctor for value-free diagnostics. A shell tool running as the same user can still read that user's Keychain, so MCP tool descriptions and local agent instructions must explicitly steer away from raw reads.
+- On macOS, never run `security ... -g` or `security ... -w` in an agent-visible terminal: those options print the Keychain value. Use `connections_list`, `connection_verify`, and the local doctor for value-free diagnostics. A shell tool running as the same user can still read that user's Keychain, so MCP tool descriptions and local agent instructions must explicitly steer away from raw reads.
 - The generic playground is local-mode-only and admin-authenticated. It accepts bounded declarative rules and runs fixed synthetic scenarios; it has no URL, provider, shell, destination, or arbitrary-sample input. Its form mode exercises rendering, submission, validation and completion, displays a prominent warning, evaluates input only in memory, and writes status/rule outcomes only. It does not call providers or credential stores. Treat any rule match as format validation, never proof of a live credential.
 - Regex is limited to 128 characters, rejects backreferences/lookarounds/quantified groups and excessive quantifiers, and samples are bounded synthetic strings. Any relaxation needs a ReDoS-safe engine or equivalent execution timeout and tests.
 - A production Worker diagnostic must be separately authenticated/rate-limited and report only a boolean/config revision plus sanitized provider status/code. It must not return a temporary grant, key length/fragments, or raw upstream body. A destructive secret write or deployment stays behind an explicit operator action and its own audit event.
@@ -18,11 +18,11 @@ This checklist makes credential setup debuggable by separating each boundary. A 
 
 ## Diagnostic flow
 
-1. `zerocreds_doctor` checks that the local MCP call reaches the server, the helper is installed and private, the macOS Keychain responds, the default destination is an OS Keychain, and the metadata catalog is readable. It provides an action for each failing check.
-2. `zerocreds_connections_list` locates the provider/account alias without returning values.
-3. `zerocreds_connection_verify` checks the selected stored credential against that provider. For Deepgram this mints and discards the documented short-lived grant; it does not make a transcription request.
+1. `doctor` checks that the local MCP call reaches the server, the helper is installed and private, the macOS Keychain responds, the default destination is an OS Keychain, and the metadata catalog is readable. It provides an action for each failing check.
+2. `connections_list` locates the provider/account alias without returning values.
+3. `connection_verify` checks the selected stored credential against that provider. For Deepgram this mints and discards the documented short-lived grant; it does not make a transcription request.
 4. The target application must separately prove which deployment/configuration it is serving. A local Keychain success cannot establish that a Worker secret was updated.
-5. For generic format checks and lifecycle debugging, call `zerocreds_playground_scenarios`, then `zerocreds_playground_run` with the desired rules. Use `zerocreds_playground_form` when the browser form, submit response, status endpoint or local completion event needs an end-to-end replay. Never use a real credential in this path.
+5. For generic format checks and lifecycle debugging, call `playground_scenarios`, then `playground_run` with the desired rules. Use `playground_form` when the browser form, submit response, status endpoint or local completion event needs an end-to-end replay. Never use a real credential in this path.
 
 ## Checklist
 

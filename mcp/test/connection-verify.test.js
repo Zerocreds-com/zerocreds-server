@@ -41,14 +41,14 @@ test('local MCP verifies Deepgram grant capability and returns only safe diagnos
   try {
     await client.connect(transport);
     const listed = await client.listTools();
-    const verify = listed.tools.find(tool => tool.name === 'zerocreds_connection_verify');
+    const verify = listed.tools.find(tool => tool.name === 'connection_verify');
     assert.ok(verify);
     assert.equal(verify.inputSchema.properties.provider.type, 'string');
     assert.equal(verify.inputSchema.properties.provider.enum, undefined,
       'the provider set is not a closed enum: unknown slugs reach the server and answer unsupported_provider');
     assert.match(verify.inputSchema.properties.provider.pattern, /^\^\[a-z0-9\]/);
 
-    const result = await client.callTool({ name: 'zerocreds_connection_verify', arguments: {
+    const result = await client.callTool({ name: 'connection_verify', arguments: {
       provider: 'deepgram', account_alias: 'chemistry-gpt-deepgram',
     } });
     assert.equal(request.method, 'POST');
@@ -61,7 +61,7 @@ test('local MCP verifies Deepgram grant capability and returns only safe diagnos
     assert.ok(!text.includes('access_token'));
     assert.ok(!text.includes('DEEPGRAM_API_KEY'));
 
-    const unsupported = await client.callTool({ name: 'zerocreds_connection_verify', arguments: {
+    const unsupported = await client.callTool({ name: 'connection_verify', arguments: {
       provider: 'hogwarts', account_alias: 'hogwarts',
     } });
     assert.deepEqual(request.body, { provider: 'hogwarts', account_alias: 'hogwarts' });
