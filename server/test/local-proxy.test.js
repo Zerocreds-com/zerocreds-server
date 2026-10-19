@@ -10,6 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const PROXY_SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'local-proxy.js');
+const { hostHeaderFor } = require('../../scripts/local-proxy.js');;
 
 async function freePort() {
   const probe = net.createServer();
@@ -70,11 +71,21 @@ test('the local proxy forwards the path unchanged and rewrites the host header',
     assert.deepEqual(JSON.parse(response.raw), { ok: true, path: '/zerocreds/api/local/connections' });
     assert.equal(seen.length, 1);
     assert.equal(seen[0].url, '/zerocreds/api/local/connections', 'the mount prefix reaches the server untouched');
-    assert.equal(seen[0].host, 'localhost', 'the host header is rewritten to the configured host');
+    assert.equal(seen[0].host, `localhost:${proxyPort}`, 'the host header carries the port the proxy serves on');
   } finally {
     child.kill('SIGTERM');
     await new Promise((resolve) => upstream.close(resolve));
   }
+});
+
+test('the proxy sends the host header a browser would send', () => {
+  // The server compares the Host header with the host of its configured base URL,
+  // so a proxy on a non-default port has to include that port.
+  assert.equal(hostHeaderFor(80, 'localhost'), 'localhost');
+  assert.equal(hostHeaderFor(443, 'localhost'), 'localhost');
+  assert.equal(hostHeaderFor(8080, 'localhost'), 'localhost:8080');
+  assert.equal(hostHeaderFor(8080, 'localhost:3456'), 'localhost:3456');
+  assert.equal(hostHeaderFor(80, undefined), 'localhost');
 });
 
 test('the local proxy answers with a clear error when the server is unreachable', async () => {
