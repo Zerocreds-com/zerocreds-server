@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "zerocreds-wallet-api-runner-sandbox",
+  "main": "cloudflare-sandbox/index.js",
+  "account_id": "d740a05e9442c1d0feacae2dfc673e93",
+  "compatibility_date": "2026-10-16",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "vars": {
+    "ZEROCREDS_WALLET_WORKER_URL": "https://zerocreds-wallet-metadata-runner-sandbox.skillset-apply.workers.dev",
+    "ZEROCREDS_BASE_URL": "https://zerocreds-wallet-api-runner-sandbox.skillset-apply.workers.dev"
+  },
+  "containers": [{
+    "class_name": "WalletApiContainer",
+    "scheduling_policy": "durable_object",
+    "images": { "api": { "dockerfile": "./Dockerfile" } }
+  }],
+  "durable_objects": {
+    "bindings": [{ "name": "WALLET_API", "class_name": "WalletApiContainer" }]
+  },
+  "exports": {
+    "WalletApiContainer": { "type": "durable-object", "storage": "sqlite" }
+  }
+}
