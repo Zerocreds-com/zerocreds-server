@@ -12,8 +12,12 @@ test('local MCP verifies Deepgram grant capability and returns only safe diagnos
   const api = http.createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
-    request = { method: req.method, url: req.url, authorization: req.headers.authorization, body: JSON.parse(raw) };
+    const body = raw ? JSON.parse(raw) : {};
+    request = { method: req.method, url: req.url, authorization: req.headers.authorization, body };
     res.setHeader('content-type', 'application/json');
+    if (body.provider === 'hogwarts') {
+      return res.end(JSON.stringify({ verification: 'unsupported_provider', provider: 'hogwarts' }));
+    }
     res.end(JSON.stringify({
       verification: 'valid',
       identity: { grant_capable: true },
@@ -39,7 +43,10 @@ test('local MCP verifies Deepgram grant capability and returns only safe diagnos
     const listed = await client.listTools();
     const verify = listed.tools.find(tool => tool.name === 'zerocreds_connection_verify');
     assert.ok(verify);
-    assert.deepEqual(verify.inputSchema.properties.provider.enum, ['github', 'cloudflare', 'deepgram']);
+    assert.equal(verify.inputSchema.properties.provider.type, 'string');
+    assert.equal(verify.inputSchema.properties.provider.enum, undefined,
+      'the provider set is not a closed enum: unknown slugs reach the server and answer unsupported_provider');
+    assert.match(verify.inputSchema.properties.provider.pattern, /^\^\[a-z0-9\]/);
 
     const result = await client.callTool({ name: 'zerocreds_connection_verify', arguments: {
       provider: 'deepgram', account_alias: 'chemistry-gpt-deepgram',
@@ -53,6 +60,12 @@ test('local MCP verifies Deepgram grant capability and returns only safe diagnos
     assert.match(text, /"grant_expires_in": 30/);
     assert.ok(!text.includes('access_token'));
     assert.ok(!text.includes('DEEPGRAM_API_KEY'));
+
+    const unsupported = await client.callTool({ name: 'zerocreds_connection_verify', arguments: {
+      provider: 'hogwarts', account_alias: 'hogwarts',
+    } });
+    assert.deepEqual(request.body, { provider: 'hogwarts', account_alias: 'hogwarts' });
+    assert.match(unsupported.content[0].text, /"verification": "unsupported_provider"/);
   } finally {
     await client.close();
     await new Promise(resolve => api.close(resolve));

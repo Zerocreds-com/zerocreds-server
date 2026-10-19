@@ -148,6 +148,35 @@ token
 → { status: "pending" | "done" | "expired" }
 ```
 
+### Local credential discovery (macOS)
+
+Local mode (`ZEROCREDS_LOCAL_MODE=1`) exposes a staged, value-free inventory flow. No tool in this flow reads or stores a secret value.
+
+**`zerocreds_discovery_sources`** — report which credential sources are available (`github_cli`, `cloudflare_cli`, `gcloud_cli`, `macos_keychain`, `chrome`). Read-only; browser password stores may be detected but never read.
+
+**`zerocreds_discovery_preview`** — scan the available sources and return metadata candidates (provider, account, label, source, category, scopes) without saving anything:
+```
+source_ids?  (narrow by source)
+categories?  (narrow by category; omit to receive everything)
+→ { preview_id, expires_at, candidate_count, category_counts, filtered_out, candidates[] }
+```
+- Previews expire 6 hours after creation.
+- A successful catalog call consumes the preview, so run preview again before adding more.
+- `category_counts` always describes the full inventory the filter was applied to. Categories are `credential`, `wifi`, `bluetooth`, `apple-system`, `browser`, `vpn`, `other` — OS noise is separable but never hidden by default.
+
+**`zerocreds_discovery_catalog`** — add only the refs the user explicitly approved, from the same `preview_id`. Writes searchable metadata only, never secrets:
+```
+preview_id, refs[]  (1–200 refs, each from that preview)
+→ { catalogued, already_present, total_catalog_entries }
+```
+Every candidate carries a unique `ref`; two Keychain items that share an account and label are told apart by their service. A ref is identified by exactly one candidate, so a repeated ref can never be mistaken for an unknown one.
+
+**`zerocreds_credentials_search`** — search the *approved* catalog by provider, account, source, label, service or scope. It is not a live Keychain scan: use `zerocreds_discovery_preview` for a fresh inventory.
+
+**`zerocreds_connections_list` / `zerocreds_connection_resolve`** — list saved connections and resolve one into a value-free handle.
+
+**`zerocreds_connection_verify`** — verify a saved credential against its provider. Provider-native verification exists for `github`, `cloudflare` and `deepgram`; any other provider slug is accepted and answered with `verification: "unsupported_provider"` (nothing is contacted), so the tool stays honest for services ZeroCreds cannot check. The tool never returns the credential or a grant value.
+
 ---
 
 For the planned ServerlessAgence wallet, see the [task-driven MCP form, OpenBao preflight and owner/profile disclosure contract](docs/serverlessagence-runner-credential-intake.md). OpenBao will store secret values; D1 will hold non-secret form and connection metadata. The current end-to-end integration is not deployed.

@@ -163,9 +163,9 @@ server.tool(
 
 if (LOCAL_MODE) server.tool(
   'zerocreds_connection_verify',
-  'Verify a saved GitHub, Cloudflare or Deepgram credential from the trusted local ZeroCreds server. For Deepgram this safely tests whether the key can mint a default 30-second grant, then discards the token; it does not make a billable transcription request. The one-time verify result includes a masked 3-character prefix/4-character suffix and length for alias comparison; this hint is not persisted or logged. The tool never returns the credential or grant value. This verifies the Mac Keychain credential, not whether a separate Cloudflare Worker secret was updated.',
+  'Verify a saved local credential against its provider. Provider-native verification is implemented for github, cloudflare and deepgram; any other provider slug returns verification "unsupported_provider" without contacting anything, so the tool stays honest for services ZeroCreds cannot check. For Deepgram this safely tests whether the key can mint a default 30-second grant, then discards the token; it does not make a billable transcription request. The one-time verify result includes a masked 3-character prefix/4-character suffix and length for alias comparison; this hint is not persisted or logged. The tool never returns the credential or grant value. This verifies the Mac Keychain credential, not whether a separate Cloudflare Worker secret was updated.',
   {
-    provider: z.enum(['github', 'cloudflare', 'deepgram']),
+    provider: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/).describe('Provider slug, for example github, cloudflare, deepgram or the service slug used when the credential was saved'),
     account_alias: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
   },
   async ({ provider, account_alias }) => {
@@ -241,16 +241,20 @@ if (LOCAL_MODE) {
     });
 
   server.tool('zerocreds_discovery_preview',
-    'Scan available local sources and show credential metadata candidates without saving them. Call when the user asks about available access. Present provider, account, source and scopes clearly; do not catalog yet. Ask which candidates the user wants added, then call zerocreds_discovery_catalog only for those refs after the user confirms.',
-    { source_ids: z.array(z.enum(['github_cli', 'cloudflare_cli', 'gcloud_cli', 'macos_keychain', 'chrome'])).optional() },
-    async ({ source_ids }) => {
-      const data = await apiCall('POST', '/api/local/discovery/preview', { source_ids });
+    'Scan available local sources and show credential metadata candidates without saving them. Call when the user asks about available access. Present provider, account, source, category and scopes clearly; do not catalog yet. Ask which candidates the user wants added, then call zerocreds_discovery_catalog only for those refs after the user confirms. The preview expires 6 hours after it is created; a successful catalog call consumes it, so run preview again to add more later. Use category_counts to summarise a large inventory and categories to narrow the list without hiding anything by default.',
+    {
+      source_ids: z.array(z.enum(['github_cli', 'cloudflare_cli', 'gcloud_cli', 'macos_keychain', 'chrome'])).optional(),
+      categories: z.array(z.enum(['credential', 'wifi', 'bluetooth', 'apple-system', 'browser', 'vpn', 'other'])).optional()
+        .describe('Narrow the preview to these candidate categories. Omit to receive every candidate; category_counts still reports the full breakdown.'),
+    },
+    async ({ source_ids, categories }) => {
+      const data = await apiCall('POST', '/api/local/discovery/preview', { source_ids, categories });
       if (data.error) throw new Error(data.error);
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
     });
 
   server.tool('zerocreds_discovery_catalog',
-    'Add only explicitly selected metadata candidates from a recent discovery preview. This writes a searchable local metadata catalog, never copies secrets. Call only after the user has reviewed the preview and chosen these refs.',
+    'Add only explicitly selected metadata candidates from a recent discovery preview. This writes a searchable local metadata catalog, never copies secrets. Call only after the user has reviewed the preview and chosen these refs. refs must come from the same preview_id, and the preview is consumed by a successful call — re-run zerocreds_discovery_preview before adding more.',
     { preview_id: z.string().regex(/^[a-f0-9]{36}$/), refs: z.array(z.string().regex(/^disc_[a-f0-9]{24}$/)).min(1).max(200) },
     async ({ preview_id, refs }) => {
       const data = await apiCall('POST', '/api/local/discovery/catalog', { preview_id, refs });
@@ -259,7 +263,7 @@ if (LOCAL_MODE) {
     });
 
   server.tool('zerocreds_credentials_search',
-    'Search the approved local credential metadata catalog by provider, account, source, label or scope. Search results describe where access may exist; they do not prove a credential is usable. Use discovery preview when the user asks for a fresh inventory. Optionally search an active preview before the user chooses what to catalog.',
+    'Search the approved local credential metadata catalog by provider, account, source, label, service or scope. This searches ONLY what the user has explicitly catalogued from a discovery preview — it is not a live Keychain scan, so a provider that exists in the Keychain but was never catalogued will not appear here. Call zerocreds_discovery_preview for a fresh inventory. Results describe where access may exist; they do not prove a credential is usable. Optionally pass preview_id to search an active preview before the user chooses what to catalog.',
     { q: z.string().min(1).max(256), preview_id: z.string().regex(/^[a-f0-9]{36}$/).optional(), limit: z.number().int().min(1).max(100).optional() },
     async ({ q, preview_id, limit }) => {
       const query = new URLSearchParams({ q });

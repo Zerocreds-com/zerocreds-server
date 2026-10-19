@@ -54,10 +54,10 @@ async function withLocalServer(run, options = {}) {
     baseUrl: `http://127.0.0.1:${port}`,
     localCatalogFile: catalogFile,
     localDiscoveryCatalogFile: discoveryCatalogFile,
-    localCredentialDiscovery: async () => ({ sources: [{ source_id: 'github_cli', status: 'found', candidate_count: 1 }], candidates: [{
+    localCredentialDiscovery: options.discovery || (async () => ({ sources: [{ source_id: 'github_cli', status: 'found', candidate_count: 1 }], candidates: [{
       ref: 'disc_0123456789abcdef01234567', provider: 'github', source_id: 'github_cli', account: 'work-user',
       label: 'github.com', scopes: ['repo'],
-    }] }),
+    }] })),
     localProviderPolicies: { github: {
       login_url: 'https://github.com/login', auth_url: 'https://github.com/settings/profile',
       username_selector: '#login_field', password_selector: '#password',
@@ -177,4 +177,76 @@ test('discovery catalog endpoint accepts only references from its unexpired prev
     }, token);
     assert.equal(invalid.status, 410);
   });
+});
+
+test('catalog accepts a ref that two candidates share and reports only unknown refs', async () => {
+  const shared = {
+    ref: 'disc_aaaaaaaaaaaaaaaaaaaaaaaa', provider: 'keychain', source_id: 'macos_keychain',
+    account: 'kobzevvv', label: 'Trained Agent GitHub Token', scopes: [],
+    category: 'credential', service: 'github.com',
+  };
+  await withLocalServer(async ({ port, token }) => {
+    const preview = await call(port, 'POST', '/api/local/discovery/preview', {}, token);
+    assert.equal(preview.status, 200);
+    // The exact call that used to 400 forever: two candidates, one ref.
+    const catalogued = await call(port, 'POST', '/api/local/discovery/catalog', {
+      preview_id: preview.body.preview_id, refs: [shared.ref, shared.ref],
+    }, token);
+    assert.equal(catalogued.status, 200);
+    assert.equal(catalogued.body.catalogued, 1);
+    assert.equal(catalogued.body.already_present, 0);
+
+    const secondPreview = await call(port, 'POST', '/api/local/discovery/preview', {}, token);
+    const unknown = await call(port, 'POST', '/api/local/discovery/catalog', {
+      preview_id: secondPreview.body.preview_id, refs: ['disc_bbbbbbbbbbbbbbbbbbbbbbbb'],
+    }, token);
+    assert.equal(unknown.status, 400);
+    assert.match(unknown.body.error, /not in this preview/);
+  }, { discovery: async () => ({ sources: [{ source_id: 'macos_keychain', status: 'found', candidate_count: 2 }], candidates: [shared, { ...shared }] }) });
+});
+
+test('preview reports category counts and narrows without hiding anything by default', async () => {
+  const candidates = [
+    { ref: 'disc_111111111111111111111111', provider: 'keychain', source_id: 'macos_keychain', account: 'a', label: 'Token A', scopes: [], category: 'credential' },
+    { ref: 'disc_222222222222222222222222', provider: 'keychain', source_id: 'macos_keychain', account: 'b', label: 'AirPort', scopes: [], category: 'wifi' },
+    { ref: 'disc_333333333333333333333333', provider: 'keychain', source_id: 'macos_keychain', account: 'c', label: 'BluetoothGlobal', scopes: [], category: 'bluetooth' },
+  ];
+  await withLocalServer(async ({ port, token }) => {
+    const all = await call(port, 'POST', '/api/local/discovery/preview', {}, token);
+    assert.equal(all.body.candidate_count, 3);
+    assert.deepEqual(all.body.category_counts, { credential: 1, wifi: 1, bluetooth: 1 });
+
+    const narrowed = await call(port, 'POST', '/api/local/discovery/preview', { categories: ['credential'] }, token);
+    assert.equal(narrowed.status, 200);
+    assert.equal(narrowed.body.candidate_count, 1);
+    assert.equal(narrowed.body.filtered_out, 2);
+    assert.deepEqual(narrowed.body.category_counts, { credential: 1, wifi: 1, bluetooth: 1 },
+      'counts still describe the full inventory the filter was applied to');
+
+    const invalid = await call(port, 'POST', '/api/local/discovery/preview', { categories: ['nope'] }, token);
+    assert.equal(invalid.status, 400);
+  }, { discovery: async () => ({ sources: [{ source_id: 'macos_keychain', status: 'found', candidate_count: 3 }], candidates }) });
+});
+
+test('cataloguing drops legacy keychain entries that predate service-qualified refs', async () => {
+  const candidate = {
+    ref: 'disc_444444444444444444444444', provider: 'keychain', source_id: 'macos_keychain',
+    account: 'kobzevvv', label: 'Trained Agent GitHub Token', scopes: [], category: 'credential', service: 'github.com',
+  };
+  await withLocalServer(async ({ port, token, discoveryCatalogFile }) => {
+    fs.writeFileSync(discoveryCatalogFile, JSON.stringify([{
+      ref: 'disc_legacy', provider: 'keychain', source_id: 'macos_keychain',
+      account: 'kobzevvv', label: 'Trained Agent GitHub Token', scopes: [],
+    }]), { mode: 0o600 });
+    const preview = await call(port, 'POST', '/api/local/discovery/preview', {}, token);
+    const catalogued = await call(port, 'POST', '/api/local/discovery/catalog', {
+      preview_id: preview.body.preview_id, refs: [candidate.ref],
+    }, token);
+    assert.equal(catalogued.status, 200);
+    assert.equal(catalogued.body.migrated_legacy_entries, 1);
+    const stored = JSON.parse(fs.readFileSync(discoveryCatalogFile, 'utf8'));
+    assert.deepEqual(stored.map((record) => record.ref), [candidate.ref]);
+    assert.equal(stored[0].service, 'github.com');
+    assert.equal(stored[0].category, 'credential');
+  }, { discovery: async () => ({ sources: [{ source_id: 'macos_keychain', status: 'found', candidate_count: 1 }], candidates: [candidate] }) });
 });

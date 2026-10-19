@@ -44,3 +44,59 @@ test('metadata search ranks provider and matches labels and scopes', () => {
   assert.equal(results[0].provider, 'github');
   assert.equal(results.length, 1);
 });
+
+test('keychain candidates with identical account and label stay distinct by service', async () => {
+  const result = await discoverCredentialSources({
+    platform: 'darwin', home: '/nonexistent', chromeExists: () => false,
+    runCommand: async () => ({ ok: false, stdout: '' }),
+    listKeychain: async () => ({ available: true, items: [
+      { account: 'kobzevvv', label: 'Trained Agent GitHub Token', service: 'trained-agent-github-token' },
+      { account: 'kobzevvv', label: 'Trained Agent GitHub Token', service: 'github.com' },
+    ] }),
+  });
+  const keychain = result.candidates.filter((candidate) => candidate.provider === 'keychain');
+  assert.equal(keychain.length, 2, 'both Keychain items survive');
+  assert.notEqual(keychain[0].ref, keychain[1].ref, 'service disambiguates the reference');
+  assert.equal(new Set(result.candidates.map((candidate) => candidate.ref)).size, result.candidates.length,
+    'every candidate has a unique ref');
+  assert.deepEqual(keychain.map((candidate) => candidate.service).sort(), ['github.com', 'trained-agent-github-token']);
+});
+
+test('a genuinely duplicated identity collapses to one candidate instead of colliding', async () => {
+  const result = await discoverCredentialSources({
+    platform: 'darwin', home: '/nonexistent', chromeExists: () => false,
+    runCommand: async () => ({ ok: false, stdout: '' }),
+    listKeychain: async () => ({ available: true, items: [
+      { account: 'dup', label: 'Same Item', service: 'same-service' },
+      { account: 'dup', label: 'Same Item', service: 'same-service' },
+    ] }),
+  });
+  assert.equal(result.candidates.filter((candidate) => candidate.provider === 'keychain').length, 1);
+  assert.equal(new Set(result.candidates.map((candidate) => candidate.ref)).size, result.candidates.length);
+});
+
+test('keychain candidates are classified so OS noise is separable from credentials', async () => {
+  const result = await discoverCredentialSources({
+    platform: 'darwin', home: '/nonexistent', chromeExists: () => false,
+    runCommand: async () => ({ ok: false, stdout: '' }),
+    listKeychain: async () => ({ available: true, items: [
+      { account: 'kobzevvv', label: 'Trained Agent GitHub Token', service: 'github.com' },
+      { account: 'Irina-5GHz', label: 'Irina-5GHz', service: 'AirPort' },
+      { account: 'Local Device Identifier', label: 'BluetoothGlobal', service: 'BluetoothGlobal' },
+      { account: 'Chrome', label: 'Chrome Safe Storage', service: 'Chrome Safe Storage' },
+      { account: 'com.apple.wifi.analytics.tokenStore.airportd', label: 'WiFiAnalytics', service: 'WiFiAnalytics' },
+      { account: 'ProtonVPN WG', label: 'ProtonVPN WireGuard config', service: 'ch.protonvpn.mac' },
+      { account: 'someone', label: 'Some random item', service: 'misc' },
+    ] }),
+  });
+  const category = Object.fromEntries(result.candidates
+    .filter((candidate) => candidate.provider === 'keychain')
+    .map((candidate) => [candidate.label, candidate.category]));
+  assert.equal(category['Trained Agent GitHub Token'], 'credential');
+  assert.equal(category['Irina-5GHz'], 'wifi');
+  assert.equal(category['BluetoothGlobal'], 'bluetooth');
+  assert.equal(category['Chrome Safe Storage'], 'browser');
+  assert.equal(category['WiFiAnalytics'], 'wifi');
+  assert.equal(category['ProtonVPN WireGuard config'], 'vpn');
+  assert.equal(category['Some random item'], 'other');
+});

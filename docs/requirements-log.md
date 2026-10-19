@@ -32,6 +32,12 @@
 - [реализовано] Z0 CI/CD guard (#51) — удалён auto-merge.yml; deploy через GitHub Environment `production` (required reviewer) только с `main` после `test` на том же sha; `npm ci` + lockfile для server и mcp; Node 22; `npm audit --omit=dev`; gitleaks; syntax lint; actions запинены по SHA; README: исправлены утверждения про telemetry и /version
 - [реализовано] Z8 (#59) Дизайн формы /f/: светлая/тёмная тема (по умолчанию prefers-color-scheme, переключатель, выбор в localStorage, без вспышки), mobile-first (16px инпуты, крупные тап-таргеты, sticky Submit), без inline-обработчиков и style-атрибутов (готово к строгому CSP); скриншоты — `server/scripts/form-screenshots.js` → docs/screenshots/. Всегда видимый блок «Where this goes» — в рамках #50
 
+- [реализовано] #114 discovery: уникальный `ref` на каждого кандидата (Keychain `service`/`server` участвует в хеше как нехранимый discriminator) + дедупликация в preview; эндпоинт каталога сверяет *множество* ref'ов, а не их количество (раньше дубль ref давал HTTP 400 навсегда); legacy-записи Keychain без `service` вычищаются при записи
+- [реализовано] #114 discovery: классификация кандидатов (`credential`, `wifi`, `bluetooth`, `apple-system`, `browser`, `vpn`, `other`) + `category_counts` и опциональный фильтр `categories` в preview; по умолчанию ничего не скрывается
+- [реализовано] #114 verify: `zerocreds_connection_verify` принимает любой provider-slug и честно возвращает `unsupported_provider` вместо ошибки схемы; provider и account_alias валидируются по формату на сервере
+- [реализовано] #114 документация: README — полный контракт discovery-потока (TTL превью 6ч, одноразовость превью для каталога, scope поиска, матрица провайдеров); MCP-описания preview/catalog/search/verify приведены в соответствие
+- [реализовано] #114 setup-local-mac.sh пишет V2-форму `mcp.servers.zerocreds` и мигрирует legacy flat-записи (смешивание форм в одном `mcp` ломало весь блок)
+
 ## Планируется
 
 - [планируется] Landing page zerocreds.ru — на русском, с объяснением концепции
