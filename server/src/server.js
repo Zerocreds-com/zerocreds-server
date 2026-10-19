@@ -296,7 +296,7 @@ document.getElementById('code').addEventListener('keydown', e => { if (e.key ===
 </html>`;
 }
 
-function aboutHtml() {
+function aboutHtml(baseUrl) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -412,7 +412,7 @@ function aboutHtml() {
     <div class="cell">
       <div class="tag local">✓ localhost</div>
       <h3>Credentials stay on your machine</h3>
-      <p>ZeroCreds runs at <code>localhost:3456</code>. Your browser POSTs credentials to localhost. They are saved to <code>~/agent-tokens/</code> or your OS Keychain. Nothing leaves the computer.</p>
+      <p>ZeroCreds runs at <code>${baseUrl}</code>. Your browser POSTs credentials to localhost. They are saved to <code>~/agent-tokens/</code> or your OS Keychain. Nothing leaves the computer.</p>
     </div>
     <div class="cell">
       <div class="tag remote">⚠ remote server</div>
@@ -1217,8 +1217,17 @@ function createApp(config = {}) {
   const LOCAL_PROVIDER_POLICIES_FILE = config.localProviderPoliciesFile ?? process.env.ZEROCREDS_LOCAL_PROVIDER_POLICIES_FILE ?? path.join(os.homedir(), '.config/zerocreds/local/provider-policies.json');
   const DESTINATIONS_FILE = config.destinationsFile ?? process.env.ZEROCREDS_DESTINATIONS_FILE ?? path.join(os.homedir(), 'zerocreds-destinations.json');
   const INTEGRATORS_FILE = config.integratorsFile ?? process.env.ZEROCREDS_INTEGRATORS_FILE ?? path.join(os.homedir(), 'zerocreds-integrators.json');
-  const BASE_URL = config.baseUrl ?? process.env.ZEROCREDS_BASE_URL ?? (LOCAL_MODE ? 'http://127.0.0.1:3456' : 'https://zerocreds.ru');
+  const BASE_URL = (config.baseUrl ?? process.env.ZEROCREDS_BASE_URL ?? (LOCAL_MODE ? 'http://127.0.0.1:3456' : 'https://zerocreds.ru')).replace(/\/+$/, '');
   const LOCAL_ORIGIN = new URL(BASE_URL).origin;
+  // The service may be mounted under a path prefix (e.g. http://localhost/zerocreds).
+  // Requests are accepted both with and without it, so the same build works behind a
+  // reverse proxy and when it is reached directly.
+  const BASE_PATH = (() => {
+    try {
+      const path = new URL(BASE_URL).pathname.replace(/\/+$/, '');
+      return path === '/' ? '' : path;
+    } catch { return ''; }
+  })();
   if (LOCAL_MODE && (!['127.0.0.1', 'localhost', '[::1]'].includes(new URL(BASE_URL).hostname)
       || new URL(BASE_URL).protocol !== 'http:')) {
     throw new Error('local mode requires an http loopback base URL');
@@ -2063,6 +2072,11 @@ function createApp(config = {}) {
 
   async function handle(req, res) {
     const url = new URL(req.url, 'http://localhost');
+    // Strip the mount prefix so every route below stays prefix-agnostic:
+    // /zerocreds/api/local/x and /api/local/x reach the same handler.
+    if (BASE_PATH && (url.pathname === BASE_PATH || url.pathname.startsWith(BASE_PATH + '/'))) {
+      url.pathname = url.pathname.slice(BASE_PATH.length) || '/';
+    }
 
     if (LOCAL_MODE && req.headers.host !== new URL(BASE_URL).host) {
       return json(res, 403, { error: 'invalid local host' });
@@ -2084,7 +2098,7 @@ function createApp(config = {}) {
 
     // GET /about
     if (req.method === 'GET' && url.pathname === '/about') {
-      return sendHtml(res, 200, aboutHtml());
+      return sendHtml(res, 200, aboutHtml(BASE_URL));
     }
 
     // GET /health
@@ -2686,7 +2700,7 @@ function createApp(config = {}) {
       return json(res, 200, {
         grant,
         expires_at: new Date(now + LOCAL_BROKER_GRANT_TTL_MS).toISOString(),
-        broker_url: `${LOCAL_ORIGIN}/api/local/broker/redeem`,
+        broker_url: `${BASE_URL}/api/local/broker/redeem`,
         provider,
         account_alias: alias,
         run_id: payload.run_id,

@@ -13,6 +13,17 @@ LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
 LABEL="com.zerocreds.local-server"
 UID_NUM="$(id -u)"
 
+# The readable address for the local service. Port 80 is privileged, so it needs a
+# root LaunchDaemon (scripts/local-proxy.js) in front of the server; without it the
+# service is still reachable on the direct loopback port.
+PROXY_LABEL="com.zerocreds.local-proxy"
+PROXY_PLIST_DST="/Library/LaunchDaemons/$PROXY_LABEL.plist"
+PROXY_MODE="${ZEROCREDS_PROXY_MODE:-auto}"
+PROXY_PORT="${ZEROCREDS_PROXY_PORT:-80}"
+DIRECT_URL="http://localhost:3456"
+PRETTY_URL="http://localhost/zerocreds"
+export ZEROCREDS_PROXY_PORT="$PROXY_PORT" ZEROCREDS_PROXY_TARGET="$DIRECT_URL"
+
 mkdir -p "$CONFIG" "$DATA/pending" "$DATA/tokens" "$LAUNCH_AGENTS"
 chmod 700 "$CONFIG" "$DATA" "$DATA/pending" "$DATA/tokens"
 
@@ -49,6 +60,37 @@ fi
 if [[ ! -d "$ROOT/server/node_modules" ]]; then (cd "$ROOT/server" && npm ci); fi
 if [[ ! -d "$ROOT/mcp/node_modules" ]]; then (cd "$ROOT/mcp" && npm ci); fi
 
+# The reverse proxy runs as root because port 80 is privileged. Install it when
+# sudo is available without a password, otherwise print the one command to run
+# by hand so the readable address can be enabled later.
+proxy_running() {
+  [[ -f "$PROXY_PLIST_DST" ]] && launchctl print "system/$PROXY_LABEL" >/dev/null 2>&1
+}
+
+PROXY_OK=0
+if [[ "$PROXY_MODE" != "off" ]]; then
+  if proxy_running; then
+    PROXY_OK=1
+  elif sudo -n true 2>/dev/null; then
+    sudo "$ROOT/scripts/install-local-proxy.sh"
+    PROXY_OK=1
+  else
+    cat >&2 <<EOF
+
+The readable address $PRETTY_URL needs a reverse proxy on port 80, which requires
+root. Run this command and then re-run this installer to switch over:
+
+  sudo "$ROOT/scripts/install-local-proxy.sh"
+
+Until then the service stays on $DIRECT_URL.
+
+EOF
+  fi
+fi
+BASE_URL="$DIRECT_URL"
+if [[ "$PROXY_OK" == "1" ]]; then BASE_URL="$PRETTY_URL"; fi
+export ZC_BASE_URL="$BASE_URL"
+
 mkdir -p "$HOME/Library/Application Support/ZeroCreds"
 PLIST="$LAUNCH_AGENTS/$LABEL.plist"
 export ZC_ROOT="$ROOT" ZC_CONFIG="$CONFIG" ZC_DATA="$DATA" ZC_PLIST="$PLIST"
@@ -69,7 +111,7 @@ const env = {
   ZEROCREDS_TOKENS_DIR: `${process.env.ZC_DATA}/tokens`,
   ZEROCREDS_LOCAL_CATALOG_FILE: `${process.env.ZC_CONFIG}/connections.json`,
   ZEROCREDS_LOCAL_PROVIDER_POLICIES_FILE: `${process.env.ZC_CONFIG}/provider-policies.json`,
-  ZEROCREDS_BASE_URL: 'http://127.0.0.1:3456',
+  ZEROCREDS_BASE_URL: process.env.ZC_BASE_URL,
   PORT: '3456',
 };
 const envXml = Object.entries(env).map(([k, v]) => `<key>${e(k)}</key><string>${e(v)}</string>`).join('');
@@ -91,7 +133,7 @@ NODE
 codex mcp remove zerocreds >/dev/null 2>&1 || true
 codex mcp add zerocreds \
   --env ZEROCREDS_LOCAL_MODE=1 \
-  --env ZEROCREDS_URL=http://127.0.0.1:3456 \
+  --env ZEROCREDS_URL="$BASE_URL" \
   --env ZEROCREDS_ADMIN_TOKEN_FILE="$CONFIG/admin-token" \
   --env ZEROCREDS_DEFAULT_DESTINATION=mac-keychain \
   --env ZEROCREDS_LOCAL_CATALOG_FILE="$CONFIG/connections.json" \
@@ -122,14 +164,14 @@ config.mcp.servers.zerocreds = {
   command: [process.env.ZC_NODE, process.env.ZC_MCP],
   environment: {
     ZEROCREDS_LOCAL_MODE: '1',
-    ZEROCREDS_URL: 'http://127.0.0.1:3456',
+    ZEROCREDS_URL: process.env.ZC_BASE_URL,
     ZEROCREDS_ADMIN_TOKEN_FILE: `${home}/.config/zerocreds/local/admin-token`,
     ZEROCREDS_DEFAULT_DESTINATION: 'mac-keychain',
     ZEROCREDS_LOCAL_CATALOG_FILE: `${home}/.config/zerocreds/local/connections.json`,
   },
 };
 const pluginPath = path.join(process.env.ZC_ROOT, 'opencode-plugin/zerocreds-events.js');
-const pluginOptions = { baseUrl: 'http://127.0.0.1:3456', adminTokenFile: `${home}/.config/zerocreds/local/admin-token` };
+const pluginOptions = { baseUrl: process.env.ZC_BASE_URL, adminTokenFile: `${home}/.config/zerocreds/local/admin-token` };
 config.plugin = Array.isArray(config.plugin) ? config.plugin : [];
 const existingPlugin = config.plugin.findIndex((entry) =>
   (typeof entry === 'string' && entry === pluginPath) ||
@@ -148,6 +190,9 @@ launchctl bootstrap "gui/$UID_NUM" "$PLIST"
 launchctl kickstart -k "gui/$UID_NUM/$LABEL"
 
 echo "ZeroCreds local Mac service installed."
-echo "Server: http://127.0.0.1:3456 (loopback only)"
+echo "Server: $BASE_URL (loopback only)"
+if [[ "$PROXY_OK" == "1" ]]; then
+  echo "Readable address: $PRETTY_URL (port 80 reverse proxy, system/$PROXY_LABEL)"
+fi
 echo "Keychain destination: zerocreds/<provider>-<account-alias>"
 echo "Restart Codex and OpenCode to load the MCP tools."

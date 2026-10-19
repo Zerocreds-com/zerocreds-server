@@ -57,7 +57,7 @@ jobs:
 
       - name: Lint (syntax check)
         run: |
-          find server/src server/test mcp wallet-worker/src wallet-worker/test -name '*.js' -not -path '*/node_modules/*' -print0 \
+          find server/src server/test mcp wallet-worker/src wallet-worker/test scripts -name '*.js' -not -path '*/node_modules/*' -print0 \
             | xargs -0 -n1 node --check
           python3 -m py_compile scripts/check-public.py
           python3 scripts/check-workflow-inline-python.py

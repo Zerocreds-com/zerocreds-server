@@ -6,7 +6,7 @@ const path = require('node:path');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
 
-test('local MCP provisions zerocreds_doctor and returns the sanitized server report', async () => {
+test('local MCP provisions doctor and returns the sanitized server report', async () => {
   const token = 'local-admin-token-12345678901234567890';
   let request;
   const api = http.createServer(async (req, res) => {
@@ -27,8 +27,8 @@ test('local MCP provisions zerocreds_doctor and returns the sanitized server rep
   try {
     await client.connect(transport);
     const tools = (await client.listTools()).tools;
-    assert.ok(tools.some(tool => tool.name === 'zerocreds_doctor'));
-    const result = await client.callTool({ name: 'zerocreds_doctor', arguments: {} });
+    assert.ok(tools.some(tool => tool.name === 'doctor'));
+    const result = await client.callTool({ name: 'doctor', arguments: {} });
     assert.deepEqual(request, { method: 'GET', url: '/api/local/doctor', authorization: `Bearer ${token}` });
     assert.match(result.content[0].text, /"overall": "ok"/);
     assert.match(result.content[0].text, /"credential_values_returned": false/);

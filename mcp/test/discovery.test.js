@@ -32,15 +32,15 @@ test('local discovery MCP exposes staged preview, catalog and search tools', asy
   try {
     await client.connect(transport);
     const names = (await client.listTools()).tools.map(tool => tool.name);
-    for (const name of ['zerocreds_discovery_sources', 'zerocreds_discovery_preview', 'zerocreds_discovery_catalog', 'zerocreds_credentials_search']) {
+    for (const name of ['discovery_sources', 'discovery_preview', 'discovery_catalog', 'credentials_search']) {
       assert.ok(names.includes(name), `${name} is registered`);
     }
-    const sources = await client.callTool({ name: 'zerocreds_discovery_sources', arguments: {} });
+    const sources = await client.callTool({ name: 'discovery_sources', arguments: {} });
     assert.equal(JSON.parse(sources.content[0].text).catalog_changes, 0);
-    const preview = await client.callTool({ name: 'zerocreds_discovery_preview', arguments: { source_ids: ['github_cli'], categories: ['credential'] } });
+    const preview = await client.callTool({ name: 'discovery_preview', arguments: { source_ids: ['github_cli'], categories: ['credential'] } });
     assert.equal(JSON.parse(preview.content[0].text).preview_id, previewId);
-    await client.callTool({ name: 'zerocreds_discovery_catalog', arguments: { preview_id: previewId, refs: ['disc_0123456789abcdef01234567'] } });
-    await client.callTool({ name: 'zerocreds_credentials_search', arguments: { q: 'github' } });
+    await client.callTool({ name: 'discovery_catalog', arguments: { preview_id: previewId, refs: ['disc_0123456789abcdef01234567'] } });
+    await client.callTool({ name: 'credentials_search', arguments: { q: 'github' } });
     assert.deepEqual(calls.map(call => call.url.split('?')[0]), [
       '/api/local/discovery/sources', '/api/local/discovery/preview', '/api/local/discovery/catalog', '/api/local/discovery/search',
     ]);

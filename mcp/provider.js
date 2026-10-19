@@ -5,10 +5,10 @@ const PROVIDER_VERSION = '1.0.0';
 const BINDING = 'zerocreds.wallet-api';
 function bindingForOperation(operation) { return `${BINDING}:${operation}`; }
 const API_OPERATIONS = Object.freeze({
-  zerocreds_wallet_form_create: 'wallet.forms.create',
-  zerocreds_wallet_form_status: 'wallet.forms.status',
-  zerocreds_wallet_connection_status: 'wallet.connections.status',
-  zerocreds_wallet_connection_revoke: 'wallet.connections.revoke',
+  wallet_form_create: 'wallet.forms.create',
+  wallet_form_status: 'wallet.forms.status',
+  wallet_connection_status: 'wallet.connections.status',
+  wallet_connection_revoke: 'wallet.connections.revoke',
 });
 
 // These are conservative collection shapes, not claims about service-specific
@@ -48,20 +48,20 @@ function getServiceTemplate(value) {
 
 const tools = [
   {
-    name: 'zerocreds_service_catalog',
+    name: 'service_catalog',
     description: 'List supported credential collection templates. For a known service, create a form using its canonical slug; the server chooses the credential fields. Never ask for a secret in chat. For an unknown service, ask only the missing non-secret connection details, then draft a minimal form spec and create it with explicit fields.',
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
-    operation: API_OPERATIONS.zerocreds_wallet_form_create,
+    operation: API_OPERATIONS.wallet_form_create,
     local: true,
     handler: async () => ({ services: SERVICE_CATALOG.map(({ id, name, kind, credentialHint }) => ({ id, name, kind, credential_hint: credentialHint })), unknown_service_flow: 'draft_minimal_spec_then_create_with_explicit_fields' }),
   },
   {
-    name: 'zerocreds_wallet_form_create',
-    description: 'Create a ZeroCreds credential form for the current owner and profile. For a known service in zerocreds_service_catalog, pass its canonical provider slug only; omit kind and fields so the server chooses the safe default. Unknown services require a minimal explicit non-secret form spec. Ask the user only for required non-secret context (for example which GitHub account or what access is needed); never ask for or accept credential values in chat. Do not use service configuration APIs to satisfy a connection request. Returns one-time form URL and value-free metadata.',
+    name: 'wallet_form_create',
+    description: 'Create a ZeroCreds credential form for the current owner and profile. For a known service in service_catalog, pass its canonical provider slug only; omit kind and fields so the server chooses the safe default. Unknown services require a minimal explicit non-secret form spec. Ask the user only for required non-secret context (for example which GitHub account or what access is needed); never ask for or accept credential values in chat. Do not use service configuration APIs to satisfy a connection request. Returns one-time form URL and value-free metadata.',
     inputSchema: {
       type: 'object', additionalProperties: false,
       properties: {
-        provider: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]{0,63}$', description: 'Use a canonical slug from zerocreds_service_catalog for known services. For an unknown service, use a normalized service slug only after preparing a minimal field spec and confirming its service label with the user.' },
+        provider: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]{0,63}$', description: 'Use a canonical slug from service_catalog for known services. For an unknown service, use a normalized service slug only after preparing a minimal field spec and confirming its service label with the user.' },
         kind: { type: 'string', enum: ['token', 'ssh', 'login'], default: 'token' },
         title: { type: 'string', maxLength: 200 },
         description: { type: 'string', maxLength: 2000 },
@@ -74,35 +74,35 @@ const tools = [
         idempotency_key: { type: 'string', pattern: '^[a-zA-Z0-9_-]{16,128}$' },
       }, required: ['provider'],
     },
-    operation: API_OPERATIONS.zerocreds_wallet_form_create,
+    operation: API_OPERATIONS.wallet_form_create,
     method: 'POST', path: '/api/wallet/forms',
   },
   {
-    name: 'zerocreds_wallet_form_status',
+    name: 'wallet_form_status',
     description: 'Check whether a wallet form was completed. Returns status and non-secret metadata only.',
     inputSchema: { type: 'object', additionalProperties: false, properties: { form_id: { type: 'string', pattern: '^[a-f0-9]{32}$' } }, required: ['form_id'] },
-    operation: API_OPERATIONS.zerocreds_wallet_form_status,
+    operation: API_OPERATIONS.wallet_form_status,
     method: 'GET', path: (args) => `/api/wallet/forms/${encodeURIComponent(args.form_id)}/status`,
   },
   {
-    name: 'zerocreds_wallet_connection_status',
+    name: 'wallet_connection_status',
     description: 'Check a saved connection by ID after the form expires. Returns safe metadata only.',
     inputSchema: { type: 'object', additionalProperties: false, properties: { connection_id: { type: 'string', pattern: '^[a-zA-Z0-9_-]{1,100}$' } }, required: ['connection_id'] },
-    operation: API_OPERATIONS.zerocreds_wallet_connection_status,
+    operation: API_OPERATIONS.wallet_connection_status,
     method: 'GET', path: (args) => `/api/wallet/connections/${encodeURIComponent(args.connection_id)}`,
   },
   {
-    name: 'zerocreds_wallet_connection_revoke',
+    name: 'wallet_connection_revoke',
     description: 'Revoke a saved connection when the user explicitly requests it. This does not return or erase credential values.',
     inputSchema: { type: 'object', additionalProperties: false, properties: { connection_id: { type: 'string', pattern: '^[a-zA-Z0-9_-]{1,100}$' } }, required: ['connection_id'] },
-    operation: API_OPERATIONS.zerocreds_wallet_connection_revoke,
+    operation: API_OPERATIONS.wallet_connection_revoke,
     method: 'POST', path: (args) => `/api/wallet/connections/${encodeURIComponent(args.connection_id)}/revoke`,
   },
 ];
 
 function projectResponse(name, data, endpoint) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('ZeroCreds returned an invalid response');
-  if (name === 'zerocreds_wallet_form_create') {
+  if (name === 'wallet_form_create') {
     if (!/^[a-f0-9]{32}$/.test(data.form_id || '') || !/^[a-zA-Z0-9_-]{1,100}$/.test(data.connection_id || '')
       || typeof data.url !== 'string' || typeof data.expires_at !== 'string'
       || !Number.isFinite(Date.parse(data.expires_at)) || Date.parse(data.expires_at) <= Date.now()
@@ -127,7 +127,7 @@ function projectResponse(name, data, endpoint) {
       ...(statusUrl ? { status_url: statusUrl } : {}),
       ...(typeof data.state === 'string' ? { state: data.state } : {}) };
   }
-  if (name === 'zerocreds_wallet_form_status') {
+  if (name === 'wallet_form_status') {
     if (!/^[a-f0-9]{32}$/.test(data.form_id || '') || !/^[a-zA-Z0-9_-]{1,100}$/.test(data.connection_id || '')
       || !['pending', 'done', 'expired', 'revoked'].includes(data.status)) throw new Error('ZeroCreds returned an invalid form status');
     return { form_id: data.form_id, connection_id: data.connection_id, status: data.status,
@@ -137,7 +137,7 @@ function projectResponse(name, data, endpoint) {
   if (!/^[a-zA-Z0-9_-]{1,100}$/.test(data.connection_id || '') || !['allocated', 'active', 'revoked'].includes(data.state)) {
     throw new Error('ZeroCreds returned an invalid connection response');
   }
-  if (name === 'zerocreds_wallet_connection_status') return {
+  if (name === 'wallet_connection_status') return {
     connection_id: data.connection_id,
     ...(typeof data.provider === 'string' ? { provider: data.provider } : {}),
     state: data.state,
@@ -179,7 +179,7 @@ function createWalletProvider({ baseUrl, fetchImpl = globalThis.fetch, timeoutMs
           response = await fetchImpl(`${endpointUrl.origin}${endpointUrl.pathname.replace(/\/$/, '')}${path}`, {
             method: definition.method,
             headers: { authorization: `Bearer ${assertion}`, ...(definition.method === 'POST' ? { 'content-type': 'application/json' } : {}) },
-            ...(definition.method === 'POST' ? { body: JSON.stringify(definition.name === 'zerocreds_wallet_form_create' ? args : {}) } : {}),
+            ...(definition.method === 'POST' ? { body: JSON.stringify(definition.name === 'wallet_form_create' ? args : {}) } : {}),
             signal,
             redirect: 'error',
           });

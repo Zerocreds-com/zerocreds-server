@@ -31,14 +31,14 @@ test('local MCP provisions synthetic playground runner and form tools', async ()
   try {
     await client.connect(transport);
     const tools = (await client.listTools()).tools;
-    assert.ok(tools.some(tool => tool.name === 'zerocreds_playground_scenarios'));
-    assert.ok(tools.some(tool => tool.name === 'zerocreds_playground_run'));
-    assert.ok(tools.some(tool => tool.name === 'zerocreds_playground_form'));
-    const run = await client.callTool({ name: 'zerocreds_playground_run', arguments: {
+    assert.ok(tools.some(tool => tool.name === 'playground_scenarios'));
+    assert.ok(tools.some(tool => tool.name === 'playground_run'));
+    assert.ok(tools.some(tool => tool.name === 'playground_form'));
+    const run = await client.callTool({ name: 'playground_run', arguments: {
       rules: [{ type: 'matches', pattern: '^PLAYGROUND_SYNTHETIC_VALID_' }], scenarios: ['valid'],
     } });
     assert.match(run.content[0].text, /"value_returned": false/);
-    const form = await client.callTool({ name: 'zerocreds_playground_form', arguments: {
+    const form = await client.callTool({ name: 'playground_form', arguments: {
       rules: [{ type: 'min_length', value: 8 }],
     } });
     assert.match(form.content[0].text, /DO NOT ENTER REAL CREDENTIALS/);

@@ -70,24 +70,24 @@ path "${mount}/metadata/owners/${owner}/probes/*" { capabilities = ["read", "del
         env: { PATH: process.env.PATH || '', HOME: process.env.HOME || '',
           ZEROCREDS_URL: `http://127.0.0.1:${app.port}`, ZEROCREDS_WALLET_API_TOKEN: apiToken },
       }));
-      const created = await tool('zerocreds_wallet_form_create',
+      const created = await tool('wallet_form_create',
         { provider: 'github', kind: 'token', idempotency_key: `mcp_${suffix}_wallet_create` });
       assert.match(created.url, new RegExp(`/f/${created.form_id}$`));
       assert.equal(created.owner_id, undefined);
-      const before = await tool('zerocreds_wallet_form_status', { form_id: created.form_id });
+      const before = await tool('wallet_form_status', { form_id: created.form_id });
       assert.equal(before.status, 'pending');
       const value = `synthetic_${suffix}`;
       const submitted = await request(app.port, 'POST', `/f/${created.form_id}`,
         { t: created.form_id, fields: { token: value } });
       assert.equal(submitted.status, 200, JSON.stringify(submitted.body));
-      const after = await tool('zerocreds_wallet_form_status', { form_id: created.form_id });
+      const after = await tool('wallet_form_status', { form_id: created.form_id });
       assert.equal(after.status, 'done');
       assert.equal(after.connection_id, created.connection_id);
       assert.ok(!JSON.stringify(after).includes(value));
-      const connection = await tool('zerocreds_wallet_connection_status',
+      const connection = await tool('wallet_connection_status',
         { connection_id: created.connection_id });
       assert.equal(connection.state, 'active');
-      const revoked = await tool('zerocreds_wallet_connection_revoke',
+      const revoked = await tool('wallet_connection_revoke',
         { connection_id: created.connection_id });
       assert.equal(revoked.state, 'revoked');
     } finally {

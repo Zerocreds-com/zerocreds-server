@@ -5,8 +5,11 @@ const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio
 const { z } = require('zod');
 const { createWalletProvider, bindingForOperation, API_OPERATIONS } = require('./provider');
 
-const BASE_URL = (process.env.ZEROCREDS_URL || 'https://zerocreds.ru').replace(/\/$/, '');
 const fs = require('fs');
+const LOCAL_MODE = process.env.ZEROCREDS_LOCAL_MODE === '1';
+// The hosted deployment is reached at zerocreds.ru; local mode talks to the server
+// on this Mac, which is the only one that can read the local Keychain.
+const BASE_URL = (process.env.ZEROCREDS_URL || (LOCAL_MODE ? 'http://localhost/zerocreds' : 'https://zerocreds.ru')).replace(/\/+$/, '');
 const ADMIN_TOKEN_FILE = process.env.ZEROCREDS_ADMIN_TOKEN_FILE || '';
 let ADMIN_TOKEN = process.env.ZEROCREDS_ADMIN_TOKEN || '';
 if (!ADMIN_TOKEN && ADMIN_TOKEN_FILE) {
@@ -24,13 +27,17 @@ if (!ADMIN_TOKEN && ADMIN_TOKEN_FILE) {
   if (ADMIN_TOKEN.length < 32 || /\s/.test(ADMIN_TOKEN)) throw new Error('ZeroCreds admin token file is invalid');
 }
 const WALLET_API_TOKEN = process.env.ZEROCREDS_WALLET_API_TOKEN || '';
-const LOCAL_MODE = process.env.ZEROCREDS_LOCAL_MODE === '1';
 const DEFAULT_DESTINATION = process.env.ZEROCREDS_DEFAULT_DESTINATION || '';
 if (LOCAL_MODE) {
   let endpoint;
   try { endpoint = new URL(BASE_URL); } catch {}
+  // A mount prefix is allowed (http://localhost/zerocreds) as long as it is a plain
+  // path: no traversal, no query, no credentials.
+  const rawPath = endpoint ? endpoint.pathname : '';
+  const mountPath = rawPath === '/' ? '/' : rawPath.replace(/\/+$/, '');
   if (!endpoint || endpoint.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname)
-      || endpoint.username || endpoint.password || endpoint.pathname !== '/' || endpoint.search || endpoint.hash
+      || endpoint.username || endpoint.password || endpoint.search || endpoint.hash
+      || !mountPath.startsWith('/') || mountPath.includes('..') || /\s/.test(mountPath)
       || !DEFAULT_DESTINATION) {
     throw new Error('Local ZeroCreds requires a loopback URL and a configured local Keychain destination');
   }
@@ -65,7 +72,7 @@ const server = new McpServer({
 });
 
 server.tool(
-  'zerocreds_create_session',
+  'form_create',
   'Create a ZeroCreds credential-collection session. The user fills in credentials directly — the agent never sees them. When sharing the form, show the returned user_message verbatim so the link has a friendly label; do not expose the raw URL by itself.',
   {
     title: z.string().describe('Heading shown on the form (e.g. "Connect GitHub")'),
@@ -132,7 +139,7 @@ server.tool(
 );
 
 server.tool(
-  'zerocreds_connections_list',
+  'connections_list',
   'List local ZeroCreds credential connections without returning credential values. Shows provider, account alias, expiry and verification status.',
   {
     provider: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional(),
@@ -146,7 +153,7 @@ server.tool(
 );
 
 server.tool(
-  'zerocreds_connection_resolve',
+  'connection_resolve',
   'Resolve an existing local connection for a provider. Pass an account alias when more than one account exists. Never returns the credential value.',
   {
     provider: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
@@ -162,7 +169,7 @@ server.tool(
 );
 
 if (LOCAL_MODE) server.tool(
-  'zerocreds_connection_verify',
+  'connection_verify',
   'Verify a saved local credential against its provider. Provider-native verification is implemented for github, cloudflare and deepgram; any other provider slug returns verification "unsupported_provider" without contacting anything, so the tool stays honest for services ZeroCreds cannot check. For Deepgram this safely tests whether the key can mint a default 30-second grant, then discards the token; it does not make a billable transcription request. The one-time verify result includes a masked 3-character prefix/4-character suffix and length for alias comparison; this hint is not persisted or logged. The tool never returns the credential or grant value. This verifies the Mac Keychain credential, not whether a separate Cloudflare Worker secret was updated.',
   {
     provider: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/).describe('Provider slug, for example github, cloudflare, deepgram or the service slug used when the credential was saved'),
@@ -176,8 +183,8 @@ if (LOCAL_MODE) server.tool(
 );
 
 if (LOCAL_MODE) {
-  server.tool('zerocreds_doctor',
-    'Diagnose the local ZeroCreds path without reading or returning credential values. Checks that this MCP call reaches the local server, the private Keychain helper is installed, macOS Keychain answers a metadata-only query, the configured default destination is an OS Keychain, and the local catalog is readable. If a check fails, follow its action and rerun this tool. Then use zerocreds_connection_verify for a specific provider/account; that separate check proves provider acceptance only for the selected local credential, not a different Worker secret.',
+  server.tool('doctor',
+    'Diagnose the local ZeroCreds path without reading or returning credential values. Checks that this MCP call reaches the local server, the private Keychain helper is installed, macOS Keychain answers a metadata-only query, the configured default destination is an OS Keychain, and the local catalog is readable. If a check fails, follow its action and rerun this tool. Then use connection_verify for a specific provider/account; that separate check proves provider acceptance only for the selected local credential, not a different Worker secret.',
     {},
     async () => {
       const data = await apiCall('GET', '/api/local/doctor');
@@ -185,7 +192,7 @@ if (LOCAL_MODE) {
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
     });
 
-  server.tool('zerocreds_playground_scenarios',
+  server.tool('playground_scenarios',
     'List the local ZeroCreds credential playground scenarios and supported validation rules. Synthetic only: it never contacts a provider or credential store. Use invented examples; never put real credentials into the playground.',
     {},
     async () => {
@@ -194,7 +201,7 @@ if (LOCAL_MODE) {
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
     });
 
-  server.tool('zerocreds_playground_run',
+  server.tool('playground_run',
     'Run deterministic synthetic credential-validation scenarios against generic rules such as regex, length, equals, contains or one_of. No network/provider/store calls happen and values are never returned. This is a simulator, not proof that a real credential works. Never supply real credentials.',
     {
       rules: z.array(z.discriminatedUnion('type', [
@@ -212,7 +219,7 @@ if (LOCAL_MODE) {
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
     });
 
-  server.tool('zerocreds_playground_form',
+  server.tool('playground_form',
     'Create an expiring local-only test form to exercise browser rendering, required-field validation, rule evaluation, submit and completion status. The page prominently says not to enter real credentials; values are only checked in memory and discarded. No provider or storage is called.',
     {
       rules: z.array(z.discriminatedUnion('type', [
@@ -231,8 +238,8 @@ if (LOCAL_MODE) {
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
     });
 
-  server.tool('zerocreds_discovery_sources',
-    'First step when the user asks what access exists: detect supported credential sources and report availability. Read-only; does not catalog anything and never reads secret values. Then call zerocreds_discovery_preview to show candidate metadata. Browser password stores may be detected but are not read.',
+  server.tool('discovery_sources',
+    'First step when the user asks what access exists: detect supported credential sources and report availability. Read-only; does not catalog anything and never reads secret values. Then call discovery_preview to show candidate metadata. Browser password stores may be detected but are not read.',
     {},
     async () => {
       const data = await apiCall('GET', '/api/local/discovery/sources');
@@ -240,8 +247,8 @@ if (LOCAL_MODE) {
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
     });
 
-  server.tool('zerocreds_discovery_preview',
-    'Scan available local sources and show credential metadata candidates without saving them. Call when the user asks about available access. Present provider, account, source, category and scopes clearly; do not catalog yet. Ask which candidates the user wants added, then call zerocreds_discovery_catalog only for those refs after the user confirms. The preview expires 6 hours after it is created; a successful catalog call consumes it, so run preview again to add more later. Use category_counts to summarise a large inventory and categories to narrow the list without hiding anything by default.',
+  server.tool('discovery_preview',
+    'Scan available local sources and show credential metadata candidates without saving them. Call when the user asks about available access. Present provider, account, source, category and scopes clearly; do not catalog yet. Ask which candidates the user wants added, then call discovery_catalog only for those refs after the user confirms. The preview expires 6 hours after it is created; a successful catalog call consumes it, so run preview again to add more later. Use category_counts to summarise a large inventory and categories to narrow the list without hiding anything by default.',
     {
       source_ids: z.array(z.enum(['github_cli', 'cloudflare_cli', 'gcloud_cli', 'macos_keychain', 'chrome'])).optional(),
       categories: z.array(z.enum(['credential', 'wifi', 'bluetooth', 'apple-system', 'browser', 'vpn', 'other'])).optional()
@@ -253,8 +260,8 @@ if (LOCAL_MODE) {
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
     });
 
-  server.tool('zerocreds_discovery_catalog',
-    'Add only explicitly selected metadata candidates from a recent discovery preview. This writes a searchable local metadata catalog, never copies secrets. Call only after the user has reviewed the preview and chosen these refs. refs must come from the same preview_id, and the preview is consumed by a successful call — re-run zerocreds_discovery_preview before adding more.',
+  server.tool('discovery_catalog',
+    'Add only explicitly selected metadata candidates from a recent discovery preview. This writes a searchable local metadata catalog, never copies secrets. Call only after the user has reviewed the preview and chosen these refs. refs must come from the same preview_id, and the preview is consumed by a successful call — re-run discovery_preview before adding more.',
     { preview_id: z.string().regex(/^[a-f0-9]{36}$/), refs: z.array(z.string().regex(/^disc_[a-f0-9]{24}$/)).min(1).max(200) },
     async ({ preview_id, refs }) => {
       const data = await apiCall('POST', '/api/local/discovery/catalog', { preview_id, refs });
@@ -262,8 +269,8 @@ if (LOCAL_MODE) {
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
     });
 
-  server.tool('zerocreds_credentials_search',
-    'Search the approved local credential metadata catalog by provider, account, source, label, service or scope. This searches ONLY what the user has explicitly catalogued from a discovery preview — it is not a live Keychain scan, so a provider that exists in the Keychain but was never catalogued will not appear here. Call zerocreds_discovery_preview for a fresh inventory. Results describe where access may exist; they do not prove a credential is usable. Optionally pass preview_id to search an active preview before the user chooses what to catalog.',
+  server.tool('credentials_search',
+    'Search the approved local credential metadata catalog by provider, account, source, label, service or scope. This searches ONLY what the user has explicitly catalogued from a discovery preview — it is not a live Keychain scan, so a provider that exists in the Keychain but was never catalogued will not appear here. Call discovery_preview for a fresh inventory. Results describe where access may exist; they do not prove a credential is usable. Optionally pass preview_id to search an active preview before the user chooses what to catalog.',
     { q: z.string().min(1).max(256), preview_id: z.string().regex(/^[a-f0-9]{36}$/).optional(), limit: z.number().int().min(1).max(100).optional() },
     async ({ q, preview_id, limit }) => {
       const query = new URLSearchParams({ q });
@@ -276,10 +283,10 @@ if (LOCAL_MODE) {
 }
 
 server.tool(
-  'zerocreds_check_status',
+  'form_status',
   'Check whether the user has submitted the ZeroCreds form. Poll every 5–10 seconds until status is "done" or "expired".',
   {
-    token: z.string().describe('Session token returned by zerocreds_create_session'),
+    token: z.string().describe('Session token returned by form_create'),
   },
   async ({ token }) => {
     const data = await apiCall('GET', `/api/session/${token}/status`);
@@ -295,7 +302,7 @@ server.tool(
 
 if (!LOCAL_MODE || WALLET_API_TOKEN) {
 server.tool(
-  'zerocreds_wallet_form_create',
+  'wallet_form_create',
   'Request a credential form in the current user profile. Returns a one-time URL and connection_id. The agent never sees credential values or chooses the storage destination.',
   {
     provider: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/).describe('Service slug, for example github or tilda'),
@@ -311,31 +318,31 @@ server.tool(
     idempotency_key: z.string().regex(/^[a-zA-Z0-9_-]{16,128}$/).optional(),
   },
   async (input) => ({ content: [{ type: 'text', text: JSON.stringify(
-    await walletHandlers.get('zerocreds_wallet_form_create')(input, legacyWalletContext('zerocreds_wallet_form_create')), null, 2) }] }),
+    await walletHandlers.get('wallet_form_create')(input, legacyWalletContext('wallet_form_create')), null, 2) }] }),
 );
 
 server.tool(
-  'zerocreds_wallet_form_status',
+  'wallet_form_status',
   'Check whether a wallet form was completed. Returns only status, connection_id and version metadata; never credential values.',
   { form_id: z.string().regex(/^[a-f0-9]{32}$/) },
   async ({ form_id }) => ({ content: [{ type: 'text', text: JSON.stringify(
-    await walletHandlers.get('zerocreds_wallet_form_status')({ form_id }, legacyWalletContext('zerocreds_wallet_form_status')), null, 2) }] }),
+    await walletHandlers.get('wallet_form_status')({ form_id }, legacyWalletContext('wallet_form_status')), null, 2) }] }),
 );
 
 server.tool(
-  'zerocreds_wallet_connection_status',
+  'wallet_connection_status',
   'Check a saved connection by ID after the form link has expired. Returns metadata only, never credential values.',
   { connection_id: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/) },
   async ({ connection_id }) => ({ content: [{ type: 'text', text: JSON.stringify(
-    await walletHandlers.get('zerocreds_wallet_connection_status')({ connection_id }, legacyWalletContext('zerocreds_wallet_connection_status')), null, 2) }] }),
+    await walletHandlers.get('wallet_connection_status')({ connection_id }, legacyWalletContext('wallet_connection_status')), null, 2) }] }),
 );
 
 server.tool(
-  'zerocreds_wallet_connection_revoke',
+  'wallet_connection_revoke',
   'Mark a saved connection revoked when the user explicitly requests it. Trusted brokers must deny future use; this does not return or erase credential values.',
   { connection_id: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/) },
   async ({ connection_id }) => ({ content: [{ type: 'text', text: JSON.stringify(
-    await walletHandlers.get('zerocreds_wallet_connection_revoke')({ connection_id }, legacyWalletContext('zerocreds_wallet_connection_revoke')), null, 2) }] }),
+    await walletHandlers.get('wallet_connection_revoke')({ connection_id }, legacyWalletContext('wallet_connection_revoke')), null, 2) }] }),
 );
 }
 
