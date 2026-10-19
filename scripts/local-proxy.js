@@ -20,7 +20,17 @@ const http = require('node:http')
 
 const PORT = Number(process.env.ZEROCREDS_PROXY_PORT || 80)
 const TARGET = new URL(process.env.ZEROCREDS_PROXY_TARGET || 'http://127.0.0.1:3456')
-const HOST_HEADER = process.env.ZEROCREDS_PROXY_HOST || 'localhost'
+
+// The server compares the Host header with the host of its configured base URL,
+// so the proxy has to send the same thing a browser would: the host, plus the
+// port when it is not the default one for the scheme.
+function hostHeaderFor(port, host) {
+  const value = host || 'localhost'
+  if (/:\d+$/.test(value) || port === 80 || port === 443) return value
+  return `${value}:${port}`
+}
+
+const HOST_HEADER = hostHeaderFor(PORT, process.env.ZEROCREDS_PROXY_HOST)
 const HOSTS = (process.env.ZEROCREDS_PROXY_HOSTS || '127.0.0.1,::1').split(',').map((h) => h.trim()).filter(Boolean)
 
 const HOP_BY_HOP = new Set([
@@ -73,15 +83,21 @@ function handle(req, res) {
   req.pipe(upstream)
 }
 
-let bound = 0
-for (const host of HOSTS) {
-  const server = http.createServer(handle)
-  server.on('error', (error) => {
-    console.error(`[zerocreds-proxy] cannot listen on ${host}:${PORT} (${error.code || error.message})`)
-    if (bound === 0 && HOSTS.indexOf(host) === HOSTS.length - 1) process.exit(1)
-  })
-  server.listen(PORT, host, () => {
-    bound += 1
-    console.log(`[zerocreds-proxy] http://${host}:${PORT} -> ${TARGET.origin}`)
-  })
+function start() {
+  let bound = 0
+  for (const host of HOSTS) {
+    const server = http.createServer(handle)
+    server.on('error', (error) => {
+      console.error(`[zerocreds-proxy] cannot listen on ${host}:${PORT} (${error.code || error.message})`)
+      if (bound === 0 && HOSTS.indexOf(host) === HOSTS.length - 1) process.exit(1)
+    })
+    server.listen(PORT, host, () => {
+      bound += 1
+      console.log(`[zerocreds-proxy] http://${host}:${PORT} -> ${TARGET.origin}`)
+    })
+  }
 }
+
+if (require.main === module) start()
+
+module.exports = { hostHeaderFor, start }
