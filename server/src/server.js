@@ -593,9 +593,13 @@ const SERVER_READABLE_NOTE = 'Stored on the ZeroCreds server; programs run by th
 const WRITE_ONLY_NOTE = 'ZeroCreds is only given write access to this store (when configured as documented).';
 
 // Plain-text summary of where values go: { kind, target, note }. Callers escape it.
-function describeDestination(dest, pending) {
+function describeDestination(dest, pending, options = {}) {
   if (!dest || typeof dest !== 'object') return { kind: 'Not stored', target: '', note: '' };
   const ctx = templateContext(pending);
+  // On a local server the store is on the very Mac the user is sitting at, so it
+  // is named as such instead of "on the ZeroCreds server".
+  const local = options.local === true;
+  const keychainTarget = `${resolveTemplate(String(dest.service || 'zerocreds'), ctx)}/${resolveTemplate(String(dest.account || 'default'), ctx)}`;
   switch (dest.type) {
     case 'local_file': {
       const sub = integratorSubdir(pending.integrator_id);
@@ -608,9 +612,11 @@ function describeDestination(dest, pending) {
     case 'vault': return { kind: dest.preflight_path_prefix ? 'OpenBao KV v2' : 'Vault-compatible secret store',
       target: `${urlHostPath(dest.address)}/v1/${String(dest.path || '').replace(/^\//, '')}`, note: WRITE_ONLY_NOTE };
     case 'http_post': return { kind: 'Web endpoint of the requester', target: urlHostPath(dest.url), note: 'Whoever runs this endpoint receives the values in readable form.' };
-    case 'macos_keychain':
-    case 'windows_credential_manager':
-    case 'os_keychain': return { kind: 'OS keychain on the ZeroCreds server', target: `${resolveTemplate(String(dest.service || 'zerocreds'), ctx)}/${resolveTemplate(String(dest.account || 'default'), ctx)}`, note: SERVER_READABLE_NOTE };
+    case 'macos_keychain': return { kind: local ? 'macOS Keychain on this Mac' : 'macOS Keychain on the ZeroCreds server',
+      target: keychainTarget, note: SERVER_READABLE_NOTE };
+    case 'windows_credential_manager': return { kind: 'Windows Credential Manager', target: keychainTarget, note: SERVER_READABLE_NOTE };
+    case 'os_keychain': return { kind: local ? 'OS keychain on this Mac' : 'OS keychain on the ZeroCreds server',
+      target: keychainTarget, note: SERVER_READABLE_NOTE };
     default: return { kind: String(dest.type), target: '', note: '' };
   }
 }
@@ -682,7 +688,7 @@ function dynamicFormHtml(token, pending, host, nonce, api = null) {
   // Always-visible: who asked, and exactly where each group of fields is sent.
   const destGroups = [];
   for (const f of fields) {
-    const d = describeDestination(destinationForField(pending, f), pending);
+    const d = describeDestination(destinationForField(pending, f), pending, { local: isLocal });
     const key = `${d.kind}\n${d.target}`;
     let g = destGroups.find(x => x.key === key);
     if (!g) { g = { key, ...d, labels: [] }; destGroups.push(g); }
@@ -693,6 +699,14 @@ function dynamicFormHtml(token, pending, host, nonce, api = null) {
     const k = destGroups.length > 1 ? `${escHtml(g.labels.join(', '))} →` : 'Sent to';
     return `<div class="dest-row"><span class="dest-k">${k}</span><span class="dest-v">${escHtml(g.kind)}${g.target ? `<code class="dest-target">${escHtml(g.target)}</code>` : ''}${g.note ? `<span class="dest-note">${escHtml(g.note)}</span>` : ''}</span></div>`;
   }).join('');
+  // The form view is replaced by the confirmation as soon as the submit succeeds,
+  // so the destination has to be repeated there: that is the moment the user asks
+  // where the value actually landed.
+  const savedToRows = destGroups.map(g => {
+    const k = destGroups.length > 1 ? `${escHtml(g.labels.join(', '))} →` : 'Saved to';
+    return `<div class="dest-row"><span class="dest-k">${k}</span><span class="dest-v">${escHtml(g.kind)}${g.target ? `<code class="dest-target">${escHtml(g.target)}</code>` : ''}</span></div>`;
+  }).join('');
+  const savedToHtml = savedToRows ? `<div class="dest-box" id="zc-saved-to">${savedToRows}</div>` : '';
   const handleRow = pending.form ? `<div class="dest-row"><span class="dest-k">Saved as</span><span class="dest-v"><code class="dest-target">${escHtml(pending.form.handle)}</code></span></div>` : '';
   const destBox = `<div class="dest-box" id="zc-destination">
       <div class="dest-row"><span class="dest-k">Requested by</span><span class="dest-v">${escHtml(requesterLabel(pending))}</span></div>
@@ -1043,6 +1057,7 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="check-icon" aria-hidden="true">✓</div>
     <h1>Done</h1>
     <p class="sub">${pending.playground_test ? 'Synthetic test value checked and discarded. Nothing was saved.' : 'Credentials saved. You can close this page.'}</p>
+    ${pending.playground_test ? '' : savedToHtml}
   </div>
   <p class="lock"><span id="zc-timer"></span> &middot; One-time link &middot; <a href="https://github.com/Zerocreds-com/zerocreds-server" target="_blank" rel="noopener">v${VERSION}</a></p>
   ${apiHtml}
@@ -1814,7 +1829,7 @@ function createApp(config = {}) {
       owner: pending.integrator_id,
       requester: requesterLabel(pending),
       fields: pending.fields.map(f => ({ name: f.name, label: f.label, type: f.type || 'text', required: f.required !== false })),
-      destination: describeDestination(pending.destination, pending),
+      destination: describeDestination(pending.destination, pending, { local: LOCAL_MODE }),
       ...(pending.wallet ? { wallet: {
         owner_id: pending.wallet.owner_id, profile_id: pending.wallet.profile_id,
         connection_id: pending.wallet.connection_id,
@@ -1913,7 +1928,7 @@ function createApp(config = {}) {
             handle: pending.form.handle, kind: pending.form.kind,
             owner: pending.integrator_id, manifest_id: pending.form.manifest_id,
             fields: pending.fields.map(f => f.name).filter(n => clean[n] !== undefined),
-            destination: describeDestination(pending.destination, pending),
+            destination: describeDestination(pending.destination, pending, { local: LOCAL_MODE }),
             destination_ref: wallet.connection_id,
             wallet: { owner_id: scope.owner_id, profile_id: scope.profile_id,
               connection_id: wallet.connection_id, kv_version: result.version },
@@ -2042,7 +2057,7 @@ function createApp(config = {}) {
         owner: pending.integrator_id,
         manifest_id: pending.form.manifest_id,
         fields: pending.fields.map(f => f.name).filter(n => clean[n] !== undefined),
-        destination: describeDestination(pending.destination, pending),
+        destination: describeDestination(pending.destination, pending, { local: LOCAL_MODE }),
         destination_ref: typeof saveResult?.secret_id === 'string' ? saveResult.secret_id : null,
         submitted_via: via,
         submitted_at: new Date().toISOString(),
