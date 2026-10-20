@@ -268,8 +268,26 @@ test('verification forwards explicit field selection, validates it and explains 
   }, { verifier: async (provider, fields, fetchImpl, options) => {
     calls++;
     assert.equal(provider, 'github');
-    assert.deepEqual(options, { tokenField: 'github_pat_admin' });
+    assert.deepEqual(options, { tokenField: 'github_pat_admin', account_id: undefined });
     return { status: 'credential_field_missing' };
+  } });
+});
+
+test('Cloudflare verification accepts only a Cloudflare account ID and forwards it', async () => {
+  const accountId = 'a'.repeat(32);
+  await withLocalServer(async ({ port, token }) => {
+    const input = { provider: 'cloudflare', account_alias: 'work', account_id: accountId };
+    const result = await call(port, 'POST', '/api/local/connections/verify', input, token);
+    assert.equal(result.status, 200);
+    assert.equal(result.body.verification, 'unknown');
+    assert.equal((await call(port, 'POST', '/api/local/connections/verify',
+      { ...input, account_id: 'not-an-account' }, token)).status, 400);
+    assert.equal((await call(port, 'POST', '/api/local/connections/verify',
+      { ...input, provider: 'github' }, token)).status, 400);
+  }, { provider: 'cloudflare', verifier: async (provider, fields, fetchImpl, options) => {
+    assert.equal(provider, 'cloudflare');
+    assert.equal(options.account_id, accountId);
+    return { status: 'unknown' };
   } });
 });
 

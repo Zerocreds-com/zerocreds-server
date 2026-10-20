@@ -44,7 +44,7 @@ function credentialHint(provider, fields, { tokenField } = {}) {
   };
 }
 
-async function verifyLocalCredential(provider, fields, fetchImpl = fetch, { tokenField } = {}) {
+async function verifyLocalCredential(provider, fields, fetchImpl = fetch, { tokenField, account_id: accountIdOverride } = {}) {
   const normalizedProvider = String(provider).toLowerCase();
   const config = PROVIDERS[normalizedProvider];
   if (!config) return { status: 'unsupported_provider' };
@@ -118,8 +118,29 @@ async function verifyLocalCredential(provider, fields, fetchImpl = fetch, { toke
     }
   }
 
-  if (!response.ok) return response.status === 401
-    ? { status: 'invalid' } : { status: 'unavailable' };
+  // A Cloudflare account-owned token can be rejected by the user-token
+  // endpoint while still accessing its account's Workers. That response alone
+  // is not evidence that the stored token is invalid.
+  if (!response.ok) {
+    const accountId = accountIdOverride || fields?.account_id;
+    if (!/^[a-f0-9]{32}$/.test(accountId || '')) {
+      return { status: 'unknown', diagnostic: { upstream_status: response.status,
+        reason: 'cloudflare_token_context_unconfirmed', account_id_required: true,
+        next_step: 'Check the existing token against the target account or resource. Do not request a replacement token from this result.' } };
+    }
+    try {
+      response = await fetchImpl(`https://api.cloudflare.com/client/v4/accounts/${accountId}/tokens/verify`, {
+        method: 'GET', headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        redirect: 'error', signal: AbortSignal.timeout(8000),
+      });
+    } catch {
+      return { status: 'unknown', diagnostic: { reason: 'cloudflare_account_verification_unavailable',
+        next_step: 'Check the existing token against the target resource. Do not request a replacement token from this result.' } };
+    }
+  }
+  if (!response.ok) return { status: 'unknown', diagnostic: { upstream_status: response.status,
+    reason: 'cloudflare_verification_rejected',
+    next_step: 'Check the token type, account and intended resource before requesting a replacement.' } };
   try {
     const result = await boundedJson(response);
     const verification = result?.result;
