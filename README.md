@@ -406,6 +406,29 @@ For a named OpenBao KV-v2 destination, `vault` remains the compatible destinatio
 
 This probe verifies the configured OpenBao write path and returns no credential value. `POST /api/forms` can create a signed manifest and receipt for this named destination. That still does not establish authenticated wallet ownership or profile binding, D1 metadata, a runner read broker, or a production OpenBao deployment; those remain part of the [ServerlessAgence integration contract](docs/serverlessagence-runner-credential-intake.md).
 
+### The ZeroCreds custody destination
+
+`zerocreds_vault` is the durable custody: the value is encrypted with a key only this service holds and is written to the custody store as ciphertext, and the store answers it only to a run-scoped grant. The destination is named and configured once, like any other:
+
+```json
+{
+  "runner-custody": {
+    "type": "zerocreds_vault",
+    "vault_url": "https://zerocreds-wallet-api-runner-sandbox.example.workers.dev",
+    "service_token": "<custody service token>",
+    "data_key": "<base64 of the 32-byte data key>",
+    "key_ref": "k1",
+    "connection_id": "conn_1",
+    "owner_id": "owner_1",
+    "profile_id": "profile_1",
+    "provider": "github",
+    "lease_ttl_minutes": 1440
+  }
+}
+```
+
+`lease_ttl_minutes` is optional and it is the only bound on how long the stored value may leave the custody: it starts when the value is stored and ends after that many minutes. `lease_expires_at` (an ISO-8601 instant) names the end instead of a duration. Without either, the value has no lease and lives in the custody until it is revoked — the right default for a credential a user minted for a long-lived integration. Once the lease has ended, a grant is refused with `CREDENTIAL_LEASE_EXPIRED` and no value. The lease is host policy: the submitted form values never change it.
+
 ### Who can read what
 
 | Destination | Mechanism | Guarantee |

@@ -140,3 +140,71 @@ test('a run-scoped grant hands the stored value to a machine caller and nobody e
     await worker.close();
   }
 });
+
+test('a grant whose lease has ended is refused with its own code and no value', async () => {
+  const connectionId = 'connection_lease_1';
+  const secret = { token: `ghp_lease_${Date.now()}` };
+  const dataKey = crypto.randomBytes(32).toString('base64');
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+  let leased = false;
+
+  const worker = await listen(async (req, res) => {
+    const url = new URL(req.url, 'http://worker');
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    const payload = raw ? JSON.parse(raw) : {};
+    if (req.headers.authorization !== `Bearer ${serviceToken}`) return send(res, 401, { error: 'unauthorized' });
+    if (url.pathname === '/internal/assertions/claim') return send(res, 200, { claimed: true });
+    if (url.pathname === `/internal/vault/values/${connectionId}/read`) {
+      // The store is the one that knows about the lease. It refuses by name,
+      // and the refusal carries no value.
+      if (leased) return send(res, 409, { error: 'lease_expired', lease_expires_at: '2026-01-01T00:00:00.000Z' });
+      const iv = crypto.randomBytes(12);
+      const cipher = crypto.createCipheriv('aes-256-gcm', Buffer.from(dataKey, 'base64'), iv);
+      const ciphertext = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(secret), 'utf8')), cipher.final()]);
+      return send(res, 200, { connection_id: connectionId, version: 1,
+        ciphertext: ciphertext.toString('base64'), iv: iv.toString('base64'),
+        tag: cipher.getAuthTag().toString('base64'), alg: 'A256GCM', key_ref: 'k1',
+        replay: false, lease_expires_at: null });
+    }
+    return send(res, 404, { error: 'not_found' });
+  });
+
+  const srv = await startServer({
+    namedDestinations: { wallet_custody: { type: 'zerocreds_vault', vault_url: worker.url,
+      service_token: serviceToken, data_key: dataKey, key_ref: 'k1' } },
+    app: {
+      walletWorkerUrl: worker.url,
+      walletServiceToken: serviceToken,
+      walletAssertionIssuers: { 'https://trained-assist.example': {
+        keys: { 'host-key-1': publicKey.export({ type: 'spki', format: 'pem' }).toString() },
+        profiles: { [profile]: { owner_id: owner, profile_id: profile, destination: 'wallet_custody',
+          callers: ['human', 'machine'] } },
+      } },
+    },
+  });
+
+  const now = Math.floor(Date.now() / 1000);
+  const claims = (overrides = {}) => ({ iss: 'https://trained-assist.example', aud: 'zerocreds-wallet:machine',
+    owner_id: owner, profile_id: profile, caller_class: 'machine', operations: ['wallet.connections.grant'],
+    run_id: 'run_lease_1a2b3c', iat: now, exp: now + 120,
+    jti: crypto.randomBytes(20).toString('base64url'), ...overrides });
+  const auth = body => ({ Authorization: `Bearer ${jwt(privateKey, body)}` });
+
+  try {
+    const granted = await request(srv.port, 'POST', `/api/wallet/connections/${connectionId}/grants`, {}, auth(claims()));
+    assert.equal(granted.status, 200, JSON.stringify(granted.body));
+    assert.equal(granted.body.lease_expires_at, null, 'a value without a lease says so');
+
+    leased = true;
+    const expired = await request(srv.port, 'POST', `/api/wallet/connections/${connectionId}/grants`, {},
+      auth(claims({ jti: crypto.randomBytes(20).toString('base64url') })));
+    assert.equal(expired.status, 403, JSON.stringify(expired.body));
+    assert.equal(expired.body.error, 'CREDENTIAL_LEASE_EXPIRED');
+    assert.equal(expired.body.lease_expires_at, '2026-01-01T00:00:00.000Z');
+    assert.equal(JSON.stringify(expired.body).includes(secret.token), false, 'a refusal never echoes the value');
+  } finally {
+    await srv.stop();
+    await worker.close();
+  }
+});
