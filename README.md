@@ -57,7 +57,7 @@ For a purely local setup (inline destinations, http:// or localhost targets) see
 
 ## MCP Integration (no-code setup)
 
-The fastest way to give any agent access to ZeroCreds is via the MCP server in `mcp/`. The agent gets two tools — `form_create` and `form_status` — and never touches the HTTP API directly.
+The fastest way to give an agent access to ZeroCreds is via the MCP server in `mcp/`. It exposes credential forms and, in local mode, connection discovery and peer sharing without giving the agent credential values.
 
 ### Supported agents
 
@@ -178,6 +178,8 @@ Every candidate carries a unique `ref`; two Keychain items that share an account
 **`connections_list` / `connection_resolve`** — list saved connections and resolve one into a value-free handle.
 
 **`connection_verify`** — verify a saved credential against its provider. Provider-native verification exists for `github`, `cloudflare` and `deepgram`; any other provider slug is accepted and answered with `verification: "unsupported_provider"` (nothing is contacted), so the tool stays honest for services ZeroCreds cannot check. The tool never returns the credential or a grant value.
+
+**`share_create` / `share_claim`** — transfer an existing local Keychain connection between two Macs when the owner explicitly requests it. The sender's agent creates a short-lived, one-time link with a free-form setup prompt; the recipient pastes the full link into their agent, which saves a new local Keychain item. `share_status` and `share_cancel` let the sender track or stop a pending invitation. The hosted relay carries ciphertext only; both computers connect to it over outbound HTTPS. See [local macOS setup and sharing](docs/local-mac-setup.md#share-an-existing-credential-with-another-mac) for setup and limits.
 
 Use `token` as the field name for a new GitHub token form (`label` can be descriptive, and `uid` distinguishes accounts). Legacy aliases `github_token` and `personal_access_token` also work. Custom field names are supported: if an existing credential was saved as `github_pat_admin`, call:
 

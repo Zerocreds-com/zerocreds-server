@@ -351,7 +351,7 @@ async function saveMacosKeychain(destination, fields, opts = {}) {
   if (!/^[a-zA-Z0-9_@.-]{1,128}$/.test(service)) throw new Error('macos_keychain: invalid service');
   const helper = process.env.ZEROCREDS_KEYCHAIN_HELPER || path.join(__dirname, '../bin/zerocreds-keychain');
   await new Promise((resolve, reject) => {
-    const child = spawn(helper, ['set', service, account], { stdio: ['pipe', 'ignore', 'ignore'] });
+    const child = spawn(helper, [destination.create_only ? 'add' : 'set', service, account], { stdio: ['pipe', 'ignore', 'ignore'] });
     const timer = setTimeout(() => child.kill('SIGKILL'), 10000);
     child.once('error', () => { clearTimeout(timer); reject(new Error('macos_keychain: native helper unavailable; run the local Mac setup command')); });
     child.once('close', (code) => {

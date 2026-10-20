@@ -110,6 +110,7 @@ const env = {
   ZEROCREDS_PENDING_DIR: `${process.env.ZC_DATA}/pending`,
   ZEROCREDS_TOKENS_DIR: `${process.env.ZC_DATA}/tokens`,
   ZEROCREDS_LOCAL_CATALOG_FILE: `${process.env.ZC_CONFIG}/connections.json`,
+  ZEROCREDS_SHARE_RELAY_URL: process.env.ZEROCREDS_SHARE_RELAY_URL || 'https://zerocreds.ru',
   ZEROCREDS_LOCAL_PROVIDER_POLICIES_FILE: `${process.env.ZC_CONFIG}/provider-policies.json`,
   ZEROCREDS_BASE_URL: process.env.ZC_BASE_URL,
   PORT: '3456',
