@@ -74,7 +74,7 @@ test('local MCP tools do not repeat the provider name', async () => {
     const created = JSON.parse((await client.callTool({ name: 'share_create', arguments: {
       connection_id: 'a'.repeat(32), setup_prompt: 'Configure the example project.', transport: 'direct',
     } })).content[0].text);
-    assert.match(created.forward_message, /ZeroCreds one-time invitation/);
+    assert.match(created.forward_message, /Direct one-time invitation/);
     assert.ok(created.forward_message.includes(created.share_url));
     for (const name of ['connections_list', 'connection_resolve', 'doctor', 'share_options', 'share_status', 'form_status']) {
       assert.equal((await client.listTools()).tools.find(tool => tool.name === name).annotations.readOnlyHint, true);

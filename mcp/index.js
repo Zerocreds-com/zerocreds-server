@@ -200,8 +200,9 @@ if (LOCAL_MODE) {
     });
 
   server.tool('share_direct_setup',
-    'After the owner chooses direct sharing, set up the sender’s computer. Speak in the user’s language. Ask for the public internet address and connection number only if they are not already known; explain that a router setting may also be needed so the colleague can reach this computer. This tool configures ZeroCreds on this computer, but it cannot change the router. If the user does not know how to do that, offer the relay instead. Do not call for relay sharing.',
-    { public_url: z.string().url().describe('The sender’s internet address and port, for example http://203.0.113.10:3457. Do not make the user find this manually if it can be discovered safely.'),
+    'Set up direct credential sharing on the sender’s computer. Speak in the user’s language. If no public address is already configured, ask ZeroCreds to check the computer’s internet address and whether the selected port can be reached from outside. The check sends only a random test value, not the credential. Use port 3457 by default; the owner can choose another port. If the check fails, explain simply that the router or network may block incoming connections. This tool cannot change router settings.',
+    { public_url: z.string().url().optional().describe('Optional known public address and port. If omitted, ZeroCreds discovers the public address and checks the selected port.'),
+      port: z.number().int().min(1024).max(65535).optional().describe('Port to test and use when public_url is omitted; defaults to 3457.'),
       cert_file: z.string().optional().describe('Local TLS certificate path for HTTPS only'),
       key_file: z.string().optional().describe('Local TLS private-key path for HTTPS only') }, async input => {
       const data = await apiCall('POST', '/api/local/shares/direct/setup', input);
@@ -210,7 +211,7 @@ if (LOCAL_MODE) {
     });
 
   server.tool('share_create',
-    'Use when the owner asks to share or give an existing saved credential to a colleague, including "share my GitHub token". Reply in the language the user is using, and translate forward_message before showing it if needed; keep the link unchanged. First list matching connections, select the exact connection_id, call share_options, and explain the choices in plain everyday words. A relay sends the invitation through the configured ZeroCreds website; it cannot read the encrypted credential. Direct avoids that website, but the recipient needs to connect to this computer over the internet, which may require a router change. Ask the owner which option they prefer before creating a link. If direct is chosen, call share_direct_setup and explain plainly what network step remains; recommend relay if direct setup is unfamiliar. After the choice, create a short-lived link; the owner sends it through a trusted channel; the recipient pastes it into their local ZeroCreds agent, which saves the credential directly in Keychain. Neither agent sees the secret. The sender computer stays online until claimed. Explain that a copied personal GitHub PAT lets the recipient act as its owner. The full link grants access once. setup_prompt must contain no secret value.',
+    'Use when the owner asks to share or give an existing saved credential to a colleague, including "share my GitHub token". Reply in the language the user is using, and translate forward_message before showing it if needed; keep the link unchanged. First list matching connections and select the exact connection_id. Call share_options. Ask the owner which option they prefer before creating a link and explain choices in plain everyday words. For direct transfer, inspect whether a successful port check is already saved. If not, call share_direct_setup once to discover the sender’s public address and ask ZeroCreds to test whether the port is reachable from outside; the test contains no credential. If reachable, create a short-lived direct link that the owner sends through any trusted chat. The recipient pastes the link into their local ZeroCreds agent, which saves the credential directly in Keychain. The ZeroCreds website does not carry the credential or the invitation link. If the port cannot be reached, explain that the router or network may block incoming connections and let the owner decide whether to adjust it or use the configured relay. Neither agent sees the secret. The sender computer stays online until claimed. Explain that a copied personal GitHub PAT lets the recipient act as its owner. The full link grants access once. setup_prompt must contain no secret value.',
     {
       connection_id: z.string().regex(/^[a-f0-9]{32}$/),
       setup_prompt: z.string().max(2000).describe('Free-form setup instructions for the recipient agent; must contain no credential value.'),
@@ -219,7 +220,8 @@ if (LOCAL_MODE) {
     }, async input => {
       const data = await apiCall('POST', '/api/local/shares', input);
       if (data.error) throw new Error(data.error);
-      data.forward_message = `🔐 **ZeroCreds one-time invitation**\n\nPaste this full link into your agent with local ZeroCreds to save the credential in your Keychain:\n\n${data.share_url}\n\nThe link expires at ${data.expires_at}. The sender’s computer must stay online until you claim it. The credential value is not shown in chat.`;
+      const heading = data.transport === 'direct' ? '🔐 **Direct one-time invitation**' : '🔐 **ZeroCreds relay invitation**';
+      data.forward_message = `${heading}\n\nPaste this full link into your agent with local ZeroCreds to save the credential in your Keychain:\n\n${data.share_url}\n\nThe link expires at ${data.expires_at}. The sender’s computer must stay online until you claim it. The credential value is not shown in chat.`;
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
     });
 
