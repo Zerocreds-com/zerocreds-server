@@ -3,8 +3,59 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
+const net = require('node:net');
 const { createShareRelay } = require('../src/share-relay');
 const { createPeerShare, claimPeerShare, parseInvite } = require('../src/local-share');
+const { createDirectShareEndpoints, directOrigin } = require('../src/direct-share');
+
+async function freePort() {
+  const probe = net.createServer();
+  await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
+  const port = probe.address().port;
+  await new Promise(resolve => probe.close(resolve));
+  return port;
+}
+
+test('direct IP invitation uses only the sender endpoint and never exposes the local API', async () => {
+  const port = await freePort();
+  const endpoint = createDirectShareEndpoints({ publicUrl: `http://127.0.0.1:${port}`, allowLoopback: true });
+  const { localUrl, publicUrl } = await endpoint.start();
+  let share;
+  try {
+    share = await createPeerShare({ relayUrl: localUrl, publicUrl, allowLoopback: true,
+      pollIntervalMs: 10, ttlMinutes: 1,
+      metadata: { provider: 'example', account_alias: 'work', setup_prompt: 'Set up the example project.' },
+      readCredential: async () => ({ token: 'synthetic-direct-value' }) });
+    assert.ok(share.url.startsWith(`${publicUrl}/api/share-relay/invite/`));
+    const page = await fetch(share.url);
+    const html = await page.text();
+    assert.equal(page.status, 200);
+    assert.match(html, /A credential is ready for you/);
+    assert.doesNotMatch(html, /<script|synthetic-direct-value/i);
+    assert.ok(!html.includes(share.url.split('#')[1]));
+    assert.equal((await fetch(`${publicUrl}/api/local/connections`)).status, 404);
+    assert.equal((await fetch(`${publicUrl}/api/share-relay/sessions`, { method: 'POST' })).status, 404);
+    const writes = [];
+    const saved = await claimPeerShare(share.url, async (_metadata, fields) => {
+      writes.push(fields);
+      return { connection_id: 'direct-recipient' };
+    }, { relayUrl: 'https://zerocreds.ru', allowLoopback: true, pollIntervalMs: 10 });
+    assert.equal(saved.status, 'saved');
+    assert.deepEqual(writes, [{ token: 'synthetic-direct-value' }]);
+  } finally {
+    share?.close();
+    await endpoint.stop();
+  }
+});
+
+test('direct invitations accept only numeric public IPs, with loopback limited to tests', () => {
+  assert.equal(directOrigin('http://8.8.8.8:3457'), 'http://8.8.8.8:3457');
+  for (const value of ['http://192.168.1.7:3457', 'http://169.254.169.254:3457',
+    'http://127.0.0.1:3457', 'http://example.com:3457', 'http://8.8.8.8:3457/path',
+    'http://8.8.8.8:3457/?x=1']) assert.throws(() => directOrigin(value));
+  const link = `http://192.168.1.7:3457/api/share-relay/invite/${'a'.repeat(32)}#${'b'.repeat(64)}`;
+  assert.throws(() => parseInvite(link, 'https://zerocreds.ru'), /invalid share link/);
+});
 
 async function withRelay(run) {
   const relay = createShareRelay();

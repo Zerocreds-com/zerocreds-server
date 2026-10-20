@@ -140,7 +140,7 @@ server.tool(
 
 server.tool(
   'connections_list',
-  'List local ZeroCreds credential connections without returning credential values. Shows provider, account alias, expiry and verification status. When the owner asks to share an existing token with a colleague, list matching connections to select the exact connection_id for share_create. If several match, ask which one and explain what happens after the choice: share_create gives a short-lived encrypted one-time link; the owner sends the full URL through a trusted channel; the recipient pastes it into an agent with local ZeroCreds, where share_claim saves the credential in Keychain. Neither agent receives the raw token. The full URL is a bearer invitation; the sender Mac must stay online until claimed.',
+  'List local ZeroCreds credential connections without returning credential values. Shows provider, account alias, expiry and verification status. When the owner asks to share an existing token with a colleague, select the exact connection_id, then use share_options to explain and ask whether to use the configured ZeroCreds relay or a direct public-IP connection. If several connections match, ask which one too. Explain that share_create gives a short-lived encrypted one-time link; the owner sends the full URL through a trusted channel; the recipient pastes it into an agent with local ZeroCreds, where share_claim saves the credential in Keychain. Neither agent receives the raw token. The full URL is a bearer invitation; the sender Mac must stay online until claimed.',
   {
     provider: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional(),
   },
@@ -150,7 +150,7 @@ server.tool(
     const data = await apiCall('GET', `/api/local/connections${query}`);
     if (data.error) throw new Error(data.error);
     if (Array.isArray(data.connections) && data.connections.length > 1) {
-      data.sharing_next_step = 'If the user wants to share one of these connections, ask which account_alias they mean. In the same reply, explain: after they choose, share_create makes a short-lived encrypted one-time link; they send the full link through a trusted channel; their colleague pastes it into an agent with local ZeroCreds, which calls share_claim and writes the credential directly to the colleague\'s Keychain. Neither agent receives or displays the raw credential. The full link is a bearer invitation and the sender Mac must remain online until claimed.';
+      data.sharing_next_step = 'If the user wants to share one of these connections, ask which account_alias they mean and use share_options to ask relay or direct. In the same reply, explain: after they choose, share_create makes a short-lived encrypted one-time link; they send the full link through a trusted channel; their colleague pastes it into an agent with local ZeroCreds, which calls share_claim and writes the credential directly to the colleague\'s Keychain. Neither agent receives or displays the raw credential. The full link is a bearer invitation and the sender Mac must remain online until claimed.';
     }
     return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
   },
@@ -191,15 +191,35 @@ if (LOCAL_MODE) server.tool(
 );
 
 if (LOCAL_MODE) {
+  server.tool('share_options',
+    'Call before creating a share to present the actual configured relay domain and direct availability. Ask the owner which transport they want. The relay receives encrypted data, while direct requires a public IP and an inbound port. Never silently choose either transport.',
+    {}, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async () => {
+      const data = await apiCall('GET', '/api/local/shares/options');
+      if (data.error) throw new Error(data.error);
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+    });
+
+  server.tool('share_direct_setup',
+    'After the owner chooses direct sharing, configure this computer’s public-IP share listener. Ask for the public IPv4 address and inbound TCP port if unknown, then call this tool. It validates local binding and saves non-secret settings; it cannot configure a router or prove external reachability. Explain the returned port-forwarding/firewall step and check reachability from another network before sending an invitation. HTTP exposes network metadata; use HTTPS only with a certificate valid for the IP. Do not call for relay sharing.',
+    { public_url: z.string().url().describe('http://PUBLIC_IPV4:PORT or https://PUBLIC_IPV4:PORT'),
+      cert_file: z.string().optional().describe('Local TLS certificate path for HTTPS only'),
+      key_file: z.string().optional().describe('Local TLS private-key path for HTTPS only') }, async input => {
+      const data = await apiCall('POST', '/api/local/shares/direct/setup', input);
+      if (data.error) throw new Error(data.error);
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+    });
+
   server.tool('share_create',
-    'Use when the owner asks to share or give an existing saved credential to a colleague, including "share my GitHub token". This is a supported encrypted transfer: list matching connections, select the exact connection_id, and ask which one only if ambiguous. When asking which, also explain that after the choice you will create a short-lived encrypted one-time link; the owner sends the full URL through a trusted channel; the recipient pastes it into their agent with local ZeroCreds, which calls share_claim and saves the credential in Keychain without either agent receiving its raw value. Explain that a copied personal GitHub PAT acts as the owner; suggest repository access with the colleague’s own identity if that better fits their goal, but do not stop at a generic refusal when the owner requests transfer. The full URL is a bearer invitation; the sender Mac must stay online until claimed. setup_prompt is sender-authored instructions and must not contain a secret value.',
+    'Use when the owner asks to share or give an existing saved credential to a colleague, including "share my GitHub token". First list matching connections, select the exact connection_id, call share_options, and ask the owner to choose the configured ZeroCreds relay or direct public-IP transfer. Never create a link until the owner chooses a transport. If direct is chosen, call share_direct_setup when needed and explain inbound network requirements. The relay sees encrypted data only; direct does not involve the ZeroCreds relay or website. After the choice, create a short-lived encrypted one-time link; the owner sends the full URL through a trusted channel; the recipient pastes it into their agent with local ZeroCreds, which calls share_claim and saves the credential in Keychain without either agent receiving its raw value. Explain that a copied personal GitHub PAT acts as the owner; suggest repository access with the colleague’s own identity if appropriate. The full URL is a bearer invitation; the sender Mac must stay online until claimed. setup_prompt must contain no secret value.',
     {
       connection_id: z.string().regex(/^[a-f0-9]{32}$/),
       setup_prompt: z.string().max(2000).describe('Free-form setup instructions for the recipient agent; must contain no credential value.'),
       ttl_minutes: z.number().int().min(1).max(120).optional(),
+      transport: z.enum(['direct', 'relay']).describe('Required explicit owner choice. Direct needs a configured public-IP endpoint and inbound port; relay uses the configured hosted or self-hosted relay.'),
     }, async input => {
       const data = await apiCall('POST', '/api/local/shares', input);
       if (data.error) throw new Error(data.error);
+      data.forward_message = `🔐 **ZeroCreds one-time invitation**\n\nPaste this full link into your agent with local ZeroCreds to save the credential in your Keychain:\n\n${data.share_url}\n\nThe link expires at ${data.expires_at}. The sender’s computer must stay online until you claim it. The credential value is not shown in chat.`;
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
     });
 

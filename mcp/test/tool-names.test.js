@@ -18,6 +18,8 @@ const EXPECTED_LOCAL_TOOLS = [
   'form_create',
   'form_status',
   'share_create',
+  'share_options',
+  'share_direct_setup',
   'share_status',
   'share_cancel',
   'share_claim',
@@ -32,7 +34,10 @@ test('local MCP tools do not repeat the provider name', async () => {
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify(req.url === '/api/local/connections?provider=github'
       ? { connections: [{ account_alias: 'first' }, { account_alias: 'second' }] }
-      : {}));
+      : req.url === '/api/local/shares'
+        ? { share_id: 'a'.repeat(32), share_url: `http://8.8.8.8:3457/api/share-relay/invite/${'a'.repeat(32)}#${'b'.repeat(64)}`,
+          expires_at: '2030-01-01T00:00:00.000Z', transport: 'direct' }
+        : {}));
   });
   await new Promise(resolve => api.listen(0, '127.0.0.1', resolve));
   const client = new Client({ name: 'tool-names-test-client', version: '1.0.0' });
@@ -53,16 +58,23 @@ test('local MCP tools do not repeat the provider name', async () => {
     }
     const share = (await client.listTools()).tools.find(tool => tool.name === 'share_create');
     assert.match(share.description, /share my GitHub token/);
-    assert.match(share.description, /When asking which, also explain/);
+    assert.match(share.description, /Never create a link until the owner chooses a transport/);
+    assert.deepEqual(share.inputSchema.properties.transport.enum, ['direct', 'relay']);
+    assert.ok(share.inputSchema.required.includes('transport'));
     const connections = (await client.listTools()).tools.find(tool => tool.name === 'connections_list');
-    assert.match(connections.description, /If several match, ask which one and explain what happens after the choice/);
+    assert.match(connections.description, /If several connections match, ask which one too/);
     assert.match(connections.description, /share_claim saves the credential in Keychain/);
     const listed = await client.callTool({ name: 'connections_list', arguments: { provider: 'github' } });
     const listedData = JSON.parse(listed.content[0].text);
     assert.match(listedData.sharing_next_step, /after they choose, share_create/);
     assert.match(listedData.sharing_next_step, /share_claim and writes the credential directly/);
     assert.match(listedData.sharing_next_step, /Neither agent receives or displays the raw credential/);
-    for (const name of ['connections_list', 'connection_resolve', 'doctor', 'share_status', 'form_status']) {
+    const created = JSON.parse((await client.callTool({ name: 'share_create', arguments: {
+      connection_id: 'a'.repeat(32), setup_prompt: 'Configure the example project.', transport: 'direct',
+    } })).content[0].text);
+    assert.match(created.forward_message, /ZeroCreds one-time invitation/);
+    assert.ok(created.forward_message.includes(created.share_url));
+    for (const name of ['connections_list', 'connection_resolve', 'doctor', 'share_options', 'share_status', 'form_status']) {
       assert.equal((await client.listTools()).tools.find(tool => tool.name === name).annotations.readOnlyHint, true);
     }
   } finally {
