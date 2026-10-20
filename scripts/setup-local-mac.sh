@@ -27,9 +27,27 @@ export ZEROCREDS_PROXY_PORT="$PROXY_PORT" ZEROCREDS_PROXY_TARGET="$DIRECT_URL"
 mkdir -p "$CONFIG" "$DATA/pending" "$DATA/tokens" "$LAUNCH_AGENTS"
 chmod 700 "$CONFIG" "$DATA" "$DATA/pending" "$DATA/tokens"
 
-swiftc -O "$ROOT/server/scripts/macos-keychain.swift" -o "$CONFIG/zerocreds-keychain.tmp"
-chmod 700 "$CONFIG/zerocreds-keychain.tmp"
-mv "$CONFIG/zerocreds-keychain.tmp" "$CONFIG/zerocreds-keychain"
+HELPER="$CONFIG/zerocreds-keychain"
+HELPER_FINGERPRINT="$CONFIG/zerocreds-keychain.sha256"
+SOURCE_HASH="$(shasum -a 256 "$ROOT/server/scripts/macos-keychain.swift" | awk '{print $1}')"
+INSTALLED_SOURCE_HASH=""
+INSTALLED_BINARY_HASH=""
+if [[ -f "$HELPER_FINGERPRINT" ]]; then
+  read -r INSTALLED_SOURCE_HASH INSTALLED_BINARY_HASH < "$HELPER_FINGERPRINT" || true
+fi
+CURRENT_BINARY_HASH=""
+if [[ -x "$HELPER" ]]; then
+  CURRENT_BINARY_HASH="$(shasum -a 256 "$HELPER" | awk '{print $1}')"
+fi
+if [[ "$SOURCE_HASH" != "$INSTALLED_SOURCE_HASH" || "$CURRENT_BINARY_HASH" != "$INSTALLED_BINARY_HASH" ]]; then
+  swiftc -O "$ROOT/server/scripts/macos-keychain.swift" -o "$HELPER.tmp"
+  chmod 700 "$HELPER.tmp"
+  mv "$HELPER.tmp" "$HELPER"
+  CURRENT_BINARY_HASH="$(shasum -a 256 "$HELPER" | awk '{print $1}')"
+  printf '%s %s\n' "$SOURCE_HASH" "$CURRENT_BINARY_HASH" > "$HELPER_FINGERPRINT.tmp"
+  chmod 600 "$HELPER_FINGERPRINT.tmp"
+  mv "$HELPER_FINGERPRINT.tmp" "$HELPER_FINGERPRINT"
+fi
 
 if [[ ! -f "$CONFIG/admin-token" ]]; then
   umask 077
