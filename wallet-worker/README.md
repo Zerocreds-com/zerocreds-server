@@ -36,7 +36,21 @@ The durable custody lives in a second D1 database (`VAULT_DB`), separate from th
 
 **A lease on the value.** A value may carry a lease: `lease_started_at` and `lease_expires_at`, in milliseconds or as an ISO-8601 instant. The lease is the custody's own bound on how long the value may leave the store, and it is **opt-in**: without it the value lives in the custody until it is revoked, which is the right default for a credential a user minted for a long-lived integration. Once the lease has ended the read route refuses with `409 lease_expired` and the lease end — never the value. A refused grant is not a grant: the journal records no `granted` event for it. The grant that *did* happen keeps the lease end in the journal, so "the value was handed out under a lease that ended" is answerable after the fact. The lease is host policy: it travels with the value when the wallet stores it and the submitted form values cannot shorten or widen it.
 
-The vault migrations are applied with `npx wrangler d1 migrations apply VAULT_DB --remote --config <config>`; the first one creates the tables, the second the grant-once index and the third the lease columns.
+The vault migrations are applied with `npx wrangler d1 migrations apply VAULT_DB --remote --config <config>`; the first one creates the tables, the second the grant-once index and the third the lease columns. The runner-sandbox vault database predates that bookkeeping — its first two migrations were applied by hand — so its `d1_migrations` rows were backfilled on 2026-10-20 and the `applied_at` of the first two rows marks the backfill rather than the original application. The lease migration is one-way by nature: SQLite has no `ADD COLUMN IF NOT EXISTS`, so it cannot be re-run against a database that already carries the columns.
+
+### The runner-sandbox lane
+
+The Runner's isolated lane runs a second pair of Workers: `zerocreds-wallet-metadata-runner-sandbox` (this Worker, with the custody database `ta-credential-vault`) and `zerocreds-wallet-api-runner-sandbox` (the API, as a Cloudflare Container). They are configured by `wrangler.runner-sandbox.jsonc` in this directory and in `../server/`.
+
+**No workflow deploys this lane.** The sandbox workflow above covers `wrangler.sandbox.jsonc` only, so a change to the custody or to the grant path is deployed by hand:
+
+```
+cd wallet-worker && npx wrangler d1 migrations apply VAULT_DB --remote --config wrangler.runner-sandbox.jsonc
+cd wallet-worker && npx wrangler deploy --config wrangler.runner-sandbox.jsonc
+cd ../server  && npx wrangler deploy --config wrangler.runner-sandbox.jsonc
+```
+
+The metadata Worker holds `WALLET_SERVICE_TOKEN`; the API holds `ZEROCREDS_ADMIN_TOKEN`, `ZEROCREDS_VAULT_DATA_KEY`, `ZEROCREDS_VAULT_KEY_REF`, `ZEROCREDS_WALLET_ASSERTION_ISSUERS_JSON` and `ZEROCREDS_WALLET_SERVICE_TOKEN`. A deploy never changes a secret, and a new database never inherits one — check the secret list after a change rather than assuming it survived. `ZEROCREDS_VAULT_DATA_KEY` is the key the custody encrypts with: it is the wallet's, and the store only ever holds ciphertext.
 
 The current Worker cannot prove an OpenBao write by itself: the trusted ZeroCreds service must verify the KV-v2 version receipt before calling `complete`. The `receipt_ref` is a SHA-256 reference, not a signed receipt or secret. If OpenBao succeeds and D1 completion fails, retry `complete` with the same form/version/receipt; the Worker does not mint a second version. Runtime use must separately check that the connection is active and belongs to the run's owner/profile. No secret read endpoint exists here.
 
