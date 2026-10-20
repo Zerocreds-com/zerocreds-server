@@ -972,13 +972,17 @@ async function submit() {
       const detail = d.diagnostic ? 'Reference: ' + d.diagnostic : '';
       const safeDetails = [d.error_code, d.diagnostic, d.error].filter(Boolean).join(' | ');
       showMsg('err', [d.message || d.error || 'Server error', detail].filter(Boolean).join(' — '), safeDetails);
-      btn.disabled = false; btn.textContent = 'Submit';
+      if (d.outcome === 'unknown' || d.retry_safe === false) {
+        btn.textContent = 'Needs review';
+      } else {
+        btn.disabled = false; btn.textContent = 'Submit';
+      }
     }
   } catch(e) {
     const diagnostic = 'local-' + Date.now().toString(36);
-    showMsg('err', 'Could not reach ZeroCreds. Check that the local server is running, then retry.',
+    showMsg('err', 'Could not confirm whether ZeroCreds saved this form. Ask the requester to check its status before trying again.',
       ['NETWORK_ERROR', diagnostic, 'POST /f/[redacted]', location.origin].join(' | '));
-    btn.disabled = false; btn.textContent = 'Submit';
+    btn.textContent = 'Needs review';
   }
 }
 function showMsg(cls, text, details = '') {
@@ -1748,6 +1752,23 @@ function createApp(config = {}) {
     try { fs.unlinkSync(pendingPath(token, 'claimed')); } catch {}
   }
 
+  function markUnknown(token, integratorId) {
+    try {
+      fs.writeFileSync(pendingPath(token, 'unknown'), JSON.stringify({
+        status: 'unknown', _integrator_id: integratorId, retry_safe: false,
+      }), { mode: 0o600, flag: 'wx' });
+      dropClaim(token);
+      if (LOCAL_MODE) publishLocalFormEvent(token, 'unknown');
+    } catch { /* Keep the claim if even an unknown marker cannot be written. */ }
+  }
+
+  function readOrdinaryWritten(token) {
+    try {
+      const written = JSON.parse(fs.readFileSync(pendingPath(token, 'written'), 'utf8'));
+      return written?.status === 'done' && written?.form_id === token ? written : null;
+    } catch { return null; }
+  }
+
   // Removes expired pending files, stale claims and old .done markers. Pending files may
   // embed destination credentials, so they must not outlive their session.
   function sweepPending(now = Date.now()) {
@@ -1761,17 +1782,41 @@ function createApp(config = {}) {
         if (file.endsWith('.json')) {
           const p = JSON.parse(fs.readFileSync(full, 'utf8'));
           stale = typeof p?.expires === 'number' && p.expires < now;
+          if (stale && /^[a-f0-9]{32}\.json$/.test(file)) {
+            publishLocalFormEvent(file.slice(0, -5), 'expired');
+          }
         } else if (file.endsWith('.claimed')) {
           stale = fs.statSync(full).mtimeMs < now - CLAIM_STALE_MS;
           if (stale) {
             let p;
             try { p = JSON.parse(fs.readFileSync(full, 'utf8')); } catch {}
+            if (p?.token && readOrdinaryWritten(p.token)) {
+              if (!fs.existsSync(pendingPath(p.token, 'done'))) {
+                fs.renameSync(pendingPath(p.token, 'written'), pendingPath(p.token, 'done'));
+              }
+              fs.unlinkSync(full);
+              continue;
+            }
             if (p?.wallet && p.expires > now && !fs.existsSync(pendingPath(p.token))) {
               fs.renameSync(full, pendingPath(p.token));
               continue;
             }
+            if (p?.token && !p.wallet && !fs.existsSync(pendingPath(p.token, 'done'))) {
+              fs.writeFileSync(pendingPath(p.token, 'unknown'), JSON.stringify({
+                status: 'unknown', _integrator_id: p.integrator_id,
+                retry_safe: false,
+              }), { mode: 0o600 });
+              publishLocalFormEvent(p.token, 'unknown');
+            }
           }
-        } else if (file.endsWith('.done') || file.endsWith('.written')) {
+        } else if (file.endsWith('.written')) {
+          const token = file.slice(0, -8);
+          if (readOrdinaryWritten(token) && !fs.existsSync(pendingPath(token, 'done'))) {
+            fs.renameSync(full, pendingPath(token, 'done'));
+            continue;
+          }
+          stale = fs.statSync(full).mtimeMs < now - DONE_TTL_MS;
+        } else if (file.endsWith('.done') || file.endsWith('.unknown')) {
           stale = fs.statSync(full).mtimeMs < now - DONE_TTL_MS;
         }
         if (stale) { fs.unlinkSync(full); removed++; }
@@ -2004,26 +2049,31 @@ function createApp(config = {}) {
     }
 
     let saveResult;
+    let destinationsSaved = 0;
     try {
       const saveOpts = saveOptsFor(pending);
       if (pending.destinations_by_level) {
-        // Group fields by level, route each group to its destination
-        const groups = {};
+        // Group by the actual destination. Two levels may resolve to the same
+        // local file/Keychain item, where separate writes would overwrite data.
+        const groups = new Map();
         for (const f of pending.fields) {
+          if (clean[f.name] === undefined) continue;
           const level = f.level || 'default';
-          if (!groups[level]) groups[level] = {};
-          if (clean[f.name] !== undefined) groups[level][f.name] = clean[f.name];
+          const dest = destinationForField(pending, f);
+          if (!dest) {
+            releaseClaim(token);
+            return { status: 409, body: { error: `destination missing for field: ${f.name}` } };
+          }
+          const key = destinationFingerprint(dest);
+          if (!groups.has(key)) groups.set(key, { dest, fields: {}, levels: new Set() });
+          groups.get(key).fields[f.name] = clean[f.name];
+          groups.get(key).levels.add(level);
         }
         const secretIds = {};
-        for (const [level, groupFields] of Object.entries(groups)) {
-          if (Object.keys(groupFields).length === 0) continue;
-          const dest = destinationForField(pending, { level });
-          if (!dest) {
-            console.warn(`[dynamic] no destination for level "${level}", skipping:`, Object.keys(groupFields));
-            continue;
-          }
-          const r = await saveToDestination(dest, groupFields, saveOpts);
-          if (r?.secret_id) secretIds[level] = r.secret_id;
+        for (const group of groups.values()) {
+          const r = await saveToDestination(group.dest, group.fields, saveOpts);
+          destinationsSaved++;
+          if (r?.secret_id) for (const level of group.levels) secretIds[level] = r.secret_id;
         }
         saveResult = { secret_ids: secretIds };
       } else {
@@ -2041,15 +2091,20 @@ function createApp(config = {}) {
         }
       }
     } catch (e) {
-      // Let the user retry with the same link; never echo upstream details back.
-      releaseClaim(token);
+      // A later destination can fail after an earlier one saved. Replaying the
+      // form would repeat that earlier write, so report the uncertain outcome.
+      if (destinationsSaved > 0) markUnknown(token, pending.integrator_id);
+      else releaseClaim(token);
       console.error('[dynamic] save failed:', e.message);
       const diagnostic = `zc-${crypto.randomBytes(6).toString('hex')}`;
       const keychainFailure = /^macos_keychain:/.test(String(e?.message || ''));
       return { status: 500, body: {
         error: 'failed to save credentials',
+        ...(destinationsSaved > 0 ? { outcome: 'unknown', retry_safe: false } : {}),
         error_code: keychainFailure ? 'KEYCHAIN_WRITE_FAILED' : 'CREDENTIAL_SAVE_FAILED',
-        message: keychainFailure
+        message: destinationsSaved > 0
+          ? 'Some destinations may already have saved this credential. Do not submit again automatically; reconcile the saved destinations first.'
+          : keychainFailure
           ? 'Could not save to macOS Keychain. Check that the local helper is installed and your login Keychain is unlocked.'
           : 'ZeroCreds could not save this credential. Retry once; if it continues, copy the details and share them with the operator.',
         diagnostic,
@@ -2070,6 +2125,7 @@ function createApp(config = {}) {
           credential_expires_at: pending.credential_expires_at || null,
           expiry_status: pending.credential_expires_at ? 'declared' : 'unknown',
           verification_status: 'unknown',
+          credential_version: crypto.randomBytes(16).toString('hex'),
           created_at: previous?.created_at || new Date().toISOString(),
           updated_at: new Date().toISOString(),
           last_used_at: previous?.last_used_at || null,
@@ -2079,12 +2135,11 @@ function createApp(config = {}) {
         writeLocalCatalog(entries);
       } catch (error) {
         console.error('[local-catalog] metadata write failed:', error.message);
-        releaseClaim(token);
-        return { status: 503, body: { error: 'credential saved but local catalog update failed; retry this form' } };
+        markUnknown(token, pending.integrator_id);
+        return { status: 503, body: { error: 'credential saved but local catalog update failed',
+          outcome: 'unknown', retry_safe: false } };
       }
     }
-
-    dropClaim(token);
 
     // Forms get a signed receipt with the handle: what was saved and where, never the values.
     let formResult = null;
@@ -2107,14 +2162,22 @@ function createApp(config = {}) {
       formResult = { handle: pending.form.handle, receipt };
     }
 
-    // .done file stores destination references — never the credentials themselves
+    // Record the successful write before releasing the claim. A failed rename
+    // still leaves a readable receipt, so status never lies after a save.
+    const completed = { status: 'done', form_id: token, ...(saveResult || {}),
+      ...(formResult || {}), _integrator_id: pending.integrator_id };
     try {
-      fs.writeFileSync(
-        pendingPath(token, 'done'),
-        JSON.stringify({ ...(saveResult || {}), ...(formResult || {}), _integrator_id: pending.integrator_id }),
-        { mode: 0o600 },
-      );
-    } catch {}
+      fs.writeFileSync(pendingPath(token, 'written'), JSON.stringify(completed), { mode: 0o600, flag: 'wx' });
+    } catch {
+      // The destination may already hold the value. Do not release the form for
+      // another submit; record an explicit uncertain outcome if storage permits.
+      markUnknown(token, pending.integrator_id);
+      return { status: 503, body: { error: 'credential saved but completion status unavailable',
+        outcome: 'unknown', retry_safe: false } };
+    }
+    try { fs.renameSync(pendingPath(token, 'written'), pendingPath(token, 'done')); }
+    catch { /* The written receipt remains readable through the status API. */ }
+    dropClaim(token);
     console.info('[session-migration] completed auth=%s',
       ['anonymous', 'admin', 'integrator'].includes(pending._audit_auth) ? pending._audit_auth : 'unknown');
 
@@ -2691,6 +2754,16 @@ function createApp(config = {}) {
       const tokenField = payload.token_field ?? entry.token_field;
       const result = await (config.localCredentialVerifier || verifyLocalCredential)(provider, fields, undefined, { tokenField });
       const safeCredentialHint = credentialHint(provider, fields, { tokenField });
+      // Reading the credential and contacting a provider both yield to other
+      // requests. Never replace a newer catalog entry with this old snapshot.
+      let freshEntries;
+      try { freshEntries = readLocalCatalog(); }
+      catch { return json(res, 503, { error: 'local catalog unavailable' }); }
+      const freshIndex = freshEntries.findIndex((item) => item.connection_id === entry.connection_id);
+      if (freshIndex < 0 || JSON.stringify(freshEntries[freshIndex]) !== JSON.stringify(entry)) {
+        return json(res, 409, { error: 'connection changed during verification',
+          verification: 'stale', retry_safe: true });
+      }
       if (payload.save_token_field && result.status === 'valid') {
         entry.token_field = payload.token_field;
       }
@@ -2706,7 +2779,8 @@ function createApp(config = {}) {
         entry.expiry_status = 'provider_verified';
       }
       entry.updated_at = verifiedAt;
-      try { writeLocalCatalog(entries); }
+      freshEntries[freshIndex] = entry;
+      try { writeLocalCatalog(freshEntries); }
       catch { return json(res, 503, { error: 'local catalog unavailable' }); }
       console.info('[local-verify] provider=%s alias=%s outcome=%s', provider, alias, result.status);
       return json(res, 200, {
@@ -2901,6 +2975,13 @@ function createApp(config = {}) {
         resolvedDest = r.dest;
 
       }
+
+      // Every field must have a route before the link is shown to a person.
+      // Keep this check server-side; the agent may choose arbitrary field names.
+      const unrouted = fields.find((field) => !destinationForField({
+        destination: resolvedDest, destinations_by_level: resolvedByLevel,
+      }, field));
+      if (unrouted) return json(res, 400, { error: `destination missing for field: ${unrouted.name}` });
 
       // Preflight: test destination reachability before creating the session.
       // Default: on. Opt-out with test_destination: false in the request.
@@ -3281,9 +3362,13 @@ function createApp(config = {}) {
       const owns = (ownerId) => isAdmin || (ownerId !== undefined && ownerId === integrator.id);
 
       const doneFile = pendingPath(token, 'done');
-      if (fs.existsSync(doneFile)) {
-        let doneData = {};
-        try { doneData = JSON.parse(fs.readFileSync(doneFile, 'utf8')); } catch {}
+      if (fs.existsSync(doneFile) || readOrdinaryWritten(token)) {
+        let doneData;
+        try { doneData = fs.existsSync(doneFile)
+          ? JSON.parse(fs.readFileSync(doneFile, 'utf8')) : readOrdinaryWritten(token); } catch {}
+        if (!doneData || typeof doneData !== 'object' || Array.isArray(doneData)) {
+          return json(res, 503, { error: 'completion status unavailable' });
+        }
         const { _integrator_id, ...result } = doneData;
         // Old .done markers predate owner recording. Their 128-bit URL token was
         // the status capability; keep that contract for pre-existing keys only.
@@ -3291,6 +3376,11 @@ function createApp(config = {}) {
         if (!owns(_integrator_id) && !legacyDone) return json(res, 200, { status: 'expired' });
         return json(res, 200, { status: 'done', ...result });
       }
+      try {
+        const unknown = JSON.parse(fs.readFileSync(pendingPath(token, 'unknown'), 'utf8'));
+        if (!owns(unknown._integrator_id)) return json(res, 200, { status: 'expired' });
+        return json(res, 200, { status: 'unknown', retry_safe: false });
+      } catch (error) { if (error.code !== 'ENOENT') return json(res, 503, { error: 'status unavailable' }); }
       let p = readPending(token);
       if (!p) {
         try { p = JSON.parse(fs.readFileSync(pendingPath(token, 'claimed'), 'utf8')); } catch {}
@@ -3307,10 +3397,16 @@ function createApp(config = {}) {
       const { isAdmin } = resolveAuth(req.headers['authorization']);
       if (!isAdmin) return json(res, 401, { error: 'unauthorized' });
       const token = eventsMatch[1];
-      const current = readPending(token);
+      let current = readPending(token);
+      if (!current) {
+        try { current = JSON.parse(fs.readFileSync(pendingPath(token, 'claimed'), 'utf8')); } catch {}
+      }
       let done = false;
       try { done = fs.existsSync(pendingPath(token, 'done')); } catch {}
-      const state = done ? 'done' : (!current || current.expires < Date.now() ? 'expired' : 'pending');
+      done ||= !!readOrdinaryWritten(token);
+      const unknown = fs.existsSync(pendingPath(token, 'unknown'));
+      const state = done ? 'done' : unknown ? 'unknown'
+        : (!current || current.expires < Date.now() ? 'expired' : 'pending');
       res.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-cache, no-transform',

@@ -66,12 +66,24 @@ test('local form event stream reports completion only after successful save', as
     await new Promise(resolve => setImmediate(resolve));
     assert.match(event.text, /event: pending/);
 
+    // A listener arriving after Submit claimed the form must stay subscribed.
+    const pendingFile = path.join(dir, 'pending', `${formToken}.json`);
+    const claimedFile = path.join(dir, 'pending', `${formToken}.claimed`);
+    fs.renameSync(pendingFile, claimedFile);
+    const duringSubmit = await openEventStream(port, `/api/session/${formToken}/events`, adminToken);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.match(duringSubmit.text, /event: pending/);
+    assert.doesNotMatch(duringSubmit.text, /event: expired/);
+    fs.renameSync(claimedFile, pendingFile);
+
     const submitted = await request(port, 'POST', `/f/${formToken}`, { t: formToken, fields: { token: 'never-echo-this' } });
     assert.equal(submitted.status, 200, submitted.text);
     await new Promise(resolve => setImmediate(resolve));
     assert.match(event.text, /event: done/);
+    assert.match(duringSubmit.text, /event: done/);
     assert.doesNotMatch(event.text, /never-echo-this/);
     event.close();
+    duringSubmit.close();
   } finally {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
