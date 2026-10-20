@@ -18,6 +18,8 @@ export class WalletApiContainer extends DurableObject {
         enableInternet: true,
         env: {
           OPENBAO_ROOT_TOKEN: this.env.OPENBAO_ROOT_TOKEN,
+          ZEROCREDS_VAULT_DATA_KEY: this.env.ZEROCREDS_VAULT_DATA_KEY,
+          ZEROCREDS_VAULT_KEY_REF: this.env.ZEROCREDS_VAULT_KEY_REF,
           ZEROCREDS_ADMIN_TOKEN: this.env.ZEROCREDS_ADMIN_TOKEN,
           ZEROCREDS_WALLET_SERVICE_TOKEN: this.env.ZEROCREDS_WALLET_SERVICE_TOKEN,
           ZEROCREDS_WALLET_WORKER_URL: this.env.ZEROCREDS_WALLET_WORKER_URL,
@@ -57,7 +59,10 @@ export class WalletApiContainer extends DurableObject {
 export default {
   fetch(request, env) {
     if (new URL(request.url).pathname === '/_sandbox-health') {
-      return new Response('ok', { headers: { 'cache-control': 'no-store' } });
+      // The custody mode decides where a credential value lives, so it is worth
+      // being able to see which one a lane runs.
+      const custody = env.ZEROCREDS_VAULT_DATA_KEY ? 'd1' : (env.OPENBAO_ROOT_TOKEN ? 'openbao' : 'none');
+      return new Response('ok', { headers: { 'cache-control': 'no-store', 'x-custody-mode': custody } });
     }
     return env.WALLET_API.getByName('wallet-api').fetch(request);
   },
