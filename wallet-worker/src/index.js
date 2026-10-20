@@ -160,23 +160,59 @@ const VAULT_BODY_LIMIT = 65536;
 
 // Custody routes. The wallet encrypts the value before it leaves the wallet, so
 // this store only ever holds ciphertext; the metadata read never returns it.
+// A lease is a promise that the value is only hand-out-able while it is valid.
+// It is opt-in: a long-lived integration sends nothing and keeps working.
+// The lease is recorded on the value, so the grant path can refuse an expired
+// lease and the journal can answer "the value was handed out under a lease
+// that ended" after the fact.
+const LEASE_AT = /^[A-Za-z0-9_.:-]{1,64}$/;
+
+// A lease instant is either absent (no lease), a millisecond timestamp, or an
+// ISO-8601 instant. An unparsable one is refused rather than silently read as
+// "no lease": a lease that is meant and cannot be read must not widen the
+// window in which the value can leave the store.
+function leaseField(value) {
+  if (value === undefined || value === null || value === '') return { present: false, at: null };
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0
+      ? { present: true, at: value } : { present: true, invalid: true, at: null };
+  }
+  if (typeof value === 'string' && LEASE_AT.test(value)) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return { present: true, at: parsed };
+  }
+  return { present: true, invalid: true, at: null };
+}
+
 async function vaultPut(env, request, connectionId) {
   if (!env.VAULT_DB) return response(503, { error: 'vault_not_configured' });
-  const body = await readBody(request, ['owner_id', 'profile_id', 'provider', 'ciphertext', 'iv', 'tag', 'alg', 'key_ref'], VAULT_BODY_LIMIT);
+  const body = await readBody(request, ['owner_id', 'profile_id', 'provider', 'ciphertext', 'iv', 'tag', 'alg', 'key_ref',
+    'lease_started_at', 'lease_expires_at'], VAULT_BODY_LIMIT);
   if (!body || !identity(body.owner_id, body.profile_id) || !validText(body.provider, PROVIDER)
       || !validText(body.ciphertext, BASE64) || !validText(body.iv, BASE64) || !validText(body.tag, BASE64)
       || body.alg !== 'A256GCM' || !validText(body.key_ref, ID)) return response(400, { error: 'invalid_value' });
+  const started = leaseField(body.lease_started_at);
+  const expires = leaseField(body.lease_expires_at);
+  if (started.invalid || expires.invalid) {
+    return response(400, { error: 'invalid_lease', message: 'the lease instants are not readable' });
+  }
+  const leaseStartedAt = started.at;
+  const leaseExpiresAt = expires.at;
+  if (leaseStartedAt !== null && leaseExpiresAt !== null && leaseExpiresAt <= leaseStartedAt) {
+    return response(400, { error: 'invalid_lease', message: 'the lease must end after it starts' });
+  }
   const connection = await env.DB.prepare('SELECT * FROM wallet_connections WHERE connection_id = ? AND owner_id = ? AND profile_id = ?')
     .bind(connectionId, body.owner_id, body.profile_id).first();
   if (!connection) return response(404, { error: 'connection_unavailable' });
   if (connection.state === 'revoked') return response(409, { error: 'connection_revoked' });
   const now = Date.now();
   await env.VAULT_DB.prepare(`INSERT INTO credential_values
-    (connection_id, owner_id, profile_id, version, ciphertext, iv, tag, alg, key_ref, provider, created_at)
-    SELECT ?, ?, ?, COALESCE(MAX(version), 0) + 1, ?, ?, ?, ?, ?, ?, ?
+    (connection_id, owner_id, profile_id, version, ciphertext, iv, tag, alg, key_ref, provider, created_at,
+     lease_started_at, lease_expires_at)
+    SELECT ?, ?, ?, COALESCE(MAX(version), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ?, ?
     FROM credential_values WHERE connection_id = ?`)
     .bind(connectionId, body.owner_id, body.profile_id, body.ciphertext, body.iv, body.tag,
-      body.alg, body.key_ref, body.provider, now, connectionId).run();
+      body.alg, body.key_ref, body.provider, now, leaseStartedAt, leaseExpiresAt, connectionId).run();
   const stored = await env.VAULT_DB.prepare('SELECT MAX(version) AS version FROM credential_values WHERE connection_id = ?')
     .bind(connectionId).first();
   const version = Number(stored?.version || 0);
@@ -185,7 +221,8 @@ async function vaultPut(env, request, connectionId) {
     (connection_id, owner_id, profile_id, action, version, actor, created_at)
     VALUES (?, ?, ?, 'created', ?, 'wallet', ?)`)
     .bind(connectionId, body.owner_id, body.profile_id, version, now).run();
-  return response(200, { connection_id: connectionId, version, key_ref: body.key_ref });
+  return response(200, { connection_id: connectionId, version, key_ref: body.key_ref,
+    lease_started_at: leaseStartedAt, lease_expires_at: leaseExpiresAt });
 }
 async function vaultStatus(env, request, connectionId) {
   if (!env.VAULT_DB) return response(503, { error: 'vault_not_configured' });
@@ -228,10 +265,20 @@ async function vaultRead(env, request, connectionId) {
   if (!body || !identity(body.owner_id, body.profile_id) || !validText(body.run_id, RUN_REF)) {
     return response(400, { error: 'invalid_scope' });
   }
-  const live = await env.VAULT_DB.prepare(`SELECT version, ciphertext, iv, tag, alg, key_ref FROM credential_values
+  const live = await env.VAULT_DB.prepare(`SELECT version, ciphertext, iv, tag, alg, key_ref,
+    lease_started_at, lease_expires_at FROM credential_values
     WHERE connection_id = ? AND owner_id = ? AND profile_id = ? AND revoked_at IS NULL
     ORDER BY version DESC LIMIT 1`).bind(connectionId, body.owner_id, body.profile_id).first();
   if (!live) return response(404, { error: 'value_unavailable' });
+  // A lease that has ended closes the store for this value. The refusal names
+  // the lease and never the value: the caller learns that the credential aged
+  // out, and nothing about what it was.
+  const now = Date.now();
+  if (live.lease_expires_at !== null && live.lease_expires_at !== undefined
+      && Number(live.lease_expires_at) <= now) {
+    return response(409, { error: 'lease_expired',
+      lease_expires_at: new Date(Number(live.lease_expires_at)).toISOString() });
+  }
   // One grant per run. The host asks again on every dispatch attempt — a retry,
   // a cut-over to another worker, a replacement host after the previous one
   // died — and those are the same grant, so the journal keeps one `granted`
@@ -239,13 +286,17 @@ async function vaultRead(env, request, connectionId) {
   // from the row itself, so the only constraint the ignore can hit is the
   // grant-once index.
   const grant = await env.VAULT_DB.prepare(`INSERT OR IGNORE INTO credential_events
-    (connection_id, owner_id, profile_id, action, version, actor, created_at)
-    VALUES (?, ?, ?, 'granted', ?, ?, ?)`)
-    .bind(connectionId, body.owner_id, body.profile_id, live.version, body.run_id, Date.now()).run();
+    (connection_id, owner_id, profile_id, action, version, actor, created_at, lease_expires_at)
+    VALUES (?, ?, ?, 'granted', ?, ?, ?, ?)`)
+    .bind(connectionId, body.owner_id, body.profile_id, live.version, body.run_id, now,
+      live.lease_expires_at ?? null).run();
   // `replay` tells the host that the run already held this grant: the value is
   // still answered (the run needs it to work), but the journal did not grow.
+  // The lease end rides along with the grant, so "the value was handed out
+  // under a lease that ended" stays answerable after the fact.
   return response(200, { connection_id: connectionId, version: live.version, ciphertext: live.ciphertext,
-    iv: live.iv, tag: live.tag, alg: live.alg, key_ref: live.key_ref, replay: grant.meta?.changes === 0 });
+    iv: live.iv, tag: live.tag, alg: live.alg, key_ref: live.key_ref, replay: grant.meta?.changes === 0,
+    lease_started_at: live.lease_started_at ?? null, lease_expires_at: live.lease_expires_at ?? null });
 }
 async function claimAssertion(env, request) {
   const body = await readBody(request, ['jti_hash', 'expires_at']);

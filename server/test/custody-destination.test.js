@@ -132,6 +132,62 @@ test('zerocreds_vault — a value that does not authenticate is refused', async 
   }
 });
 
+test('zerocreds_vault — a lease is the host policy, it travels with the value and it is optional', async () => {
+  const received = [];
+  const srv = await startMockServer((req, res) => {
+    let data = '';
+    req.on('data', (chunk) => { data += chunk; });
+    req.on('end', () => {
+      received.push(JSON.parse(data));
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ version: 1, key_ref: 'k1' }));
+    });
+  });
+  try {
+    // No lease: the long-lived default. The store sees no lease at all.
+    await saveToDestination(custodyDestination(srv.port), { token: 'v' }, { allowPrivate: true });
+    assert.equal('lease_expires_at' in received[0], false);
+    assert.equal('lease_started_at' in received[0], false);
+
+    // A lease in minutes: it starts when the value is stored and ends after.
+    const before = Date.now();
+    await saveToDestination(custodyDestination(srv.port, { lease_ttl_minutes: 60 }), { token: 'v' }, { allowPrivate: true });
+    assert.ok(received[1].lease_started_at >= before && received[1].lease_started_at <= Date.now());
+    assert.equal(received[1].lease_expires_at - received[1].lease_started_at, 60 * 60_000);
+
+    // An absolute end: the host's own policy may name the instant instead.
+    const instant = '2030-01-01T00:00:00.000Z';
+    await saveToDestination(custodyDestination(srv.port, { lease_expires_at: instant }), { token: 'v' }, { allowPrivate: true });
+    assert.equal(received[2].lease_expires_at, Date.parse(instant));
+    assert.equal('lease_started_at' in received[2], false);
+
+    // The submitted values never choose the lease: a form cannot widen it.
+    await saveToDestination(custodyDestination(srv.port, { lease_ttl_minutes: 60 }),
+      { token: 'v', lease_expires_at: '2099-01-01T00:00:00.000Z' }, { allowPrivate: true });
+    assert.equal(received[3].lease_expires_at - received[3].lease_started_at, 60 * 60_000);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('zerocreds_vault — an expired lease is a typed refusal, not an outage', async () => {
+  const srv = await startMockServer((req, res) => {
+    res.writeHead(409, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'lease_expired', lease_expires_at: '2026-01-01T00:00:00.000Z' }));
+  });
+  try {
+    await assert.rejects(
+      () => readZerocredsVault(custodyDestination(srv.port), 'run_abc_123', { allowPrivate: true }),
+      (error) => {
+        assert.equal(error.code, 'CREDENTIAL_LEASE_EXPIRED');
+        assert.equal(error.lease_expires_at, '2026-01-01T00:00:00.000Z');
+        return true;
+      });
+  } finally {
+    await srv.close();
+  }
+});
+
 test('zerocreds_vault — the configuration is validated', () => {
   const base = custodyDestination(1234);
   assert.equal(validateDestination(base, { allowPrivate: true }), null);
@@ -140,6 +196,14 @@ test('zerocreds_vault — the configuration is validated', () => {
   assert.match(validateDestination({ ...base, key_ref: 'not a key ref' }, { allowPrivate: true }), /key ref/);
   assert.match(validateDestination({ ...base, connection_id: 'not a connection' }, { allowPrivate: true }), /connection id/);
   assert.match(validateDestination({ ...base, vault_url: undefined }, { allowPrivate: true }), /vault url/);
+  // A lease that cannot be read is a configuration error, not a lease that is
+  // quietly dropped: dropping it would widen the window in which the value can
+  // leave the store.
+  assert.equal(validateDestination({ ...base, lease_ttl_minutes: 60 }, { allowPrivate: true }), null);
+  assert.match(validateDestination({ ...base, lease_ttl_minutes: 'soon' }, { allowPrivate: true }), /lease ttl/);
+  assert.match(validateDestination({ ...base, lease_ttl_minutes: 0 }, { allowPrivate: true }), /lease ttl/);
+  assert.equal(validateDestination({ ...base, lease_expires_at: '2030-01-01T00:00:00.000Z' }, { allowPrivate: true }), null);
+  assert.match(validateDestination({ ...base, lease_expires_at: 'whenever' }, { allowPrivate: true }), /lease end/);
 });
 
 test('zerocreds_vault — the preflight needs a reachable store and a free slot', async () => {

@@ -27,14 +27,16 @@ The durable custody lives in a second D1 database (`VAULT_DB`), separate from th
 
 | Operation | Request | Effect |
 | --- | --- | --- |
-| `PUT /internal/vault/values/<connection_id>` | `owner_id`, `profile_id`, `provider`, `ciphertext`, `iv`, `tag`, `alg`, `key_ref` | Stores a new version of the value. The version is derived from the store, never from the request. |
+| `PUT /internal/vault/values/<connection_id>` | `owner_id`, `profile_id`, `provider`, `ciphertext`, `iv`, `tag`, `alg`, `key_ref`, optional `lease_started_at`, `lease_expires_at` | Stores a new version of the value. The version is derived from the store, never from the request. |
 | `GET /internal/vault/values/<connection_id>` | `X-Wallet-Owner`, `X-Wallet-Profile` headers | Returns the scoped, value-free status and version, or 404. |
 | `POST /internal/vault/values/<connection_id>/read` | `owner_id`, `profile_id`, `run_id` | The only route that answers ciphertext. It records a `granted` event whose actor is the `run_id`. |
 | `POST /internal/vault/values/<connection_id>/revoke` | `owner_id`, `profile_id` | Destroys the stored values, not only the connection flag. The event log survives. |
 
 **One run, one grant.** The read route records the grant idempotently, per connection, run and value version: the same run asking again — a retry, a cut-over to another worker, a replacement host after the previous one died — is the same grant, so the journal keeps a single `granted` event. The answer carries `replay: true` when the run already held that grant, so the host can count its own deliveries. A rotated value is a different version and therefore a different grant.
 
-The vault migrations are applied with `npx wrangler d1 migrations apply VAULT_DB --remote --config <config>`; the first one creates the tables, the second the grant-once index.
+**A lease on the value.** A value may carry a lease: `lease_started_at` and `lease_expires_at`, in milliseconds or as an ISO-8601 instant. The lease is the custody's own bound on how long the value may leave the store, and it is **opt-in**: without it the value lives in the custody until it is revoked, which is the right default for a credential a user minted for a long-lived integration. Once the lease has ended the read route refuses with `409 lease_expired` and the lease end — never the value. A refused grant is not a grant: the journal records no `granted` event for it. The grant that *did* happen keeps the lease end in the journal, so "the value was handed out under a lease that ended" is answerable after the fact. The lease is host policy: it travels with the value when the wallet stores it and the submitted form values cannot shorten or widen it.
+
+The vault migrations are applied with `npx wrangler d1 migrations apply VAULT_DB --remote --config <config>`; the first one creates the tables, the second the grant-once index and the third the lease columns.
 
 The current Worker cannot prove an OpenBao write by itself: the trusted ZeroCreds service must verify the KV-v2 version receipt before calling `complete`. The `receipt_ref` is a SHA-256 reference, not a signed receipt or secret. If OpenBao succeeds and D1 completion fails, retry `complete` with the same form/version/receipt; the Worker does not mint a second version. Runtime use must separately check that the connection is active and belongs to the run's owner/profile. No secret read endpoint exists here.
 

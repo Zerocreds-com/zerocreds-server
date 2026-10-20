@@ -178,6 +178,107 @@ test("a run's grant is recorded once, however many times the run asks", async ()
   expect(events.map((row) => row.version)).toEqual([1, 1, 2]);
 });
 
+test('a value without a lease keeps working, and a lease is recorded on the value and in the journal', async () => {
+  const ownerId = owner();
+  const connection = await allocate(ownerId);
+  const noLease = await call(`/internal/vault/values/${connection.connection_id}`, valueBody(ownerId), { method: 'PUT' });
+  expect(noLease.status).toBe(200);
+  expect(noLease.body.lease_expires_at).toBeNull();
+
+  const runRef = 'run_7a1b2c3d4e5f_6a7b8c9d';
+  const read = await call(`/internal/vault/values/${connection.connection_id}/read`,
+    { owner_id: ownerId, profile_id: 'profile_a', run_id: runRef });
+  expect(read.status).toBe(200);
+  expect(read.body.lease_expires_at).toBeNull();
+
+  // A value with a lease records the lease on the value itself, so the grant
+  // path can refuse it later without asking anybody.
+  const leaseStart = Date.now();
+  const leaseEnd = leaseStart + 3_600_000;
+  const leased = await call(`/internal/vault/values/${connection.connection_id}`,
+    { ...valueBody(ownerId), lease_started_at: leaseStart, lease_expires_at: leaseEnd }, { method: 'PUT' });
+  expect(leased.status).toBe(200);
+  expect(leased.body.lease_expires_at).toBe(leaseEnd);
+  const row = await env.VAULT_DB.prepare('SELECT lease_started_at, lease_expires_at FROM credential_values WHERE connection_id = ? AND version = ?')
+    .bind(connection.connection_id, leased.body.version).first();
+  expect(row.lease_started_at).toBe(leaseStart);
+  expect(row.lease_expires_at).toBe(leaseEnd);
+
+  // The journal keeps the lease with the grant, so "the value was handed out
+  // under a lease that ended" stays answerable after the fact. The journal is
+  // keyed by version as well: the first grant answered the unleased version,
+  // the second answered the leased one, and each says which it was.
+  const grant = await call(`/internal/vault/values/${connection.connection_id}/read`,
+    { owner_id: ownerId, profile_id: 'profile_a', run_id: runRef });
+  expect(grant.status).toBe(200);
+  expect(grant.body.lease_expires_at).toBe(leaseEnd);
+  const events = await env.VAULT_DB.prepare(`SELECT version, lease_expires_at FROM credential_events
+    WHERE connection_id = ? AND action = 'granted' AND actor = ? ORDER BY version`).bind(connection.connection_id, runRef).all();
+  expect(events.results).toHaveLength(2);
+  expect(events.results[0].version).toBe(1);
+  expect(events.results[0].lease_expires_at).toBeNull();
+  expect(events.results[1].version).toBe(2);
+  expect(events.results[1].lease_expires_at).toBe(leaseEnd);
+});
+
+test('an expired lease refuses the grant and says so without the value', async () => {
+  const ownerId = owner();
+  const connection = await allocate(ownerId);
+  const now = Date.now();
+  await call(`/internal/vault/values/${connection.connection_id}`,
+    { ...valueBody(ownerId), lease_started_at: now - 7_200_000, lease_expires_at: now - 3_600_000 }, { method: 'PUT' });
+
+  const read = await call(`/internal/vault/values/${connection.connection_id}/read`,
+    { owner_id: ownerId, profile_id: 'profile_a', run_id: 'run_8b2c3d4e5f6a_7b8c9d0e' });
+  expect(read.status).toBe(409);
+  expect(read.body.error).toBe('lease_expired');
+  expect(typeof read.body.lease_expires_at).toBe('string');
+  // The refusal names the lease and never the value.
+  expect(JSON.stringify(read.body)).not.toContain(ciphertext);
+  expect(JSON.stringify(read.body)).not.toContain(iv);
+  expect(JSON.stringify(read.body)).not.toContain(tag);
+
+  // A refused grant is not a grant: the journal must not record one.
+  const events = await env.VAULT_DB.prepare(`SELECT action FROM credential_events
+    WHERE connection_id = ? AND action = 'granted'`).bind(connection.connection_id).all();
+  expect(events.results).toHaveLength(0);
+});
+
+test('the lease boundary is exact: valid before the end, refused at and after it', async () => {
+  const ownerId = owner();
+  const connection = await allocate(ownerId);
+  const end = Date.now() + 60_000;
+  await call(`/internal/vault/values/${connection.connection_id}`,
+    { ...valueBody(ownerId), lease_started_at: Date.now(), lease_expires_at: end }, { method: 'PUT' });
+  const read = (run) => call(`/internal/vault/values/${connection.connection_id}/read`,
+    { owner_id: ownerId, profile_id: 'profile_a', run_id: run });
+
+  // Before the end the value is still handed out.
+  const before = await read('run_9c3d4e5f6a7b_8c9d0e1f');
+  expect(before.status).toBe(200);
+  expect(before.body.ciphertext).toBe(ciphertext);
+
+  // At the end the lease is over: the end instant itself is expired.
+  const atEnd = await env.VAULT_DB.prepare(`SELECT version FROM credential_values WHERE connection_id = ? AND version = 1`)
+    .bind(connection.connection_id).first();
+  expect(atEnd.version).toBe(1);
+  await env.VAULT_DB.prepare('UPDATE credential_values SET lease_expires_at = ? WHERE connection_id = ? AND version = 1')
+    .bind(Date.now(), connection.connection_id).run();
+  const expired = await read('run_0d4e5f6a7b8c_9d0e1f2a');
+  expect(expired.status).toBe(409);
+  expect(expired.body.error).toBe('lease_expired');
+
+  // A lease that ends before it starts is refused at write time, not stored.
+  const bad = await call(`/internal/vault/values/${connection.connection_id}`,
+    { ...valueBody(ownerId), lease_started_at: Date.now(), lease_expires_at: Date.now() - 1 }, { method: 'PUT' });
+  expect(bad.status).toBe(400);
+  expect(bad.body.error).toBe('invalid_lease');
+  const unreadable = await call(`/internal/vault/values/${connection.connection_id}`,
+    { ...valueBody(ownerId), lease_expires_at: 'not-a-time' }, { method: 'PUT' });
+  expect(unreadable.status).toBe(400);
+  expect(unreadable.body.error).toBe('invalid_lease');
+});
+
 test('custody routes need the service token and reject malformed values', async () => {
   const ownerId = owner();
   const connection = await allocate(ownerId);

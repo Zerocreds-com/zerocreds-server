@@ -444,6 +444,9 @@ async function saveZerocredsVault(destination, fields, opts = {}) {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
   const ciphertext = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(fields), 'utf8')), cipher.final()]);
+  // A lease is optional and comes from the host's own policy, never from the
+  // submitted values: the form cannot widen or shorten it.
+  const lease = custodyLease(destination);
   const body = await vaultJsonRequest(
     custodyUrl(destination, `/internal/vault/values/${encodeURIComponent(destination.connection_id)}`),
     'PUT', destination.service_token,
@@ -456,11 +459,27 @@ async function saveZerocredsVault(destination, fields, opts = {}) {
       tag: cipher.getAuthTag().toString('base64'),
       alg: 'A256GCM',
       key_ref: destination.key_ref || 'k1',
+      ...(lease.started_at !== null ? { lease_started_at: lease.started_at } : {}),
+      ...(lease.expires_at !== null ? { lease_expires_at: lease.expires_at } : {}),
     },
     { ...opts, authHeader: 'bearer' });
   const version = Number(body?.version);
   if (!Number.isSafeInteger(version) || version < 1) throw new Error('zerocreds_vault: store did not report a version');
-  return { secret_id: destination.connection_id, version, key_ref: body?.key_ref || destination.key_ref || 'k1' };
+  return { secret_id: destination.connection_id, version, key_ref: body?.key_ref || destination.key_ref || 'k1',
+    lease_expires_at: body?.lease_expires_at ?? null };
+}
+
+// The lease of a custody destination. `lease_ttl_minutes` is a duration from
+// the moment the value is stored; `lease_expires_at` is an absolute instant.
+// Neither is set means no lease, which is the long-lived default.
+function custodyLease(destination) {
+  const ttl = Number(destination?.lease_ttl_minutes);
+  if (Number.isFinite(ttl) && ttl > 0) {
+    return { started_at: Date.now(), expires_at: Date.now() + Math.round(ttl * 60_000) };
+  }
+  const absolute = Date.parse(String(destination?.lease_expires_at ?? ''));
+  if (Number.isFinite(absolute)) return { started_at: null, expires_at: absolute };
+  return { started_at: null, expires_at: null };
 }
 
 // Reads a stored value back for the one caller that may hold it: the host acting
@@ -472,11 +491,24 @@ async function readZerocredsVault(destination, runRef, opts = {}) {
   if (typeof runRef !== 'string' || !/^[A-Za-z0-9_.:-]{1,200}$/.test(runRef)) {
     throw new Error('zerocreds_vault: a run reference is required');
   }
-  const body = await vaultJsonRequest(
-    custodyUrl(destination, `/internal/vault/values/${encodeURIComponent(destination.connection_id)}/read`),
-    'POST', destination.service_token,
-    { owner_id: destination.owner_id, profile_id: destination.profile_id, run_id: runRef },
-    { ...opts, authHeader: 'bearer' });
+  let body;
+  try {
+    body = await vaultJsonRequest(
+      custodyUrl(destination, `/internal/vault/values/${encodeURIComponent(destination.connection_id)}/read`),
+      'POST', destination.service_token,
+      { owner_id: destination.owner_id, profile_id: destination.profile_id, run_id: runRef },
+      { ...opts, authHeader: 'bearer' });
+  } catch (error) {
+    // An expired lease is a typed refusal, not an outage. It keeps its own
+    // error so the caller can name it, and it carries no value.
+    if (error?.body?.error === 'lease_expired') {
+      const refusal = new Error('zerocreds_vault: the credential lease has expired');
+      refusal.code = 'CREDENTIAL_LEASE_EXPIRED';
+      refusal.lease_expires_at = error.body.lease_expires_at ?? null;
+      throw refusal;
+    }
+    throw error;
+  }
   const ciphertext = Buffer.from(String(body?.ciphertext || ''), 'base64');
   const iv = Buffer.from(String(body?.iv || ''), 'base64');
   const tag = Buffer.from(String(body?.tag || ''), 'base64');
@@ -495,7 +527,8 @@ async function readZerocredsVault(destination, runRef, opts = {}) {
     throw new Error('zerocreds_vault: stored value is not a field map');
   }
   return { fields, version: Number.isSafeInteger(Number(body?.version)) ? Number(body.version) : null,
-    key_ref: body?.key_ref ?? null, replay: body?.replay === true };
+    key_ref: body?.key_ref ?? null, replay: body?.replay === true,
+    lease_expires_at: body?.lease_expires_at ?? null };
 }
 
 async function custodyStatus(destination, opts = {}) {
@@ -608,7 +641,15 @@ function vaultJsonRequest(url, method, token, body, opts = {}) {
         if (data.length > 65_536) req.destroy(new Error('vault: response too large'));
       });
       res.on('end', () => {
-        if (res.statusCode >= 400) return reject(new Error(`HTTP ${res.statusCode}`));
+        if (res.statusCode >= 400) {
+          // The refusal body travels with the error: a typed refusal (an expired
+          // lease) has to stay distinguishable from an infrastructure failure,
+          // and the caller must be able to name the reason without the value.
+          const error = new Error(`HTTP ${res.statusCode}`);
+          error.status = res.statusCode;
+          try { error.body = data ? JSON.parse(data) : null; } catch { error.body = null; }
+          return reject(error);
+        }
         if (!data) return resolve(null);
         try { resolve(JSON.parse(data)); }
         catch { reject(new Error('vault: invalid response')); }
@@ -746,6 +787,17 @@ function validateDestination(destination, opts = {}) {
       }
       if (typeof destination.profile_id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(destination.profile_id)) {
         return 'zerocreds_vault: invalid profile id';
+      }
+      // A lease that cannot be read must not be read as "no lease": that would
+      // silently widen the window in which the value can leave the store.
+      if (destination.lease_ttl_minutes !== undefined && destination.lease_ttl_minutes !== null) {
+        const ttl = Number(destination.lease_ttl_minutes);
+        if (!Number.isFinite(ttl) || ttl <= 0) return 'zerocreds_vault: invalid lease ttl';
+      }
+      if (destination.lease_expires_at !== undefined && destination.lease_expires_at !== null) {
+        if (!Number.isFinite(Date.parse(String(destination.lease_expires_at)))) {
+          return 'zerocreds_vault: invalid lease end';
+        }
       }
     }
     if (destination.type === 'aws_secrets_manager' && !/^[a-z0-9-]{1,32}$/.test(String(destination.region))) {

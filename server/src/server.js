@@ -3482,8 +3482,17 @@ function createApp(config = {}) {
           // it is asking again — a retry or a cut-over — rather than the first
           // time the value leaves the store.
           replay: stored.replay === true,
+          // The lease the value was handed out under. Null means the value has
+          // no lease: it lives in the custody until it is revoked.
+          lease_expires_at: stored.lease_expires_at ?? null,
         });
       } catch (e) {
+        // An expired lease is a refusal the caller can act on, not an outage:
+        // the credential aged out, and the run has to fail closed.
+        if (e?.code === 'CREDENTIAL_LEASE_EXPIRED') {
+          return json(res, 403, { error: 'CREDENTIAL_LEASE_EXPIRED',
+            lease_expires_at: e.lease_expires_at ?? null });
+        }
         const missing = e.status === 404 || /HTTP 404/.test(String(e.message));
         return json(res, missing ? 404 : 503,
           { error: missing ? 'value_unavailable' : 'custody store unavailable' });
