@@ -133,6 +133,8 @@ server.tool(
           url: data.url,
           expires_at: data.expires_at,
           user_message: userMessage,
+          ...(service ? { provider: service } : {}),
+          ...(uid ? { account_alias: uid } : {}),
         }, null, 2),
       }],
     };

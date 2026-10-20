@@ -36,6 +36,8 @@ test('local credential form response gives the agent a friendly user-facing link
     } });
     const response = JSON.parse(result.content[0].text);
     assert.equal(response.url, formUrl);
+    assert.equal(response.provider, 'deepgram');
+    assert.equal(response.account_alias, 'work');
     assert.match(response.user_message, /\[Открыть защищённую форму ZeroCreds\]\(http:\/\/127\.0\.0\.1:3456\/f\//);
     assert.equal(response.user_message.match(/\[([^\]]+)\]\(/)[1], 'Открыть защищённую форму ZeroCreds');
   } finally {
