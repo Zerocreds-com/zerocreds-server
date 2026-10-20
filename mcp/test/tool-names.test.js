@@ -17,6 +17,10 @@ const EXPECTED_LOCAL_TOOLS = [
   'credentials_search',
   'form_create',
   'form_status',
+  'share_create',
+  'share_status',
+  'share_cancel',
+  'share_claim',
   'playground_scenarios',
   'playground_run',
   'playground_form',
@@ -45,6 +49,8 @@ test('local MCP tools do not repeat the provider name', async () => {
     for (const name of EXPECTED_LOCAL_TOOLS) {
       assert.ok(names.includes(name), `${name} is registered`);
     }
+    const share = (await client.listTools()).tools.find(tool => tool.name === 'share_create');
+    assert.match(share.description, /share my GitHub token/);
   } finally {
     await client.close();
     await new Promise(resolve => api.close(resolve));

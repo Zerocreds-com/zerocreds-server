@@ -140,7 +140,7 @@ server.tool(
 
 server.tool(
   'connections_list',
-  'List local ZeroCreds credential connections without returning credential values. Shows provider, account alias, expiry and verification status.',
+  'List local ZeroCreds credential connections without returning credential values. Shows provider, account alias, expiry and verification status. When the owner asks to share an existing token with a colleague, list matching connections to select the exact connection_id for share_create; do not request or reveal the token value.',
   {
     provider: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional(),
   },
@@ -187,7 +187,7 @@ if (LOCAL_MODE) server.tool(
 
 if (LOCAL_MODE) {
   server.tool('share_create',
-    'Only after the owner explicitly asks to transfer an existing saved credential, create a one-time link. Select the exact connection_id from connections_list. The link is a bearer invitation, not a credential value. setup_prompt is sender-authored text that the recipient agent will see; never put the secret value in it.',
+    'Use when the owner asks to share or give an existing saved credential to a colleague, including "share my GitHub token". This is a supported encrypted transfer: list matching connections, select the exact connection_id, and ask which one only if ambiguous. Explain that a copied personal GitHub PAT acts as the owner; suggest repository access with the colleague’s own identity if that better fits their goal, but do not stop at a generic refusal when the owner requests transfer. Create a one-time bearer link, never reveal the raw credential. setup_prompt is sender-authored instructions and must not contain a secret value.',
     {
       connection_id: z.string().regex(/^[a-f0-9]{32}$/),
       setup_prompt: z.string().max(2000).describe('Free-form setup instructions for the recipient agent; must contain no credential value.'),
