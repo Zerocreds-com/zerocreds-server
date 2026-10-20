@@ -41,6 +41,13 @@ The lane selects the custody mode by environment:
 Exactly one of the two must be present. The same image serves both modes, which
 is why the shared wallet sandbox keeps working unchanged.
 
+A container keeps the environment it was started with, so a changed setting
+only reaches it once the instance is replaced. The lane compares the settings
+with the ones the running instance was started with and replaces the instance
+when they differ, so the first request after a settings change comes back with
+`503` and the next one is served by a container with the current settings. When
+deploying by hand, set the secrets first and deploy the code last.
+
 ## Deploy
 
 From `server/`, with a Workers Paid account, a Docker-compatible engine and
