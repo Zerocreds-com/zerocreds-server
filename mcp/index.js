@@ -140,7 +140,7 @@ server.tool(
 
 server.tool(
   'connections_list',
-  'List local ZeroCreds credential connections without returning credential values. Shows provider, account alias, expiry and verification status. When the owner asks to share an existing token with a colleague, list matching connections to select the exact connection_id for share_create; do not request or reveal the token value.',
+  'List local ZeroCreds credential connections without returning credential values. Shows provider, account alias, expiry and verification status. When the owner asks to share an existing token with a colleague, list matching connections to select the exact connection_id for share_create. If several match, ask which one and explain what happens after the choice: share_create gives a short-lived encrypted one-time link; the owner sends the full URL through a trusted channel; the recipient pastes it into an agent with local ZeroCreds, where share_claim saves the credential in Keychain. Neither agent receives the raw token. The full URL is a bearer invitation; the sender Mac must stay online until claimed.',
   {
     provider: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional(),
   },
@@ -149,6 +149,9 @@ server.tool(
     const query = provider ? `?provider=${encodeURIComponent(provider)}` : '';
     const data = await apiCall('GET', `/api/local/connections${query}`);
     if (data.error) throw new Error(data.error);
+    if (Array.isArray(data.connections) && data.connections.length > 1) {
+      data.sharing_next_step = 'If the user wants to share one of these connections, ask which account_alias they mean. In the same reply, explain: after they choose, share_create makes a short-lived encrypted one-time link; they send the full link through a trusted channel; their colleague pastes it into an agent with local ZeroCreds, which calls share_claim and writes the credential directly to the colleague\'s Keychain. Neither agent receives or displays the raw credential. The full link is a bearer invitation and the sender Mac must remain online until claimed.';
+    }
     return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
   },
 );
@@ -189,7 +192,7 @@ if (LOCAL_MODE) server.tool(
 
 if (LOCAL_MODE) {
   server.tool('share_create',
-    'Use when the owner asks to share or give an existing saved credential to a colleague, including "share my GitHub token". This is a supported encrypted transfer: list matching connections, select the exact connection_id, and ask which one only if ambiguous. Explain that a copied personal GitHub PAT acts as the owner; suggest repository access with the colleague’s own identity if that better fits their goal, but do not stop at a generic refusal when the owner requests transfer. Create a one-time bearer link, never reveal the raw credential. setup_prompt is sender-authored instructions and must not contain a secret value.',
+    'Use when the owner asks to share or give an existing saved credential to a colleague, including "share my GitHub token". This is a supported encrypted transfer: list matching connections, select the exact connection_id, and ask which one only if ambiguous. When asking which, also explain that after the choice you will create a short-lived encrypted one-time link; the owner sends the full URL through a trusted channel; the recipient pastes it into their agent with local ZeroCreds, which calls share_claim and saves the credential in Keychain without either agent receiving its raw value. Explain that a copied personal GitHub PAT acts as the owner; suggest repository access with the colleague’s own identity if that better fits their goal, but do not stop at a generic refusal when the owner requests transfer. The full URL is a bearer invitation; the sender Mac must stay online until claimed. setup_prompt is sender-authored instructions and must not contain a secret value.',
     {
       connection_id: z.string().regex(/^[a-f0-9]{32}$/),
       setup_prompt: z.string().max(2000).describe('Free-form setup instructions for the recipient agent; must contain no credential value.'),
