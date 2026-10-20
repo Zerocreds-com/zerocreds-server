@@ -2277,22 +2277,58 @@ function createApp(config = {}) {
       if (req.method === 'GET' && url.pathname === '/api/local/shares/options') {
         return json(res, 200, { relay_url: SHARE_RELAY_URL, direct_url: directConfig.public_url || null,
           direct_configured: !!directConfig.public_url,
+          direct_reachability_verified_at: directConfig.reachability_verified_at || null,
           choice_required: true,
           relay_description: 'Use the ZeroCreds website at this address to pass the invitation. The credential is sealed before it leaves this computer, and the website cannot open and read it.',
-          direct_description: 'Send straight from this computer without using the ZeroCreds website. Your colleague must be able to connect to this computer over the internet. The router may need a setting changed. If that is not possible, choose the ZeroCreds website.' });
+          direct_description: 'Send straight from this computer without using the ZeroCreds website. ZeroCreds can test whether the chosen port is reachable from the internet before creating a link. If it is blocked, the router or network may need a change.' });
       }
       if (req.method === 'POST' && url.pathname === '/api/local/shares/direct/setup') {
         const body = await readJson(req);
-        if (!body || typeof body.public_url !== 'string' || body.public_url.length > 256
+        if (!body || (body.public_url !== undefined && (typeof body.public_url !== 'string' || body.public_url.length > 256))
+            || (body.port !== undefined && (!Number.isInteger(body.port) || body.port < 1024 || body.port > 65535))
             || (body.cert_file !== undefined && (typeof body.cert_file !== 'string' || body.cert_file.length > 1024))
             || (body.key_file !== undefined && (typeof body.key_file !== 'string' || body.key_file.length > 1024))) {
           return json(res, 400, { error: 'invalid direct share configuration' });
         }
+        if (body.port === undefined) {
+          try { body.port = body.public_url ? Number(new URL(body.public_url).port) || 3457 : 3457; }
+          catch { return json(res, 400, { error: 'invalid public URL' }); }
+        }
         if (directShareIds.size || directShareCreates || directStopping) return json(res, 409, { error: 'wait until active direct shares finish' });
+        if (directEndpoint) { await directEndpoint.stop(); directEndpoint = null; }
         let candidate;
+        let externalReachabilityVerified = false;
         try {
-          const publicUrl = directOrigin(body.public_url, { allowLoopback: config.allowLoopbackShares === true });
-          candidate = { public_url: publicUrl, cert_file: body.cert_file || '', key_file: body.key_file || '' };
+          const configuredPort = body.public_url ? Number(new URL(body.public_url).port) : undefined;
+          if (configuredPort && body.port !== configuredPort) throw new Error('choose the same port in public_url and port');
+          const port = body.port || configuredPort || 3457;
+          if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('invalid port');
+          let publicUrl;
+          const loopbackTest = config.allowLoopbackShares === true && body.public_url
+            && ['127.0.0.1', 'localhost'].includes(new URL(body.public_url).hostname);
+          if (loopbackTest) publicUrl = body.public_url;
+          else {
+            if (!SHARE_RELAY_URL) throw new Error('ZeroCreds reachability check is unavailable');
+            const probeToken = crypto.randomBytes(32).toString('hex');
+            const temporary = createDirectShareEndpoints({ publicUrl: `http://1.1.1.1:${port}`, probeToken });
+            try {
+              await temporary.start();
+              const probeUrl = new URL('/api/share-relay/probe', SHARE_RELAY_URL);
+              const response = await fetch(probeUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ port, token: probeToken }), signal: AbortSignal.timeout(8000), redirect: 'error' });
+              const result = await response.json().catch(() => ({}));
+              if (!response.ok || !result.public_ip) throw new Error(result.error || 'ZeroCreds could not check the public address');
+              if (!result.reachable) throw new Error('the port is not reachable from the internet; check the router and firewall');
+              const requestedHost = body.public_url ? new URL(body.public_url).hostname : result.public_ip;
+              if (requestedHost !== result.public_ip) throw new Error('the configured address differs from the public address seen by ZeroCreds');
+              const protocol = body.public_url ? new URL(body.public_url).protocol : 'http:';
+              publicUrl = `${protocol}//${result.public_ip}:${port}`;
+              externalReachabilityVerified = true;
+            } finally { await temporary.stop(); }
+          }
+          publicUrl = directOrigin(publicUrl, { allowLoopback: config.allowLoopbackShares === true });
+          candidate = { public_url: publicUrl, cert_file: body.cert_file || '', key_file: body.key_file || '',
+            ...(externalReachabilityVerified ? { reachability_verified_at: new Date().toISOString() } : {}) };
           const probe = createDirectShareEndpoints({ publicUrl, certFile: candidate.cert_file,
             keyFile: candidate.key_file, allowLoopback: config.allowLoopbackShares === true });
           if (directEndpoint) { await directEndpoint.stop(); directEndpoint = null; }
@@ -2305,8 +2341,11 @@ function createApp(config = {}) {
         fs.renameSync(temp, SHARE_DIRECT_CONFIG_FILE);
         directConfig = candidate;
         return json(res, 200, { direct_url: candidate.public_url, local_listener_ready: true,
-          external_reachability_verified: false,
-          next_step: 'This computer is configured, but people outside your network may not be able to reach it yet. Your router may need to be set to pass the connection through to this computer, and the computer firewall may need to allow it. Ask your internet provider or network administrator if these settings are unfamiliar. Test from another network before sending the link; if this cannot be arranged, use the ZeroCreds relay.' });
+          external_reachability_verified: externalReachabilityVerified,
+          reachability_verified_at: candidate.reachability_verified_at,
+          next_step: externalReachabilityVerified
+            ? 'ZeroCreds tested that this port can be reached from the internet. The direct invitation link will point to this computer; keep it online until the colleague claims it.'
+            : 'The local listener is ready. External reachability was not tested.' });
       }
       if (req.method === 'POST' && url.pathname === '/api/local/shares') {
         const body = await readJson(req);

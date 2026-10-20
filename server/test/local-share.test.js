@@ -64,8 +64,8 @@ test('direct invitations accept only numeric public IPs, with loopback limited t
   assert.throws(() => parseInvite(link, 'https://zerocreds.ru'), /invalid share link/);
 });
 
-async function withRelay(run) {
-  const relay = createShareRelay();
+async function withRelay(run, options) {
+  const relay = createShareRelay(options);
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
     Promise.resolve(relay.handle(req, res, url)).then(handled => {
@@ -76,6 +76,30 @@ async function withRelay(run) {
   try { await run(`http://127.0.0.1:${server.address().port}`, relay); }
   finally { relay.stop(); await new Promise(resolve => server.close(resolve)); }
 }
+
+test('port probe checks only the caller public address and returns no credential data', async () => {
+  const observed = [];
+  await withRelay(async relayUrl => {
+    const token = 'c'.repeat(64);
+    const response = await fetch(`${relayUrl}/api/share-relay/probe`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ port: 3457, token }) });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { public_ip: '8.8.8.8', port: 3457, reachable: true });
+    const invalid = await fetch(`${relayUrl}/api/share-relay/probe`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ port: 80, token }) });
+    assert.equal(invalid.status, 400);
+  }, { clientIp: () => '8.8.8.8', probePort: async (ip, port, token) => {
+    observed.push({ ip, port, token });
+    return true;
+  } });
+  assert.deepEqual(observed, [{ ip: '8.8.8.8', port: 3457, token: 'c'.repeat(64) }]);
+  await withRelay(async relayUrl => {
+    const response = await fetch(`${relayUrl}/api/share-relay/probe`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ port: 3457, token: 'c'.repeat(64) }) });
+    assert.equal(response.status, 400);
+  }, { clientIp: () => '192.168.1.20', probePort: async () => assert.fail('must reject private source address') });
+});
 
 test('sender and receiver on separate clients transfer once through a ciphertext-only relay', async () => {
   await withRelay(async (relayUrl, relay) => {

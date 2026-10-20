@@ -31,7 +31,7 @@ function directOrigin(value, { allowLoopback = false } = {}) {
   return url.origin;
 }
 
-function createDirectShareEndpoints({ publicUrl, certFile, keyFile, allowLoopback = false } = {}) {
+function createDirectShareEndpoints({ publicUrl, certFile, keyFile, probeToken, allowLoopback = false } = {}) {
   const origin = directOrigin(publicUrl, { allowLoopback });
   const url = new URL(origin);
   if (url.protocol === 'https:' && (!certFile || !keyFile)) throw new Error('direct HTTPS share requires a certificate and private key');
@@ -41,6 +41,11 @@ function createDirectShareEndpoints({ publicUrl, certFile, keyFile, allowLoopbac
     let route;
     try { route = new URL(req.url, 'http://localhost'); }
     catch { res.writeHead(400).end(); return; }
+    if (!internal && probeToken && req.method === 'GET'
+        && route.pathname === `/api/share-relay/probe/${probeToken}`) {
+      res.writeHead(204, { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }).end();
+      return;
+    }
     if (req.method === 'GET' && /^\/api\/share-relay\/invite\/[a-f0-9]{32}$/.test(route.pathname)) {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
         'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',

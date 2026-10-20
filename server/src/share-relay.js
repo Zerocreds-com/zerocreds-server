@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const net = require('node:net');
+const http = require('node:http');
 
 const ID = /^[a-f0-9]{32}$/;
 const TOKEN = /^[a-f0-9]{64}$/;
@@ -40,8 +41,9 @@ function equalToken(a, b) {
   return typeof a === 'string' && TOKEN.test(a) && crypto.timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
 }
 
-function createShareRelay({ clientIp } = {}) {
+function createShareRelay({ clientIp, probePort } = {}) {
   const sessions = new Map();
+  const probeTimes = new Map();
   const now = () => Date.now();
   const cleanup = () => {
     for (const [id, item] of sessions) if (item.expires <= now() || item.state === 'complete' && item.completedAt + 60000 <= now()) sessions.delete(id);
@@ -51,6 +53,47 @@ function createShareRelay({ clientIp } = {}) {
   const stop = () => clearInterval(timer);
 
   async function handle(req, res, url) {
+    if (url.pathname === '/api/share-relay/probe' && req.method === 'POST') {
+      let body;
+      try { body = await readBody(req); } catch { answer(res, 400, { error: 'bad request' }); return true; }
+      const ip = clientIp ? clientIp(req) : req.socket.remoteAddress || '';
+      const port = body.port;
+      const token = body.token;
+      const octets = ip.split('.').map(Number);
+      const publicIp = net.isIP(ip) === 4 && octets.length === 4
+        && octets[0] !== 0 && octets[0] !== 10 && octets[0] !== 127 && octets[0] < 224
+        && !(octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127)
+        && !(octets[0] === 169 && octets[1] === 254)
+        && !(octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
+        && !(octets[0] === 192 && (octets[1] === 168 || octets[1] === 0 && (octets[2] === 0 || octets[2] === 2)
+          || octets[1] === 88 && octets[2] === 99))
+        && !(octets[0] === 198 && (octets[1] === 18 || octets[1] === 19
+          || octets[1] === 51 && octets[2] === 100))
+        && !(octets[0] === 203 && octets[1] === 0 && octets[2] === 113);
+      if (!publicIp || !Number.isInteger(port) || port < 1024 || port > 65535
+          || typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token)) {
+        answer(res, 400, { error: 'invalid port probe request' }); return true;
+      }
+      const lastProbe = probeTimes.get(ip) || 0;
+      if (Date.now() - lastProbe < 10000) { answer(res, 429, { error: 'please wait before trying again' }); return true; }
+      if (probeTimes.size >= 10000) {
+        const cutoff = Date.now() - 60000;
+        for (const [address, at] of probeTimes) if (at < cutoff) probeTimes.delete(address);
+        if (probeTimes.size >= 10000) { answer(res, 429, { error: 'probe capacity reached' }); return true; }
+      }
+      probeTimes.set(ip, Date.now());
+      const reachable = probePort ? await probePort(ip, port, token) : await new Promise(resolve => {
+        const probe = http.get({ host: ip, port, path: `/api/share-relay/probe/${token}`, timeout: 3000,
+          headers: { 'Connection': 'close' } }, response => {
+          response.resume();
+          resolve(response.statusCode === 204);
+        });
+        probe.once('timeout', () => probe.destroy());
+        probe.once('error', () => resolve(false));
+      });
+      answer(res, 200, { public_ip: ip, port, reachable });
+      return true;
+    }
     if (req.method === 'GET' && /^\/api\/share-relay\/invite\/[a-f0-9]{32}$/.test(url.pathname)) return false;
     if (!url.pathname.startsWith('/api/share-relay/') && url.pathname !== '/share') return false;
     if (url.pathname === '/api/share-relay/sessions' && req.method === 'POST') {
