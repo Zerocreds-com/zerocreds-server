@@ -577,7 +577,7 @@ Landing: `/home/vova/zerocreds-landing/`
 
 - `main` is protected: PR + required `test` check, enforced for admins. There is no auto-merge — a human merges.
 - `test.yml` (job `test`, the required check): gitleaks over full history (pinned binary, sha256-verified) → `npm ci` in `server/` and `mcp/` (lockfiles are mandatory) → `npm audit --omit=dev` → syntax lint (`node --check`) → `node --test`. Node 22.
-- Peer sharing is checked on Linux and Windows only: local API tests run on both, then one Linux sender creates an encrypted synthetic connection envelope that a Windows runner receives. These jobs run sequentially for the transfer; there is no macOS runner.
+- Peer share envelope generation is checked sequentially on Linux and Windows using the same synthetic fixture. CI tests sending only; receiving is already covered by the standard test suite. There is no macOS runner.
 - `deploy.yml`: runs on push to `main` (or manual dispatch from `main` only), re-runs `test` on that exact sha, then the `deploy` job waits for approval in the GitHub Environment `production` (required reviewer) before SSHing to the server.
 - All third-party actions are pinned by full commit SHA (tag in a trailing comment). When bumping, resolve the new SHA with `git ls-remote https://github.com/<owner>/<repo> refs/tags/<tag>`.
 - Changing dependencies: update `package.json` and commit the regenerated `package-lock.json`; CI fails on lockfile drift.

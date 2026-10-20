@@ -101,7 +101,7 @@ The agent asks the owner to choose the configured relay or direct transfer. `sha
 
 The link opens an instruction page, not the secret. The recipient copies the full address, including `#`, into an agent with local ZeroCreds. No page script reads the fragment. Send the link through any trusted channel; the channel does not need to be Telegram or a shared local network.
 
-This release imports to macOS Keychain. Windows and Linux CI validate the relay protocol and cross-OS encrypted envelope compatibility with synthetic values; native credential custody and installer support on those systems remain separate work.
+This release imports to macOS Keychain. Linux and Windows CI each generate an encrypted outgoing envelope from synthetic values; native credential custody and installer support on those systems remain separate work.
 
 Credential discovery is deliberately staged. When asked what access is available, the agent can call `discovery_sources` and `discovery_preview`. These inspect `gh auth`, Wrangler, gcloud and macOS Keychain item attributes; they never request token/password values. Chrome can be detected, but browser credential databases are not read. The agent presents the preview first. A preview remains available in the local server's memory for six hours; after that, discovery must be run again. Only after the user chooses entries and confirms should the agent call `discovery_catalog`; `credentials_search` then searches the local metadata catalog. Discovery never grants access or proves a token works. Verify supported saved ZeroCreds connections separately. The catalog is private local metadata at `~/.config/zerocreds/local/discovery-catalog.json`.
 
