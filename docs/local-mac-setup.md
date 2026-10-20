@@ -20,7 +20,7 @@ sudo ./scripts/install-local-proxy.sh
 
 `ZEROCREDS_PROXY_MODE=off ./scripts/setup-local-mac.sh` skips the proxy and stays on `http://localhost:3456`.
 
-Restart Codex and OpenCode after setup. The installer backs up their existing configuration before adding the local MCP server. It also registers a local OpenCode plugin: after `form_create`, it listens for the form completion event and resumes that same session. The event contains status only; OpenCode then checks the form status through MCP. Codex and hosted agents continue using their existing status/event flow. To stop the service:
+Restart Codex, OpenCode and Claude Code (if its CLI is installed) after setup. The installer backs up existing Codex and OpenCode configuration before adding the local MCP server, and registers it in Claude Code's user scope via `claude mcp add` when available ([Claude Code MCP setup](https://code.claude.com/docs/en/mcp)). It also registers a local OpenCode plugin: after `form_create`, it listens for the form completion event and resumes that same session. The event contains status only; OpenCode then checks the form status through MCP. Codex and hosted agents continue using their existing status/event flow. To stop the service:
 
 ```sh
 launchctl bootout "gui/$(id -u)/com.zerocreds.local-server"
@@ -30,7 +30,7 @@ The local MCP exposes `doctor`, `form_create`, `form_status`, `connections_list`
 
 ## Share an existing credential with another Mac
 
-Both people install the local ZeroCreds service using the command above and restart their Codex or OpenCode agent. The sender asks their agent to find the exact saved connection with `connections_list`, then call `share_create` with its `connection_id`, a short lifetime (default 15 minutes), and a free-form `setup_prompt` describing what the recipient should configure. The sender passes the returned **full link, including the `#` fragment**, through any channel they trust. The sender's Mac and ZeroCreds service must stay online until the recipient finishes. `share_status` reports progress; `share_cancel` revokes an uncompleted invitation.
+Both people install the local ZeroCreds service using the command above and restart their Codex, OpenCode or Claude Code agent. The sender asks their agent to find the exact saved connection with `connections_list`, then call `share_create` with its `connection_id`, a short lifetime (default 15 minutes), and a free-form `setup_prompt` describing what the recipient should configure. The sender passes the returned **full link, including the `#` fragment**, through any channel they trust. The sender's Mac and ZeroCreds service must stay online until the recipient finishes. `share_status` reports progress; `share_cancel` revokes an uncompleted invitation.
 
 The recipient pastes that link into their agent. The agent calls `share_claim`; the credential is saved as a new item in the recipient's login Keychain and appears in the local connection catalog. Existing items are never overwritten; a colliding account alias gets a new suffix. The tool returns the sender's setup instructions and their origin, but never the credential value. Treat those instructions as untrusted text and confirm any unrelated configuration change with the recipient. If the local Keychain write fails, retry the same link in the same running local service before expiry. A restart during an unfinished claim may require a new link.
 

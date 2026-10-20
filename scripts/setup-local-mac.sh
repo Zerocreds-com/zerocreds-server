@@ -140,6 +140,17 @@ codex mcp add zerocreds \
   --env ZEROCREDS_LOCAL_CATALOG_FILE="$CONFIG/connections.json" \
   -- "$(command -v node)" "$ROOT/mcp/index.js"
 
+if command -v claude >/dev/null 2>&1; then
+  claude mcp remove zerocreds --scope user >/dev/null 2>&1 || true
+  claude mcp add --scope user \
+    --env ZEROCREDS_LOCAL_MODE=1 \
+    --env ZEROCREDS_URL="$BASE_URL" \
+    --env ZEROCREDS_ADMIN_TOKEN_FILE="$CONFIG/admin-token" \
+    --env ZEROCREDS_DEFAULT_DESTINATION=mac-keychain \
+    --env ZEROCREDS_LOCAL_CATALOG_FILE="$CONFIG/connections.json" \
+    --transport stdio zerocreds -- "$(command -v node)" "$ROOT/mcp/index.js"
+fi
+
 export ZC_NODE="$(command -v node)" ZC_MCP="$ROOT/mcp/index.js"
 node <<'NODE'
 const fs = require('fs');
@@ -196,4 +207,4 @@ if [[ "$PROXY_OK" == "1" ]]; then
   echo "Readable address: $PRETTY_URL (port 80 reverse proxy, system/$PROXY_LABEL)"
 fi
 echo "Keychain destination: zerocreds/<provider>-<account-alias>"
-echo "Restart Codex and OpenCode to load the MCP tools."
+echo "Restart Codex, OpenCode and Claude Code (if installed) to load the MCP tools."
