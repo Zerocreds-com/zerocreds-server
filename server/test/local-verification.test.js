@@ -99,3 +99,22 @@ test('unsupported providers and provider/network failures fail closed', async ()
   assert.deepEqual(await verifyLocalCredential('github', { token: 'x' }, async () =>
     new Response('{}', { status: 401 })), { status: 'invalid' });
 });
+
+test('custom token field reuses a saved credential and overrides canonical aliases', async () => {
+  const fields = { github_pat_admin: 'synthetic-custom-secret', token: 'wrong-token' };
+  const result = await verifyLocalCredential('github', fields, async (url, options) => {
+    assert.equal(options.headers.Authorization, 'Bearer synthetic-custom-secret');
+    return new Response(JSON.stringify({ id: 42, login: 'test-user' }));
+  }, { tokenField: 'github_pat_admin' });
+  assert.equal(result.status, 'valid');
+  assert.ok(!JSON.stringify(result).includes(fields.github_pat_admin));
+});
+
+test('missing, empty or inherited explicit fields never fall back or contact provider', async () => {
+  for (const fields of [{ token: 'valid-default' }, { token: 'valid-default', custom: '' },
+    Object.create({ custom: 'inherited-secret' })]) {
+    assert.deepEqual(await verifyLocalCredential('github', fields, async () => {
+      assert.fail('must not contact provider');
+    }, { tokenField: 'custom' }), { status: 'credential_field_missing' });
+  }
+});

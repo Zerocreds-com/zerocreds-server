@@ -250,3 +250,54 @@ test('cataloguing drops legacy keychain entries that predate service-qualified r
     assert.equal(stored[0].category, 'credential');
   }, { discovery: async () => ({ sources: [{ source_id: 'macos_keychain', status: 'found', candidate_count: 1 }], candidates: [candidate] }) });
 });
+
+test('verification forwards explicit field selection, validates it and explains recovery', async () => {
+  let calls = 0;
+  await withLocalServer(async ({ port, token }) => {
+    const input = { provider: 'github', account_alias: 'work', token_field: 'github_pat_admin' };
+    const result = await call(port, 'POST', '/api/local/connections/verify', input, token);
+    assert.equal(result.status, 200);
+    assert.equal(result.body.verification, 'credential_field_missing');
+    assert.match(result.body.next_step, /token_field/);
+    assert.ok(!JSON.stringify(result.body).includes('must-never-escape-test-secret'));
+    for (const field of ['', '../token', 42, null, 'x'.repeat(65)]) {
+      const invalid = await call(port, 'POST', '/api/local/connections/verify', { ...input, token_field: field }, token);
+      assert.equal(invalid.status, 400);
+    }
+    assert.equal(calls, 1);
+  }, { verifier: async (provider, fields, fetchImpl, options) => {
+    calls++;
+    assert.equal(provider, 'github');
+    assert.deepEqual(options, { tokenField: 'github_pat_admin' });
+    return { status: 'credential_field_missing' };
+  } });
+});
+
+test('saved token alias survives later checks; temporary overrides and failed saves preserve it', async () => {
+  const selected = [];
+  await withLocalServer(async ({ port, token, catalogFile }) => {
+    const input = { provider: 'github', account_alias: 'work' };
+    const verify = (extra) => call(port, 'POST', '/api/local/connections/verify', { ...input, ...extra }, token);
+    assert.equal((await verify({ save_token_field: true })).status, 400);
+    assert.equal((await verify({ save_token_field: 'yes', token_field: 'token' })).status, 400);
+    const saved = await verify({ token_field: 'custom_pat', save_token_field: true });
+    assert.equal(saved.body.token_field_saved, true);
+    assert.equal(JSON.parse(fs.readFileSync(catalogFile))[0].token_field, 'custom_pat');
+    await verify({});
+    await verify({ token_field: 'temporary' });
+    await verify({});
+    const failed = await verify({ token_field: 'invalid', save_token_field: true });
+    assert.equal(failed.body.token_field_saved, false);
+    await verify({});
+    const replaced = await verify({ token_field: 'replacement', save_token_field: true });
+    assert.equal(replaced.body.token_field_saved, true);
+    await verify({});
+    assert.deepEqual(selected, ['custom_pat', 'custom_pat', 'temporary', 'custom_pat', 'invalid', 'custom_pat', 'replacement', 'replacement']);
+    const persisted = fs.readFileSync(catalogFile, 'utf8');
+    assert.ok(!persisted.includes('must-never-escape-test-secret'));
+    assert.equal(JSON.parse(persisted)[0].token_field, 'replacement');
+  }, { verifier: async (provider, fields, fetchImpl, { tokenField }) => {
+    selected.push(tokenField);
+    return { status: tokenField === 'invalid' ? 'invalid' : 'valid' };
+  } });
+});
