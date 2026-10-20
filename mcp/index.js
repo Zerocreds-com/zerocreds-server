@@ -74,7 +74,7 @@ const server = new McpServer({
 
 server.tool(
   'form_create',
-  'Create a ZeroCreds credential-collection session. The user fills in credentials directly — the agent never sees them. When sharing the form, show the returned user_message verbatim so the link has a friendly label; do not expose the raw URL by itself. After the user says they submitted it, call form_status with this session token. If status is done, the credential is already saved: continue the original task using the same provider/account alias and do not create another form. A provider API error such as 401 does not mean the form was missed; report that the provider rejected the saved credential and ask before requesting a replacement. Never read the secret from Keychain or ask the user to paste it into chat.',
+  'Create a ZeroCreds credential-collection session. The user fills in credentials directly — the agent never sees them. Show the returned user_message verbatim so the link has a friendly label; do not expose the raw URL by itself. If the host supports event subscriptions, subscribe to this form’s credential-ready event and continue the originating task when notified. Otherwise, check form_status when the user returns. If status is done, continue using the returned provider/account_alias; do not create another form because a later provider request failed. Never read the secret from Keychain or ask the user to paste it into chat.',
   {
     title: z.string().describe('Heading shown on the form (e.g. "Connect GitHub")'),
     description: z.string().optional().describe('Subtext explaining what credentials are needed and why'),
@@ -360,7 +360,7 @@ if (LOCAL_MODE) {
 
 server.tool(
   'form_status',
-  'Check whether the user has submitted the ZeroCreds form. After the user says they submitted it, check this status. Poll every 5–10 seconds while pending. If status is "done", ZeroCreds has saved the credential already: continue the original task using the provider/account alias supplied to form_create. Do not create another form or ask the user to enter the credential again because a later provider request failed; explain the provider error and ask before replacing the credential. Never read the secret from Keychain or ask the user to paste it into chat.',
+  'Recover the durable state of a ZeroCreds credential form when the user returns or an event needs reconciliation. If status is "pending", keep waiting for the form. If status is "done", ZeroCreds has already saved the credential; continue the original task using the provider/account_alias returned by form_create. Do not create another form because a later provider request failed; explain the provider error and ask before replacing the credential. Never read the secret from Keychain or ask the user to paste it into chat.',
   {
     token: z.string().describe('Session token returned by form_create'),
   },
