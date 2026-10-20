@@ -58,17 +58,19 @@ test('local MCP tools do not repeat the provider name', async () => {
     }
     const share = (await client.listTools()).tools.find(tool => tool.name === 'share_create');
     assert.match(share.description, /share my GitHub token/);
-    assert.match(share.description, /Never create a link until the owner chooses a transport/);
+    assert.match(share.description, /Ask the owner which option they prefer before creating a link/);
+    assert.match(share.description, /Reply in the language the user is using/);
+    assert.match(share.description, /plain everyday words/);
     assert.deepEqual(share.inputSchema.properties.transport.enum, ['direct', 'relay']);
     assert.ok(share.inputSchema.required.includes('transport'));
     const connections = (await client.listTools()).tools.find(tool => tool.name === 'connections_list');
     assert.match(connections.description, /If several connections match, ask which one too/);
-    assert.match(connections.description, /share_claim saves the credential in Keychain/);
+    assert.match(connections.description, /which saves the credential in Keychain/);
     const listed = await client.callTool({ name: 'connections_list', arguments: { provider: 'github' } });
     const listedData = JSON.parse(listed.content[0].text);
-    assert.match(listedData.sharing_next_step, /after they choose, share_create/);
-    assert.match(listedData.sharing_next_step, /share_claim and writes the credential directly/);
-    assert.match(listedData.sharing_next_step, /Neither agent receives or displays the raw credential/);
+    assert.match(listedData.sharing_next_step, /reply in the user\'s language/i);
+    assert.match(listedData.sharing_next_step, /Ask which they prefer before calling share_create/);
+    assert.match(listedData.sharing_next_step, /Neither agent sees the secret/);
     const created = JSON.parse((await client.callTool({ name: 'share_create', arguments: {
       connection_id: 'a'.repeat(32), setup_prompt: 'Configure the example project.', transport: 'direct',
     } })).content[0].text);

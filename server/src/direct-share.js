@@ -45,7 +45,7 @@ function createDirectShareEndpoints({ publicUrl, certFile, keyFile, allowLoopbac
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
         'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
         'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'" });
-      res.end(shareInvitePage());
+      res.end(shareInvitePage(req.headers['accept-language'] || ''));
       return;
     }
     // The public listener only serves recipient operations. Session creation,
