@@ -1,19 +1,8 @@
 import { DurableObject } from 'cloudflare:workers';
+import { containerEnv, settingsFingerprint } from './env.mjs';
 
 const PORT = 3456;
 const INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
-
-// The container keeps the environment it was started with, so a changed setting
-// only reaches it once the instance is replaced. The fingerprint of the
-// settings says whether the running instance still matches them.
-async function settingsFingerprint(env) {
-  const keys = ['OPENBAO_ROOT_TOKEN', 'ZEROCREDS_VAULT_DATA_KEY', 'ZEROCREDS_VAULT_KEY_REF',
-    'ZEROCREDS_ADMIN_TOKEN', 'ZEROCREDS_WALLET_SERVICE_TOKEN', 'ZEROCREDS_WALLET_WORKER_URL',
-    'ZEROCREDS_WALLET_ASSERTION_ISSUERS_JSON', 'ZEROCREDS_BASE_URL'];
-  const material = keys.map((key) => `${key}=${env[key] ?? ''}`).join('\n');
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(material));
-  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
-}
 
 export class WalletApiContainer extends DurableObject {
   constructor(ctx, env) {
@@ -42,16 +31,7 @@ export class WalletApiContainer extends DurableObject {
       await container.start({
         image: container.images.api,
         enableInternet: true,
-        env: {
-          OPENBAO_ROOT_TOKEN: this.env.OPENBAO_ROOT_TOKEN,
-          ZEROCREDS_VAULT_DATA_KEY: this.env.ZEROCREDS_VAULT_DATA_KEY,
-          ZEROCREDS_VAULT_KEY_REF: this.env.ZEROCREDS_VAULT_KEY_REF,
-          ZEROCREDS_ADMIN_TOKEN: this.env.ZEROCREDS_ADMIN_TOKEN,
-          ZEROCREDS_WALLET_SERVICE_TOKEN: this.env.ZEROCREDS_WALLET_SERVICE_TOKEN,
-          ZEROCREDS_WALLET_WORKER_URL: this.env.ZEROCREDS_WALLET_WORKER_URL,
-          ZEROCREDS_WALLET_ASSERTION_ISSUERS_JSON: this.env.ZEROCREDS_WALLET_ASSERTION_ISSUERS_JSON,
-          ZEROCREDS_BASE_URL: this.env.ZEROCREDS_BASE_URL,
-        },
+        env: containerEnv(this.env),
       });
       await container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS);
       await this.ctx.storage.put('settings_fingerprint', fingerprint);
