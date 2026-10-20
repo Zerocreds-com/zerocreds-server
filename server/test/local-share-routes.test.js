@@ -68,8 +68,15 @@ test('local API sends an existing connection through remote relay and stores it 
     const denied = await request(sourceUrl, 'POST', '/api/local/shares', undefined,
       { connection_id: sourceId, setup_prompt: 'Configure the example service.' });
     assert.equal(denied.status, 401);
+    const options = await request(sourceUrl, 'GET', '/api/local/shares/options', token);
+    assert.equal(options.body.relay_url, relayUrl);
+    assert.equal(options.body.choice_required, true);
+    const withoutChoice = await request(sourceUrl, 'POST', '/api/local/shares', token,
+      { connection_id: sourceId, setup_prompt: 'Configure the example service.' });
+    assert.equal(withoutChoice.status, 409);
+    assert.equal(withoutChoice.body.error, 'transport_selection_required');
     const created = await request(sourceUrl, 'POST', '/api/local/shares', token,
-      { connection_id: sourceId, setup_prompt: 'Configure the example service.', ttl_minutes: 1 });
+      { connection_id: sourceId, setup_prompt: 'Configure the example service.', ttl_minutes: 1, transport: 'relay' });
     assert.equal(created.status, 200);
     assert.equal(created.body.provider, 'example');
     assert.ok(!JSON.stringify(created.body).includes(credential));
@@ -93,7 +100,7 @@ test('local API sends an existing connection through remote relay and stores it 
   }
 });
 
-test('local API defaults to direct IP when configured, with no hosted relay request', async () => {
+test('local API shares by direct IP after explicit choice, with no hosted relay request', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zc-direct-share-routes-'));
   const adminToken = 'direct-share-admin-' + 'x'.repeat(40);
   const sourceId = 'b'.repeat(32);
@@ -113,7 +120,7 @@ test('local API defaults to direct IP when configured, with no hosted relay requ
     signingKeyFile: path.join(root, `${name}-signing.pem`) });
   const source = createApp({ ...options('source', sourceCatalog),
     baseUrl: `http://127.0.0.1:${sourcePort}`,
-    shareDirectUrl: `http://127.0.0.1:${directPort}`,
+    shareDirectConfigFile: path.join(root, 'direct-config.json'),
     directShareSweepIntervalMs: 25,
     localCredentialExists: async () => 'present',
     localCredentialReader: async () => ({ token: 'synthetic-direct-credential' }) });
@@ -128,8 +135,20 @@ test('local API defaults to direct IP when configured, with no hosted relay requ
   const sourceUrl = await listen(source, sourcePort);
   const recipientUrl = await listen(recipient, recipientPort);
   try {
+    const setup = await request(sourceUrl, 'POST', '/api/local/shares/direct/setup', adminToken,
+      { public_url: `http://127.0.0.1:${directPort}` });
+    assert.equal(setup.status, 200);
+    assert.equal(setup.body.local_listener_ready, true);
+    assert.equal(setup.body.external_reachability_verified, false);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'direct-config.json'))).public_url,
+      `http://127.0.0.1:${directPort}`);
+    const optionsResult = await request(sourceUrl, 'GET', '/api/local/shares/options', adminToken);
+    assert.equal(optionsResult.body.direct_configured, true);
+    const withoutChoice = await request(sourceUrl, 'POST', '/api/local/shares', adminToken,
+      { connection_id: sourceId, setup_prompt: 'Configure the example service.' });
+    assert.equal(withoutChoice.status, 409);
     const created = await request(sourceUrl, 'POST', '/api/local/shares', adminToken,
-      { connection_id: sourceId, setup_prompt: 'Configure the example service.', ttl_minutes: 1 });
+      { connection_id: sourceId, setup_prompt: 'Configure the example service.', ttl_minutes: 1, transport: 'direct' });
     assert.equal(created.status, 200);
     assert.equal(created.body.transport, 'direct');
     assert.match(created.body.share_url, new RegExp(`^http://127\\.0\\.0\\.1:${directPort}/api/share-relay/invite/`));

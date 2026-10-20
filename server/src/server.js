@@ -14,7 +14,7 @@ const { canonicalJson, sha256Hex, loadSigningKey, signPayload } = require('./rec
 const { discoverCredentialSources, searchCredentialMetadata, CATEGORIES } = require('./credential-discovery');
 const { createShareRelay } = require('./share-relay');
 const { createPeerShare, claimPeerShare } = require('./local-share');
-const { createDirectShareEndpoints } = require('./direct-share');
+const { createDirectShareEndpoints, directOrigin } = require('./direct-share');
 const { shareInvitePage } = require('./share-invite-page');
 
 // ── Module-level pure helpers ──────────────────────────────────────────────────
@@ -1277,18 +1277,24 @@ function createApp(config = {}) {
   const LOCAL_SHARE_IMPORTS = new Set();
   const SHARE_RELAY_URL = config.shareRelayUrl ?? process.env.ZEROCREDS_SHARE_RELAY_URL ?? 'https://zerocreds.ru';
   const SHARE_RELAY = (config.shareRelayEnabled ?? !LOCAL_MODE) ? createShareRelay({ clientIp }) : null;
-  const SHARE_DIRECT_URL = config.shareDirectUrl ?? process.env.ZEROCREDS_SHARE_DIRECT_URL ?? '';
-  const SHARE_DIRECT_CERT_FILE = config.shareDirectCertFile ?? process.env.ZEROCREDS_SHARE_DIRECT_CERT_FILE ?? '';
-  const SHARE_DIRECT_KEY_FILE = config.shareDirectKeyFile ?? process.env.ZEROCREDS_SHARE_DIRECT_KEY_FILE ?? '';
-  if (SHARE_DIRECT_URL && !LOCAL_MODE) throw new Error('direct sharing requires local mode');
+  const SHARE_DIRECT_CONFIG_FILE = config.shareDirectConfigFile ?? path.join(path.dirname(LOCAL_CATALOG_FILE), 'share-direct.json');
+  let directConfig = { public_url: config.shareDirectUrl ?? process.env.ZEROCREDS_SHARE_DIRECT_URL ?? '',
+    cert_file: config.shareDirectCertFile ?? process.env.ZEROCREDS_SHARE_DIRECT_CERT_FILE ?? '',
+    key_file: config.shareDirectKeyFile ?? process.env.ZEROCREDS_SHARE_DIRECT_KEY_FILE ?? '' };
+  if (LOCAL_MODE && fs.existsSync(SHARE_DIRECT_CONFIG_FILE)) {
+    const saved = JSON.parse(fs.readFileSync(SHARE_DIRECT_CONFIG_FILE, 'utf8'));
+    directOrigin(saved.public_url, { allowLoopback: config.allowLoopbackShares === true });
+    directConfig = saved;
+  }
+  if (directConfig.public_url && !LOCAL_MODE) throw new Error('direct sharing requires local mode');
   let directEndpoint = null;
   let directStopping = null;
   const directShareIds = new Set();
   async function startDirectEndpoint() {
-    if (!SHARE_DIRECT_URL) throw new Error('direct sharing is not configured');
+    if (!directConfig.public_url) throw new Error('direct sharing is not configured; call share_direct_setup first');
     if (directStopping) await directStopping;
-    if (!directEndpoint) directEndpoint = createDirectShareEndpoints({ publicUrl: SHARE_DIRECT_URL,
-      certFile: SHARE_DIRECT_CERT_FILE, keyFile: SHARE_DIRECT_KEY_FILE,
+    if (!directEndpoint) directEndpoint = createDirectShareEndpoints({ publicUrl: directConfig.public_url,
+      certFile: directConfig.cert_file, keyFile: directConfig.key_file,
       allowLoopback: config.allowLoopbackShares === true });
     try { return await directEndpoint.start(); }
     catch (error) { directEndpoint = null; throw error; }
@@ -2255,11 +2261,48 @@ function createApp(config = {}) {
     if (LOCAL_MODE && url.pathname.startsWith('/api/local/shares')) {
       const { isAdmin } = resolveAuth(req.headers['authorization']);
       if (!isAdmin) return json(res, 401, { error: 'admin token required' });
+      if (req.method === 'GET' && url.pathname === '/api/local/shares/options') {
+        return json(res, 200, { relay_url: SHARE_RELAY_URL, direct_url: directConfig.public_url || null,
+          direct_configured: !!directConfig.public_url,
+          choice_required: true,
+          relay_description: 'Encrypted one-time transfer through the configured ZeroCreds relay; the relay stores ciphertext, not the credential value.',
+          direct_description: 'Sender-hosted public IP and inbound port; the ZeroCreds relay and website do not handle this transfer. Public network reachability is required.' });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/local/shares/direct/setup') {
+        const body = await readJson(req);
+        if (!body || typeof body.public_url !== 'string' || body.public_url.length > 256
+            || (body.cert_file !== undefined && (typeof body.cert_file !== 'string' || body.cert_file.length > 1024))
+            || (body.key_file !== undefined && (typeof body.key_file !== 'string' || body.key_file.length > 1024))) {
+          return json(res, 400, { error: 'invalid direct share configuration' });
+        }
+        if (directShareIds.size || directStopping) return json(res, 409, { error: 'wait until active direct shares finish' });
+        let candidate;
+        try {
+          const publicUrl = directOrigin(body.public_url, { allowLoopback: config.allowLoopbackShares === true });
+          candidate = { public_url: publicUrl, cert_file: body.cert_file || '', key_file: body.key_file || '' };
+          const probe = createDirectShareEndpoints({ publicUrl, certFile: candidate.cert_file,
+            keyFile: candidate.key_file, allowLoopback: config.allowLoopbackShares === true });
+          if (directEndpoint) { await directEndpoint.stop(); directEndpoint = null; }
+          await probe.start();
+          await probe.stop();
+        } catch (error) { return json(res, 503, { error: `direct setup failed: ${error.message}` }); }
+        fs.mkdirSync(path.dirname(SHARE_DIRECT_CONFIG_FILE), { recursive: true, mode: 0o700 });
+        const temp = `${SHARE_DIRECT_CONFIG_FILE}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+        fs.writeFileSync(temp, JSON.stringify(candidate), { mode: 0o600 });
+        fs.renameSync(temp, SHARE_DIRECT_CONFIG_FILE);
+        directConfig = candidate;
+        return json(res, 200, { direct_url: candidate.public_url, local_listener_ready: true,
+          external_reachability_verified: false,
+          next_step: 'Forward the chosen TCP port to this computer and allow inbound traffic in its firewall. Confirm public reachability from another network before sharing.' });
+      }
       if (req.method === 'POST' && url.pathname === '/api/local/shares') {
         const body = await readJson(req);
+        if (body && body.transport === undefined) return json(res, 409, { error: 'transport_selection_required',
+          relay_url: SHARE_RELAY_URL, direct_configured: !!directConfig.public_url,
+          next_step: 'Ask the owner whether to use the configured ZeroCreds relay or set up a direct public-IP connection before creating a link.' });
         if (!body || !/^[a-f0-9]{32}$/.test(body.connection_id || '')
             || typeof body.setup_prompt !== 'string' || body.setup_prompt.length > 2000
-            || (body.transport !== undefined && !['direct', 'relay'].includes(body.transport))
+            || !['direct', 'relay'].includes(body.transport)
             || (body.ttl_minutes !== undefined && (!Number.isInteger(body.ttl_minutes)
               || body.ttl_minutes < 1 || body.ttl_minutes > 120))) {
           return json(res, 400, { error: 'invalid share request' });
@@ -2279,7 +2322,7 @@ function createApp(config = {}) {
         }
         const exists = await (config.localCredentialExists || checkLocalKeychainEntry)(entry.storage);
         if (exists !== 'present') return json(res, 409, { error: `credential ${exists}` });
-        const transport = body.transport || (SHARE_DIRECT_URL ? 'direct' : 'relay');
+        const transport = body.transport;
         let direct;
         if (transport === 'direct') {
           try { direct = await startDirectEndpoint(); }

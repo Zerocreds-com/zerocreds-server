@@ -18,6 +18,8 @@ const EXPECTED_LOCAL_TOOLS = [
   'form_create',
   'form_status',
   'share_create',
+  'share_options',
+  'share_direct_setup',
   'share_status',
   'share_cancel',
   'share_claim',
@@ -56,10 +58,11 @@ test('local MCP tools do not repeat the provider name', async () => {
     }
     const share = (await client.listTools()).tools.find(tool => tool.name === 'share_create');
     assert.match(share.description, /share my GitHub token/);
-    assert.match(share.description, /When asking which, also explain/);
+    assert.match(share.description, /Never create a link until the owner chooses a transport/);
     assert.deepEqual(share.inputSchema.properties.transport.enum, ['direct', 'relay']);
+    assert.ok(share.inputSchema.required.includes('transport'));
     const connections = (await client.listTools()).tools.find(tool => tool.name === 'connections_list');
-    assert.match(connections.description, /If several match, ask which one and explain what happens after the choice/);
+    assert.match(connections.description, /If several connections match, ask which one too/);
     assert.match(connections.description, /share_claim saves the credential in Keychain/);
     const listed = await client.callTool({ name: 'connections_list', arguments: { provider: 'github' } });
     const listedData = JSON.parse(listed.content[0].text);
@@ -71,7 +74,7 @@ test('local MCP tools do not repeat the provider name', async () => {
     } })).content[0].text);
     assert.match(created.forward_message, /ZeroCreds one-time invitation/);
     assert.ok(created.forward_message.includes(created.share_url));
-    for (const name of ['connections_list', 'connection_resolve', 'doctor', 'share_status', 'form_status']) {
+    for (const name of ['connections_list', 'connection_resolve', 'doctor', 'share_options', 'share_status', 'form_status']) {
       assert.equal((await client.listTools()).tools.find(tool => tool.name === name).annotations.readOnlyHint, true);
     }
   } finally {

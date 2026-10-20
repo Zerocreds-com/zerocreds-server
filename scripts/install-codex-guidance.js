@@ -6,12 +6,12 @@ const path = require('node:path');
 
 const START = '<!-- zerocreds:begin -->';
 const END = '<!-- zerocreds:end -->';
-const READ_ONLY_TOOLS = ['connections_list', 'connection_resolve', 'doctor', 'share_status', 'form_status', 'discovery_sources', 'credentials_search', 'playground_scenarios'];
+const READ_ONLY_TOOLS = ['connections_list', 'connection_resolve', 'doctor', 'share_options', 'share_status', 'form_status', 'discovery_sources', 'credentials_search', 'playground_scenarios'];
 const GUIDANCE = `${START}
 ## ZeroCreds credential sharing
 
-When I ask to share a credential already saved on this computer with a colleague, use the local ZeroCreds MCP. List matching connections, select the exact connection_id, and call share_create. If several connections match, ask which one I mean. In that same answer, explicitly explain every part of the next step:
-- After I choose, share_create makes a short-lived encrypted one-time link.
+When I ask to share a credential already saved on this computer with a colleague, use the local ZeroCreds MCP. List matching connections and call share_options. If several connections match, ask which one I mean. Before creating any link, ask whether to use the configured ZeroCreds relay or direct public-IP transfer. Name the actual configured relay URL. The relay sees encrypted data but handles the transfer; direct avoids the ZeroCreds site and relay but requires a reachable public IP and inbound port. If I choose direct, use share_direct_setup to configure the local listener, explain any router/firewall step you cannot perform, and check reachability from another network. In that same answer, explicitly explain every part of the next step:
+- After I choose the connection and transport, share_create makes a short-lived encrypted one-time link.
 - I send the full link through a trusted channel. My Mac stays online until the colleague claims it.
 - My colleague pastes the link into their agent with local ZeroCreds. share_claim saves the credential directly in their Keychain.
 - Neither agent receives or shows the raw credential. The full link is a bearer invitation.
