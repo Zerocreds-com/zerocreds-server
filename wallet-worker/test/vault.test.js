@@ -130,6 +130,54 @@ test('a run-scoped read hands the ciphertext back and records the run', async ()
     { owner_id: ownerId, profile_id: 'profile_a', run_id: runRef })).status).toBe(404);
 });
 
+test("a run's grant is recorded once, however many times the run asks", async () => {
+  const ownerId = owner();
+  const connection = await allocate(ownerId);
+  await call(`/internal/vault/values/${connection.connection_id}`, valueBody(ownerId), { method: 'PUT' });
+
+  const runRef = 'run_5c3e1a77b0d4_1a2b3c4d';
+  const read = (run) => call(`/internal/vault/values/${connection.connection_id}/read`,
+    { owner_id: ownerId, profile_id: 'profile_a', run_id: run });
+  const granted = async () => {
+    const events = await env.VAULT_DB.prepare(`SELECT actor, version FROM credential_events
+      WHERE connection_id = ? AND action = 'granted' ORDER BY event_id`).bind(connection.connection_id).all();
+    return events.results;
+  };
+
+  const first = await read(runRef);
+  expect(first.status).toBe(200);
+  expect(first.body.replay).toBe(false);
+  expect(first.body.ciphertext).toBe(ciphertext);
+
+  // The same run asking again is the same grant — a retry, a cut-over to
+  // another worker, a replacement host after the previous one died. The value
+  // is still answered, because the run needs it to work, but the journal does
+  // not grow and the host is told it is a replay.
+  const again = await read(runRef);
+  expect(again.status).toBe(200);
+  expect(again.body.ciphertext).toBe(ciphertext);
+  expect(again.body.version).toBe(1);
+  expect(again.body.replay).toBe(true);
+  expect(await granted()).toHaveLength(1);
+
+  // Another run is another grant.
+  const other = await read('run_6d4f2b88c1e5_2b3c4d5e');
+  expect(other.status).toBe(200);
+  expect(other.body.replay).toBe(false);
+  expect(await granted()).toHaveLength(2);
+
+  // A rotated value is a genuinely different grant: the run consumes a
+  // different value, and the journal has to say so.
+  await call(`/internal/vault/values/${connection.connection_id}`, valueBody(ownerId), { method: 'PUT' });
+  const rotated = await read(runRef);
+  expect(rotated.status).toBe(200);
+  expect(rotated.body.version).toBe(2);
+  expect(rotated.body.replay).toBe(false);
+  const events = await granted();
+  expect(events).toHaveLength(3);
+  expect(events.map((row) => row.version)).toEqual([1, 1, 2]);
+});
+
 test('custody routes need the service token and reject malformed values', async () => {
   const ownerId = owner();
   const connection = await allocate(ownerId);

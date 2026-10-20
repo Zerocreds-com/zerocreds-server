@@ -494,7 +494,8 @@ async function readZerocredsVault(destination, runRef, opts = {}) {
   if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
     throw new Error('zerocreds_vault: stored value is not a field map');
   }
-  return { fields, version: Number.isSafeInteger(Number(body?.version)) ? Number(body.version) : null, key_ref: body?.key_ref ?? null };
+  return { fields, version: Number.isSafeInteger(Number(body?.version)) ? Number(body.version) : null,
+    key_ref: body?.key_ref ?? null, replay: body?.replay === true };
 }
 
 async function custodyStatus(destination, opts = {}) {

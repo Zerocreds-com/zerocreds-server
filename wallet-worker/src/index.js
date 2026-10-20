@@ -232,12 +232,20 @@ async function vaultRead(env, request, connectionId) {
     WHERE connection_id = ? AND owner_id = ? AND profile_id = ? AND revoked_at IS NULL
     ORDER BY version DESC LIMIT 1`).bind(connectionId, body.owner_id, body.profile_id).first();
   if (!live) return response(404, { error: 'value_unavailable' });
-  await env.VAULT_DB.prepare(`INSERT INTO credential_events
+  // One grant per run. The host asks again on every dispatch attempt — a retry,
+  // a cut-over to another worker, a replacement host after the previous one
+  // died — and those are the same grant, so the journal keeps one `granted`
+  // event for it. Every bound value is validated above and the version comes
+  // from the row itself, so the only constraint the ignore can hit is the
+  // grant-once index.
+  const grant = await env.VAULT_DB.prepare(`INSERT OR IGNORE INTO credential_events
     (connection_id, owner_id, profile_id, action, version, actor, created_at)
     VALUES (?, ?, ?, 'granted', ?, ?, ?)`)
     .bind(connectionId, body.owner_id, body.profile_id, live.version, body.run_id, Date.now()).run();
+  // `replay` tells the host that the run already held this grant: the value is
+  // still answered (the run needs it to work), but the journal did not grow.
   return response(200, { connection_id: connectionId, version: live.version, ciphertext: live.ciphertext,
-    iv: live.iv, tag: live.tag, alg: live.alg, key_ref: live.key_ref });
+    iv: live.iv, tag: live.tag, alg: live.alg, key_ref: live.key_ref, replay: grant.meta?.changes === 0 });
 }
 async function claimAssertion(env, request) {
   const body = await readBody(request, ['jti_hash', 'expires_at']);
