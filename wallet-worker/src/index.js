@@ -16,8 +16,8 @@ function validObject(value, keys) {
     && Object.keys(value).every(key => keys.includes(key));
 }
 function validText(value, pattern) { return typeof value === 'string' && pattern.test(value); }
-async function readBody(request, keys) {
-  if (Number(request.headers.get('content-length') || 0) > 4096) return null;
+async function readBody(request, keys, limit = 4096) {
+  if (Number(request.headers.get('content-length') || 0) > limit) return null;
   const reader = request.body?.getReader();
   if (!reader) return null;
   let size = 0;
@@ -27,7 +27,7 @@ async function readBody(request, keys) {
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > 4096) { await reader.cancel(); return null; }
+      if (size > limit) { await reader.cancel(); return null; }
       chunks.push(value);
     }
   } catch { return null; }
@@ -154,6 +154,69 @@ async function revoke(env, request, connectionId) {
   return result.meta.changes === 1 ? response(200, { connection_id: connectionId, state: 'revoked' })
     : response(404, { error: 'connection_unavailable' });
 }
+const BASE64 = /^[A-Za-z0-9+/]{1,20000}={0,2}$/;
+const VAULT_BODY_LIMIT = 65536;
+
+// Custody routes. The wallet encrypts the value before it leaves the wallet, so
+// this store only ever holds ciphertext; the metadata read never returns it.
+async function vaultPut(env, request, connectionId) {
+  if (!env.VAULT_DB) return response(503, { error: 'vault_not_configured' });
+  const body = await readBody(request, ['owner_id', 'profile_id', 'provider', 'ciphertext', 'iv', 'tag', 'alg', 'key_ref'], VAULT_BODY_LIMIT);
+  if (!body || !identity(body.owner_id, body.profile_id) || !validText(body.provider, PROVIDER)
+      || !validText(body.ciphertext, BASE64) || !validText(body.iv, BASE64) || !validText(body.tag, BASE64)
+      || body.alg !== 'A256GCM' || !validText(body.key_ref, ID)) return response(400, { error: 'invalid_value' });
+  const connection = await env.DB.prepare('SELECT * FROM wallet_connections WHERE connection_id = ? AND owner_id = ? AND profile_id = ?')
+    .bind(connectionId, body.owner_id, body.profile_id).first();
+  if (!connection) return response(404, { error: 'connection_unavailable' });
+  if (connection.state === 'revoked') return response(409, { error: 'connection_revoked' });
+  const now = Date.now();
+  await env.VAULT_DB.prepare(`INSERT INTO credential_values
+    (connection_id, owner_id, profile_id, version, ciphertext, iv, tag, alg, key_ref, provider, created_at)
+    SELECT ?, ?, ?, COALESCE(MAX(version), 0) + 1, ?, ?, ?, ?, ?, ?, ?
+    FROM credential_values WHERE connection_id = ?`)
+    .bind(connectionId, body.owner_id, body.profile_id, body.ciphertext, body.iv, body.tag,
+      body.alg, body.key_ref, body.provider, now, connectionId).run();
+  const stored = await env.VAULT_DB.prepare('SELECT MAX(version) AS version FROM credential_values WHERE connection_id = ?')
+    .bind(connectionId).first();
+  const version = Number(stored?.version || 0);
+  if (!Number.isSafeInteger(version) || version < 1) return response(503, { error: 'vault_unavailable' });
+  await env.VAULT_DB.prepare(`INSERT INTO credential_events
+    (connection_id, owner_id, profile_id, action, version, actor, created_at)
+    VALUES (?, ?, ?, 'created', ?, 'wallet', ?)`)
+    .bind(connectionId, body.owner_id, body.profile_id, version, now).run();
+  return response(200, { connection_id: connectionId, version, key_ref: body.key_ref });
+}
+async function vaultStatus(env, request, connectionId) {
+  if (!env.VAULT_DB) return response(503, { error: 'vault_not_configured' });
+  const owner = request.headers.get('x-wallet-owner');
+  const profile = request.headers.get('x-wallet-profile');
+  if (!identity(owner, profile)) return response(400, { error: 'invalid_scope' });
+  const live = await env.VAULT_DB.prepare('SELECT version, created_at FROM credential_values WHERE connection_id = ? AND owner_id = ? AND profile_id = ? AND revoked_at IS NULL ORDER BY version DESC LIMIT 1')
+    .bind(connectionId, owner, profile).first();
+  if (live) return response(200, { connection_id: connectionId, state: 'active', version: live.version, updated_at: live.created_at });
+  const last = await env.VAULT_DB.prepare('SELECT created_at FROM credential_values WHERE connection_id = ? AND owner_id = ? AND profile_id = ? ORDER BY version DESC LIMIT 1')
+    .bind(connectionId, owner, profile).first();
+  return response(200, { connection_id: connectionId, state: 'missing', version: null, updated_at: last?.created_at ?? null });
+}
+async function vaultRevoke(env, request, connectionId) {
+  if (!env.VAULT_DB) return response(503, { error: 'vault_not_configured' });
+  const body = await readBody(request, ['owner_id', 'profile_id']);
+  if (!body || !identity(body.owner_id, body.profile_id)) return response(400, { error: 'invalid_scope' });
+  const known = await env.VAULT_DB.prepare('SELECT COUNT(*) AS n FROM credential_values WHERE connection_id = ? AND owner_id = ? AND profile_id = ?')
+    .bind(connectionId, body.owner_id, body.profile_id).first();
+  if (!known?.n) return response(404, { error: 'connection_unavailable' });
+  const now = Date.now();
+  // The value is destroyed, not only flagged: a revoked credential leaves no
+  // ciphertext behind.
+  const result = await env.VAULT_DB.prepare('DELETE FROM credential_values WHERE connection_id = ? AND owner_id = ? AND profile_id = ?')
+    .bind(connectionId, body.owner_id, body.profile_id).run();
+  const versions = result.meta.changes || 0;
+  await env.VAULT_DB.prepare(`INSERT INTO credential_events
+    (connection_id, owner_id, profile_id, action, version, actor, created_at)
+    VALUES (?, ?, ?, 'revoked', ?, 'wallet', ?)`)
+    .bind(connectionId, body.owner_id, body.profile_id, versions, now).run();
+  return response(200, { connection_id: connectionId, state: 'revoked', versions_revoked: versions });
+}
 async function claimAssertion(env, request) {
   const body = await readBody(request, ['jti_hash', 'expires_at']);
   const now = Date.now();
@@ -182,6 +245,11 @@ export default {
       if (connection && request.method === 'GET') return connectionStatus(env, request, connection[1]);
       const revoked = /^\/internal\/connections\/([a-zA-Z0-9_-]{1,100})\/revoke$/.exec(url.pathname);
       if (revoked && request.method === 'POST') return revoke(env, request, revoked[1]);
+      const vaultValue = /^\/internal\/vault\/values\/([a-zA-Z0-9_-]{1,100})$/.exec(url.pathname);
+      if (vaultValue && request.method === 'PUT') return vaultPut(env, request, vaultValue[1]);
+      if (vaultValue && request.method === 'GET') return vaultStatus(env, request, vaultValue[1]);
+      const vaultRevoked = /^\/internal\/vault\/values\/([a-zA-Z0-9_-]{1,100})\/revoke$/.exec(url.pathname);
+      if (vaultRevoked && request.method === 'POST') return vaultRevoke(env, request, vaultRevoked[1]);
       return response(404, { error: 'not_found' });
     } catch (error) {
       console.error('wallet metadata operation failed', error?.name || 'unknown');

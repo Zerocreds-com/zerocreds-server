@@ -34,6 +34,7 @@ test('wallet form: scoped agent request, OpenBao write, D1 completion, value-fre
   let savedValue;
   let completionFails = true;
   let connectionState = 'allocated';
+  let custodyState = 'missing';
   const worker = await listen(async (req, res) => {
     const payload = req.method === 'POST' ? await body(req) : {};
     if (req.headers.authorization !== `Bearer ${serviceToken}`) return send(res, 401, { error: 'unauthorized' });
@@ -59,10 +60,26 @@ test('wallet form: scoped agent request, OpenBao write, D1 completion, value-fre
       connectionState = 'revoked';
       return send(res, 200, { connection_id: connectionId, state: connectionState });
     }
+    if (req.url === `/internal/vault/values/${connectionId}` && req.method === 'GET') {
+      if (req.headers['x-wallet-owner'] !== owner || req.headers['x-wallet-profile'] !== profile) {
+        return send(res, 404, { error: 'connection_unavailable' });
+      }
+      return send(res, 200, { connection_id: connectionId, state: custodyState,
+        version: custodyState === 'active' ? 1 : null, updated_at: 123 });
+    }
+    if (req.url === `/internal/vault/values/${connectionId}/revoke` && req.method === 'POST') {
+      if (payload.owner_id !== owner || payload.profile_id !== profile) {
+        return send(res, 404, { error: 'connection_unavailable' });
+      }
+      calls.push({ operation: 'custody_revoke', payload });
+      custodyState = 'missing';
+      return send(res, 200, { connection_id: connectionId, state: 'revoked', versions_revoked: 1 });
+    }
     if (/^\/internal\/forms\/[a-f0-9]{32}\/complete$/.test(req.url)) {
       calls.push({ operation: 'complete', payload });
       if (completionFails) return send(res, 503, { error: 'wallet_unavailable' });
       connectionState = 'active';
+      custodyState = 'active';
       return send(res, 200, { connection_id: connectionId, state: 'written', kv_version: payload.kv_version });
     }
     return send(res, 404, { error: 'not_found' });
@@ -152,6 +169,7 @@ test('wallet form: scoped agent request, OpenBao write, D1 completion, value-fre
     assert.equal(foreignRevoke.status, 404);
     const revoke = await request(srv.port, 'POST', `/api/wallet/connections/${connectionId}/revoke`, {}, auth);
     assert.deepEqual(revoke.body, { connection_id: connectionId, state: 'revoked' });
+    assert.equal(calls.filter(c => c.operation === 'custody_revoke').length, 1);
     const revokedStatus = await request(srv.port, 'GET', `/api/wallet/forms/${formId}/status`, undefined, auth);
     assert.equal(revokedStatus.body.status, 'revoked');
   } finally {

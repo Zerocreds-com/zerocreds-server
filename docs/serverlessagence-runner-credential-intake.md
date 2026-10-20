@@ -8,13 +8,27 @@ An agent asks a **generic ZeroCreds MCP tool** to prepare fields for its task. T
 
 A stable `connectionId` points to an owner-bound credential record. A runner or trusted MCP capability can use it only after owner, run and operation authorization. The exact list and names of credential-using open-source MCP methods are deferred until their implementations and policies are reviewed. Creating a form is not permission to execute arbitrary code with its secret.
 
+### Storage choice (updated): durable custody in D1, encrypted by the wallet
+
+The OpenBao choice above does not survive contact with the runner lane. OpenBao there was a `bao server -dev` instance inside a Cloudflare Container: data in memory only, on an ephemeral disk, so every container stop destroyed the stored value while the metadata still said `active`. OpenBao itself ships only the raft/file/inmem storage backends (plus PostgreSQL), so it cannot be backed by R2, and a container has no persistent volume to host raft. Hosting it on a VM contradicts the stateless requirement, and a managed cluster costs far more than the problem.
+
+The runner lane therefore keeps the value in a dedicated D1 database, `ta-credential-vault`, separate from the application metadata database:
+
+- the **wallet encrypts** the value (AES-256-GCM, with a key only the wallet holds) before it leaves the wallet, so the metadata Worker and the store only ever hold ciphertext — the same separation the writer/metadata split provided;
+- the store keeps a version per write and an append-only event log;
+- **revocation destroys the value**, not only the connection flag;
+- the metadata read answers existence and version, never ciphertext, so a status check cannot leak a value;
+- the container holds no credential state, so it can be replaced by a stateless Worker; the durable part is D1.
+
+OpenBao stays available as a `vault` destination adapter for operators who run their own cluster. The shared sandbox lane still runs the legacy in-container OpenBao until it is moved to the same durable store.
+
 ### Storage choice: OpenBao values, D1 metadata
 
 OpenBao is a separate service, not a Cloudflare D1 feature. KV v2 supplies secret versions and path-scoped ACLs, and OpenBao has audit devices. It requires authentication, unseal, backups, monitoring and availability planning ([KV v2](https://openbao.org/docs/secrets/kv/kv-v2/), [storage operations](https://openbao.org/docs/configuration/storage/), [audit](https://openbao.org/docs/audit/)). ZeroCreds already has a `vault` destination adapter, but that does not mean a production OpenBao cluster or owner-scoped policies exist.
 
 **Custody:** the customer owns the credential and can revoke or rotate it. ZeroCreds operates the OpenBao wallet service, its seal/recovery, backups, audit and policy issuance; its form writer receives only a scoped write identity. ServerlessAgence operates a separate broker identity for authorized use of one connection during one run. The OpenCode agent and its VM receive neither OpenBao administration credentials nor a generic read capability. Operational OpenBao administrators can technically access stored values despite a write-only application policy, so ZeroCreds must disclose this honestly. A customer-owned OpenBao/Vault backend can later use the same connection contract without making the agent the storage operator.
 
-Use D1 for the application workflow only. It tracks who owns a form/connection, which profile may use it, and which OpenBao secret path/version the broker must resolve. D1 must not contain provider values, OpenBao tokens, AppRole SecretIDs, ciphertext copies or sufficient data to bypass OpenBao authorization. The ZeroCreds writer and runner reader use different OpenBao identities and policies. Keep the `connectionId` and storage adapter stable so a customer-owned Vault-compatible backend can be selected later without changing MCP or Runner contracts.
+Use D1 for the application workflow only. It tracks who owns a form/connection, which profile may use it, and which OpenBao secret path/version the broker must resolve. The application metadata D1 must not contain provider values, OpenBao tokens, AppRole SecretIDs, ciphertext copies or sufficient data to bypass OpenBao authorization. The ZeroCreds writer and runner reader use different OpenBao identities and policies. Keep the `connectionId` and storage adapter stable so a customer-owned Vault-compatible backend can be selected later without changing MCP or Runner contracts.
 
 Cloudflare Secrets Store is another product, separate from D1 and OpenBao. Its current open beta supports at most 100 production secrets per account and is designed around secrets bound to Cloudflare services, so it is unsuitable as the default per-user credential wallet ([Cloudflare documentation](https://developers.cloudflare.com/secrets-store/manage-secrets/)). It can hold a small number of service-level keys, subject to its access rules.
 

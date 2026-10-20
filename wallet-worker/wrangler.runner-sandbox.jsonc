@@ -10,5 +10,10 @@
     "database_name": "zerocreds-wallet-runner-sandbox",
     "database_id": "621d7085-2254-4ad6-8f4f-8bcb6da35c6f",
     "migrations_dir": "migrations"
+  }, {
+    "binding": "VAULT_DB",
+    "database_name": "ta-credential-vault",
+    "database_id": "9c140ceb-62ae-4f6f-8e18-8b2a08429d51",
+    "migrations_dir": "vault-migrations"
   }]
 }
