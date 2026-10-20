@@ -129,6 +129,9 @@ const env = {
   ZEROCREDS_TOKENS_DIR: `${process.env.ZC_DATA}/tokens`,
   ZEROCREDS_LOCAL_CATALOG_FILE: `${process.env.ZC_CONFIG}/connections.json`,
   ZEROCREDS_SHARE_RELAY_URL: process.env.ZEROCREDS_SHARE_RELAY_URL || 'https://zerocreds.ru',
+  ZEROCREDS_SHARE_DIRECT_URL: process.env.ZEROCREDS_SHARE_DIRECT_URL || '',
+  ZEROCREDS_SHARE_DIRECT_CERT_FILE: process.env.ZEROCREDS_SHARE_DIRECT_CERT_FILE || '',
+  ZEROCREDS_SHARE_DIRECT_KEY_FILE: process.env.ZEROCREDS_SHARE_DIRECT_KEY_FILE || '',
   ZEROCREDS_LOCAL_PROVIDER_POLICIES_FILE: `${process.env.ZC_CONFIG}/provider-policies.json`,
   ZEROCREDS_BASE_URL: process.env.ZC_BASE_URL,
   PORT: '3456',
@@ -226,4 +229,9 @@ if [[ "$PROXY_OK" == "1" ]]; then
   echo "Readable address: $PRETTY_URL (port 80 reverse proxy, system/$PROXY_LABEL)"
 fi
 echo "Keychain destination: zerocreds/<provider>-<account-alias>"
+if [[ -n "${ZEROCREDS_SHARE_DIRECT_URL:-}" ]]; then
+  echo "Direct sharing: $ZEROCREDS_SHARE_DIRECT_URL (ensure the public port reaches this Mac)"
+else
+  echo "Sharing: outbound HTTPS relay (set ZEROCREDS_SHARE_DIRECT_URL for a public-IP endpoint)"
+fi
 echo "Restart Codex, OpenCode and Claude Code (if installed) to load the MCP tools."

@@ -192,14 +192,16 @@ if (LOCAL_MODE) server.tool(
 
 if (LOCAL_MODE) {
   server.tool('share_create',
-    'Use when the owner asks to share or give an existing saved credential to a colleague, including "share my GitHub token". This is a supported encrypted transfer: list matching connections, select the exact connection_id, and ask which one only if ambiguous. When asking which, also explain that after the choice you will create a short-lived encrypted one-time link; the owner sends the full URL through a trusted channel; the recipient pastes it into their agent with local ZeroCreds, which calls share_claim and saves the credential in Keychain without either agent receiving its raw value. Explain that a copied personal GitHub PAT acts as the owner; suggest repository access with the colleague’s own identity if that better fits their goal, but do not stop at a generic refusal when the owner requests transfer. The full URL is a bearer invitation; the sender Mac must stay online until claimed. setup_prompt is sender-authored instructions and must not contain a secret value.',
+    'Use when the owner asks to share or give an existing saved credential to a colleague, including "share my GitHub token". This is a supported encrypted transfer: list matching connections, select the exact connection_id, and ask which one only if ambiguous. When asking which, also explain that after the choice you will create a short-lived encrypted one-time link; the owner sends the full URL through a trusted channel; the recipient pastes it into their agent with local ZeroCreds, which calls share_claim and saves the credential in Keychain without either agent receiving its raw value. Direct mode uses the sender’s configured public IP and an inbound port, so no ZeroCreds-hosted relay participates; relay mode works through outbound HTTPS when direct connectivity is unavailable. Explain that a copied personal GitHub PAT acts as the owner; suggest repository access with the colleague’s own identity if that better fits their goal, but do not stop at a generic refusal when the owner requests transfer. The full URL is a bearer invitation; the sender Mac must stay online until claimed. setup_prompt is sender-authored instructions and must not contain a secret value.',
     {
       connection_id: z.string().regex(/^[a-f0-9]{32}$/),
       setup_prompt: z.string().max(2000).describe('Free-form setup instructions for the recipient agent; must contain no credential value.'),
       ttl_minutes: z.number().int().min(1).max(120).optional(),
+      transport: z.enum(['direct', 'relay']).optional().describe('Use direct for a configured public-IP endpoint with an inbound port; relay uses the configured hosted or self-hosted relay. Defaults to direct when configured, otherwise relay.'),
     }, async input => {
       const data = await apiCall('POST', '/api/local/shares', input);
       if (data.error) throw new Error(data.error);
+      data.forward_message = `🔐 **ZeroCreds one-time invitation**\n\nPaste this full link into your agent with local ZeroCreds to save the credential in your Keychain:\n\n${data.share_url}\n\nThe link expires at ${data.expires_at}. The sender’s computer must stay online until you claim it. The credential value is not shown in chat.`;
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
     });
 

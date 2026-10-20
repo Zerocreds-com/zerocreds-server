@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { directOrigin } = require('./direct-share');
 
 const INFO = Buffer.from('zerocreds-share-v1');
 const pendingClaims = new Map();
@@ -18,9 +19,14 @@ function relayOrigin(value, { allowLoopback = false } = {}) {
 }
 
 function parseInvite(link, relayUrl, options = {}) {
-  const origin = relayOrigin(relayUrl, options);
   let url;
   try { url = new URL(link); } catch { throw new Error('invalid share link'); }
+  const configuredRelay = relayOrigin(relayUrl, options);
+  let origin = configuredRelay;
+  if (url.origin !== configuredRelay) {
+    try { origin = directOrigin(url.origin, options); }
+    catch { throw new Error('invalid share link'); }
+  }
   const match = url.pathname.match(/^\/api\/share-relay\/invite\/([a-f0-9]{32})$/);
   if (url.origin !== origin || !match || !SECRET.test(url.hash) || url.username || url.password || url.search) {
     throw new Error('invalid share link');
@@ -84,8 +90,9 @@ function decrypt(secret, id, privateKey, envelope) {
 }
 
 async function createPeerShare({ relayUrl, metadata, readCredential, ttlMinutes = 15,
-  allowLoopback = false, pollIntervalMs = 1000 }) {
+  publicUrl, allowLoopback = false, pollIntervalMs = 1000 }) {
   const origin = relayOrigin(relayUrl, { allowLoopback });
+  const inviteOrigin = publicUrl ? directOrigin(publicUrl, { allowLoopback }) : origin;
   if (!Number.isInteger(ttlMinutes) || ttlMinutes < 1 || ttlMinutes > 120) throw new Error('invalid share lifetime');
   if (typeof readCredential !== 'function') throw new Error('credential reader required');
   const id = crypto.randomBytes(16).toString('hex');
@@ -137,7 +144,7 @@ async function createPeerShare({ relayUrl, metadata, readCredential, ttlMinutes 
     if (!stopped && state !== 'complete') state = 'expired';
   };
   void pump();
-  return { id, url: `${origin}/api/share-relay/invite/${id}#${secret.toString('hex')}`,
+  return { id, url: `${inviteOrigin}/api/share-relay/invite/${id}#${secret.toString('hex')}`,
     expires_at: created.expires_at, status: () => state,
     close: () => {
       stopped = true;

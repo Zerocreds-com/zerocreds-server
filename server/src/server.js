@@ -14,6 +14,8 @@ const { canonicalJson, sha256Hex, loadSigningKey, signPayload } = require('./rec
 const { discoverCredentialSources, searchCredentialMetadata, CATEGORIES } = require('./credential-discovery');
 const { createShareRelay } = require('./share-relay');
 const { createPeerShare, claimPeerShare } = require('./local-share');
+const { createDirectShareEndpoints } = require('./direct-share');
+const { shareInvitePage } = require('./share-invite-page');
 
 // ── Module-level pure helpers ──────────────────────────────────────────────────
 
@@ -1275,6 +1277,34 @@ function createApp(config = {}) {
   const LOCAL_SHARE_IMPORTS = new Set();
   const SHARE_RELAY_URL = config.shareRelayUrl ?? process.env.ZEROCREDS_SHARE_RELAY_URL ?? 'https://zerocreds.ru';
   const SHARE_RELAY = (config.shareRelayEnabled ?? !LOCAL_MODE) ? createShareRelay({ clientIp }) : null;
+  const SHARE_DIRECT_URL = config.shareDirectUrl ?? process.env.ZEROCREDS_SHARE_DIRECT_URL ?? '';
+  const SHARE_DIRECT_CERT_FILE = config.shareDirectCertFile ?? process.env.ZEROCREDS_SHARE_DIRECT_CERT_FILE ?? '';
+  const SHARE_DIRECT_KEY_FILE = config.shareDirectKeyFile ?? process.env.ZEROCREDS_SHARE_DIRECT_KEY_FILE ?? '';
+  if (SHARE_DIRECT_URL && !LOCAL_MODE) throw new Error('direct sharing requires local mode');
+  let directEndpoint = null;
+  let directStopping = null;
+  const directShareIds = new Set();
+  async function startDirectEndpoint() {
+    if (!SHARE_DIRECT_URL) throw new Error('direct sharing is not configured');
+    if (directStopping) await directStopping;
+    if (!directEndpoint) directEndpoint = createDirectShareEndpoints({ publicUrl: SHARE_DIRECT_URL,
+      certFile: SHARE_DIRECT_CERT_FILE, keyFile: SHARE_DIRECT_KEY_FILE,
+      allowLoopback: config.allowLoopbackShares === true });
+    try { return await directEndpoint.start(); }
+    catch (error) { directEndpoint = null; throw error; }
+  }
+  const directSweep = setInterval(() => {
+    for (const id of directShareIds) {
+      const status = LOCAL_PEER_SHARES.get(id)?.status();
+      if (!status || ['complete', 'expired', 'cancelled'].includes(status)) directShareIds.delete(id);
+    }
+    if (directShareIds.size === 0 && directEndpoint && !directStopping) {
+      const endpoint = directEndpoint;
+      directEndpoint = null;
+      directStopping = endpoint.stop().finally(() => { directStopping = null; });
+    }
+  }, config.directShareSweepIntervalMs ?? 5000);
+  directSweep.unref();
 
   function publishLocalFormEvent(token, event) {
     const streams = LOCAL_FORM_EVENT_STREAMS.get(token);
@@ -2219,7 +2249,7 @@ function createApp(config = {}) {
     if (SHARE_RELAY && req.method === 'GET' && /^\/api\/share-relay\/invite\/[a-f0-9]{32}$/.test(url.pathname)) {
       res.setHeader('Cache-Control', 'no-store');
       res.setHeader('Referrer-Policy', 'no-referrer');
-      return sendHtml(res, 200, '<!doctype html><meta charset="utf-8"><title>ZeroCreds share</title><h1>ZeroCreds share</h1><p>Paste the full link into your agent to save the credential locally. If ZeroCreds is not installed, follow the <a href="https://github.com/Zerocreds-com/zerocreds-server/blob/main/docs/local-mac-setup.md">local Mac setup</a> first. Keep the sender’s ZeroCreds running until the claim completes. The link expires and can be claimed once.</p>');
+      return sendHtml(res, 200, shareInvitePage());
     }
 
     if (LOCAL_MODE && url.pathname.startsWith('/api/local/shares')) {
@@ -2229,6 +2259,7 @@ function createApp(config = {}) {
         const body = await readJson(req);
         if (!body || !/^[a-f0-9]{32}$/.test(body.connection_id || '')
             || typeof body.setup_prompt !== 'string' || body.setup_prompt.length > 2000
+            || (body.transport !== undefined && !['direct', 'relay'].includes(body.transport))
             || (body.ttl_minutes !== undefined && (!Number.isInteger(body.ttl_minutes)
               || body.ttl_minutes < 1 || body.ttl_minutes > 120))) {
           return json(res, 400, { error: 'invalid share request' });
@@ -2248,10 +2279,17 @@ function createApp(config = {}) {
         }
         const exists = await (config.localCredentialExists || checkLocalKeychainEntry)(entry.storage);
         if (exists !== 'present') return json(res, 409, { error: `credential ${exists}` });
+        const transport = body.transport || (SHARE_DIRECT_URL ? 'direct' : 'relay');
+        let direct;
+        if (transport === 'direct') {
+          try { direct = await startDirectEndpoint(); }
+          catch (error) { return json(res, 503, { error: `direct share unavailable: ${error.message}` }); }
+        }
         let share;
         try {
-          share = await createPeerShare({ relayUrl: SHARE_RELAY_URL, ttlMinutes: body.ttl_minutes || 15,
-            allowLoopback: config.allowLoopbackShares === true,
+          share = await createPeerShare({ relayUrl: direct?.localUrl || SHARE_RELAY_URL,
+            publicUrl: direct?.publicUrl, ttlMinutes: body.ttl_minutes || 15,
+            allowLoopback: !!direct || config.allowLoopbackShares === true,
             metadata: { provider: entry.provider, account_alias: entry.account_alias,
               credential_expires_at: entry.credential_expires_at || null, setup_prompt: body.setup_prompt },
             readCredential: async () => {
@@ -2263,10 +2301,12 @@ function createApp(config = {}) {
               }
               return (config.localCredentialReader || readLocalKeychainEntry)(fresh.storage);
             } });
-        } catch { return json(res, 503, { error: 'share relay unavailable' }); }
+        } catch { return json(res, 503, { error: transport === 'direct' ? 'direct share unavailable' : 'share relay unavailable' }); }
         LOCAL_PEER_SHARES.set(share.id, share);
+        if (transport === 'direct') directShareIds.add(share.id);
         return json(res, 200, { share_id: share.id, share_url: share.url,
           expires_at: share.expires_at, provider: entry.provider, account_alias: entry.account_alias,
+          transport,
           warning: 'The link is a one-time bearer invitation. Send it only to the intended recipient.' });
       }
       const shareMatch = url.pathname.match(/^\/api\/local\/shares\/([a-f0-9]{32})$/);
@@ -3680,7 +3720,9 @@ function createApp(config = {}) {
   sweepTimer.unref();
   server.on('close', () => {
     clearInterval(sweepTimer);
+    clearInterval(directSweep);
     SHARE_RELAY?.stop();
+    if (directEndpoint) void directEndpoint.stop();
     for (const share of LOCAL_PEER_SHARES.values()) share.close();
   });
   server.sweepPending = sweepPending;
