@@ -9,5 +9,10 @@
     "database_name": "zc-wallet-local",
     "database_id": "00000000-0000-0000-0000-000000000001",
     "migrations_dir": "migrations"
+  }, {
+    "binding": "VAULT_DB",
+    "database_name": "zc-credential-vault-local",
+    "database_id": "00000000-0000-0000-0000-000000000002",
+    "migrations_dir": "vault-migrations"
   }]
 }

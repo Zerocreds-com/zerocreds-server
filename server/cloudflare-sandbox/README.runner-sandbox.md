@@ -6,11 +6,12 @@ the MCP Host issuer only, and its trust configuration cannot be extended from
 outside: the issuer blob is a write-only secret and the deploy workflow reads a
 host signing key file that no step creates. The Runner lane therefore runs its
 own container with its own issuer, its own D1 metadata database and its own
-OpenBao dev server, so no existing trust decision has to be rewritten.
+custody store, so no existing trust decision has to be rewritten.
 
-It is a test environment. Its filesystem and OpenBao data are temporary; pending
-forms and connections can disappear when Cloudflare stops or replaces the
-container. Do not submit real credentials to it.
+It is a test environment. Its filesystem is temporary: pending forms and
+connections can disappear when Cloudflare stops or replaces the container. The
+credential values themselves are durable — they live in the custody database —
+but do not submit real credentials to this lane.
 
 ## Resources
 
@@ -18,8 +19,27 @@ container. Do not submit real credentials to it.
 | --- | --- |
 | Container Worker | `zerocreds-wallet-api-runner-sandbox` |
 | Metadata Worker | `zerocreds-wallet-metadata-runner-sandbox` |
-| D1 database | `zerocreds-wallet-runner-sandbox` |
+| D1 metadata database | `zerocreds-wallet-runner-sandbox` |
+| D1 custody database | `ta-credential-vault` |
 | Issuer | `ai-agent-runner-sandbox` |
+
+## Custody
+
+The wallet encrypts a credential value (AES-256-GCM) before it leaves the
+wallet and writes the ciphertext into the custody database. The metadata Worker
+and the database therefore only ever hold ciphertext; the metadata read answers
+existence and version, never a value. A revocation destroys the stored value
+instead of only closing the connection.
+
+The lane selects the custody mode by environment:
+
+- `ZEROCREDS_VAULT_DATA_KEY` set — durable custody in `ta-credential-vault`,
+  no OpenBao in the container at all;
+- `OPENBAO_ROOT_TOKEN` set — the legacy in-container OpenBao dev server, whose
+  data is temporary.
+
+Exactly one of the two must be present. The same image serves both modes, which
+is why the shared wallet sandbox keeps working unchanged.
 
 ## Deploy
 
@@ -29,13 +49,20 @@ Wrangler 4.136 or newer:
 ```sh
 npx wrangler d1 migrations apply zerocreds-wallet-runner-sandbox --remote \
   --config ../wallet-worker/wrangler.runner-sandbox.jsonc
+npx wrangler d1 execute ta-credential-vault --remote \
+  --file ../wallet-worker/vault-migrations/0001_credential_vault.sql \
+  --config ../wallet-worker/wrangler.runner-sandbox.jsonc
 npx wrangler deploy --config ../wallet-worker/wrangler.runner-sandbox.jsonc
 npx wrangler deploy --config wrangler.runner-sandbox.jsonc
 ```
 
 Set the same secrets as on the shared wallet sandbox, with values of its own:
 
-- `OPENBAO_ROOT_TOKEN` — random bootstrap token for the private dev server.
+- `ZEROCREDS_VAULT_DATA_KEY` — 32 random bytes in base64; the key the wallet
+  encrypts credential values with. Losing it makes every stored value
+  unreadable.
+- `ZEROCREDS_VAULT_KEY_REF` — optional label for that key (`k1` by default),
+  recorded with every stored version so the key can be rotated later.
 - `ZEROCREDS_ADMIN_TOKEN` — random API admin token.
 - `ZEROCREDS_WALLET_SERVICE_TOKEN` — same value as `WALLET_SERVICE_TOKEN` on the Runner metadata Worker.
 - `ZEROCREDS_WALLET_ASSERTION_ISSUERS_JSON` — the Runner host issuer only: one

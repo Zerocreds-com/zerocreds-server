@@ -611,6 +611,7 @@ function describeDestination(dest, pending, options = {}) {
     case 'aws_secrets_manager': return { kind: 'AWS Secrets Manager', target: `${dest.secret_id || ''} (${dest.region || ''})`, note: WRITE_ONLY_NOTE };
     case 'vault': return { kind: dest.preflight_path_prefix ? 'OpenBao KV v2' : 'Vault-compatible secret store',
       target: `${urlHostPath(dest.address)}/v1/${String(dest.path || '').replace(/^\//, '')}`, note: WRITE_ONLY_NOTE };
+    case 'zerocreds_vault': return { kind: 'ZeroCreds custody store', target: `${urlHostPath(dest.vault_url)}/v1/connections/${dest.connection_id || ''}`, note: WRITE_ONLY_NOTE };
     case 'http_post': return { kind: 'Web endpoint of the requester', target: urlHostPath(dest.url), note: 'Whoever runs this endpoint receives the values in readable form.' };
     case 'macos_keychain': return { kind: local ? 'macOS Keychain on this Mac' : 'macOS Keychain on the ZeroCreds server',
       target: keychainTarget, note: SERVER_READABLE_NOTE };
@@ -1579,6 +1580,34 @@ function createApp(config = {}) {
     } catch { return null; }
   }
 
+  // The custody store is the truth about a stored value: a connection whose
+  // value is gone must not keep reading "active". Lanes without a custody store
+  // (the OpenBao lane) answer null and keep the metadata state.
+  async function custodyValueState(connectionId, scope) {
+    try {
+      const value = await walletCall('GET', `/internal/vault/values/${connectionId}`, null, scope);
+      return value.state === 'active' ? 'active' : 'missing';
+    } catch (error) {
+      if (error.status === 404) return null;
+      if (error.status === 503 && error.message === 'vault_not_configured') return null;
+      throw error;
+    }
+  }
+
+  // A revocation destroys the stored value first: a revoked credential must
+  // leave no value behind, not only a closed connection.
+  async function destroyCustodyValue(connectionId, scope) {
+    try {
+      await walletCall('POST', `/internal/vault/values/${connectionId}/revoke`, {
+        owner_id: scope.owner_id, profile_id: scope.profile_id,
+      });
+    } catch (error) {
+      if (error.status === 404) return;
+      if (error.status === 503 && error.message === 'vault_not_configured') return;
+      throw error;
+    }
+  }
+
   async function walletCall(method, route, body, scope) {
     if (!WALLET_WORKER_URL || WALLET_SERVICE_TOKEN.length < 32) throw new Error('wallet unavailable');
     const base = new URL(WALLET_WORKER_URL);
@@ -1804,14 +1833,20 @@ function createApp(config = {}) {
     }
   }
 
-  function walletDestination(scope, openbaoPath) {
+  function walletDestination(scope, openbaoPath, provider) {
     const base = NAMED_DESTINATIONS[scope.destination];
-    if (!base || base.type !== 'vault' || !base.preflight_path_prefix) throw new Error('wallet destination unavailable');
+    if (!base) throw new Error('wallet destination unavailable');
     const mount = openbaoPath.split('/')[0];
     const expectedPrefix = `${mount}/data/owners/${scope.owner_id}/connections/`;
     if (!openbaoPath.startsWith(expectedPrefix) || !/^[a-zA-Z0-9_-]{1,100}$/.test(openbaoPath.slice(expectedPrefix.length))) {
       throw new Error('wallet path mismatch');
     }
+    const connectionId = openbaoPath.slice(expectedPrefix.length);
+    if (base.type === 'zerocreds_vault') {
+      return { ...base, connection_id: connectionId, owner_id: scope.owner_id, profile_id: scope.profile_id,
+        provider: provider || base.provider || 'unknown' };
+    }
+    if (base.type !== 'vault' || !base.preflight_path_prefix) throw new Error('wallet destination unavailable');
     return { ...base, path: openbaoPath,
       preflight_path_prefix: `${mount}/data/owners/${scope.owner_id}/probes`, create_only: true };
   }
@@ -1920,7 +1955,7 @@ function createApp(config = {}) {
             releaseClaim(token);
             return { status: 409, body: { error: 'destination_changed' } };
           }
-          const destination = walletDestination({ ...scope, destination: wallet.destination }, wallet.openbao_path);
+          const destination = walletDestination({ ...scope, destination: wallet.destination }, wallet.openbao_path, wallet.provider);
           const result = await saveToDestination(destination, { ...clean }, saveOptsFor(pending));
           if (!Number.isInteger(result?.version) || result.version < 1) throw new Error('openbao_write_receipt_missing');
           const receipt = signPayload(SIGNING_KEY, {
@@ -2969,7 +3004,7 @@ function createApp(config = {}) {
             status_url: `${BASE_URL}/api/wallet/forms/${previous.token}/status`,
             expires_at: new Date(previous.expires).toISOString(), state: 'pending' });
         }
-        destination = walletDestination(scope, allocation.openbao_path);
+        destination = walletDestination(scope, allocation.openbao_path, provider);
         const destErr = validateDestination(destination, DEST_OPTS);
         if (destErr) return json(res, 503, { error: 'wallet destination unavailable' });
       } catch (e) {
@@ -2984,13 +3019,14 @@ function createApp(config = {}) {
       const pending = {
         token: formId, title: resolvedTitle, description: resolvedDescription,
         fields: validated.fields, destination: Object.fromEntries(Object.entries(destination)
-          .filter(([key]) => !['token', 'role_id', 'secret_id', 'preflight_metadata_token'].includes(key))),
+          .filter(([key]) => !['token', 'role_id', 'secret_id', 'preflight_metadata_token', 'service_token', 'data_key'].includes(key))),
         preflight: preflight.preflight, destinations_by_level: null, expires, notify: null,
         integrator_id: `wallet_${scope.owner_id}`, requester: String(scope.requester || 'ServerlessAgence').slice(0, 100),
         uid: null, form: { name: provider, kind, handle: `cred:${provider}`,
           submit_token_hash: tokenHash(submitToken).toString('hex') },
         wallet: { owner_id: scope.owner_id, profile_id: scope.profile_id,
           connection_id: allocation.connection_id, openbao_path: allocation.openbao_path,
+          provider,
           request_fingerprint: requestFingerprint,
           destination: scope.destination,
           destination_sha256: destinationFingerprint(NAMED_DESTINATIONS[scope.destination]) },
@@ -3048,14 +3084,20 @@ function createApp(config = {}) {
       try {
         const connectionId = walletConnection[1];
         if (req.method === 'POST') {
+          await destroyCustodyValue(connectionId, scope);
           const result = await walletCall('POST', `/internal/connections/${connectionId}/revoke`, {
             owner_id: scope.owner_id, profile_id: scope.profile_id,
           });
           return json(res, 200, { connection_id: result.connection_id, state: result.state });
         }
         const result = await walletCall('GET', `/internal/connections/${connectionId}`, null, scope);
+        let state = result.state;
+        if (state !== 'revoked') {
+          const custody = await custodyValueState(connectionId, scope);
+          if (custody && custody !== 'active') state = 'missing';
+        }
         return json(res, 200, { connection_id: result.connection_id, provider: result.provider,
-          state: result.state, kv_version: result.kv_version, updated_at: result.updated_at });
+          state, kv_version: result.kv_version, updated_at: result.updated_at });
       } catch (e) {
         return json(res, e.status === 404 ? 404 : 503,
           { error: e.status === 404 ? 'connection_unavailable' : 'wallet unavailable' });

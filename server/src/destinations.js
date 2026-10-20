@@ -407,12 +407,89 @@ async function saveOsKeychain(destination, fields, opts) {
 }
 
 // ── dispatcher ────────────────────────────────────────────────────────────────
+// ── ZeroCreds custody store ───────────────────────────────────────────────────
+// The wallet encrypts the value itself; the store keeps ciphertext only, so the
+// service that holds the records cannot read a credential.
+const CUSTODY_KEY_BYTES = 32;
+
+function custodyKey(destination) {
+  if (!destination || typeof destination.data_key !== 'string' || !destination.data_key) {
+    throw new Error('zerocreds_vault: data key is required');
+  }
+  const key = Buffer.from(destination.data_key, 'base64');
+  if (key.length !== CUSTODY_KEY_BYTES) throw new Error('zerocreds_vault: invalid data key');
+  return key;
+}
+
+function custodyScope(destination) {
+  if (!destination || typeof destination.connection_id !== 'string' || !destination.connection_id) {
+    throw new Error('zerocreds_vault: connection id is required');
+  }
+  if (!/^[a-zA-Z0-9_-]{1,100}$/.test(destination.connection_id)) throw new Error('zerocreds_vault: invalid connection id');
+  if (!destination.owner_id || !destination.profile_id) throw new Error('zerocreds_vault: scope is required');
+  if (!destination.service_token || String(destination.service_token).length < 32) {
+    throw new Error('zerocreds_vault: service token is required');
+  }
+  if (!destination.vault_url) throw new Error('zerocreds_vault: vault url is required');
+  return destination;
+}
+
+function custodyUrl(destination, suffix) {
+  return `${String(destination.vault_url).replace(/\/+$/, '')}${suffix}`;
+}
+
+async function saveZerocredsVault(destination, fields, opts = {}) {
+  const key = custodyKey(destination);
+  custodyScope(destination);
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const ciphertext = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(fields), 'utf8')), cipher.final()]);
+  const body = await vaultJsonRequest(
+    custodyUrl(destination, `/internal/vault/values/${encodeURIComponent(destination.connection_id)}`),
+    'PUT', destination.service_token,
+    {
+      owner_id: destination.owner_id,
+      profile_id: destination.profile_id,
+      provider: String(destination.provider || 'unknown'),
+      ciphertext: ciphertext.toString('base64'),
+      iv: iv.toString('base64'),
+      tag: cipher.getAuthTag().toString('base64'),
+      alg: 'A256GCM',
+      key_ref: destination.key_ref || 'k1',
+    },
+    { ...opts, authHeader: 'bearer' });
+  const version = Number(body?.version);
+  if (!Number.isSafeInteger(version) || version < 1) throw new Error('zerocreds_vault: store did not report a version');
+  return { secret_id: destination.connection_id, version, key_ref: body?.key_ref || destination.key_ref || 'k1' };
+}
+
+async function custodyStatus(destination, opts = {}) {
+  try {
+    const body = await vaultJsonRequest(
+      custodyUrl(destination, `/internal/vault/values/${encodeURIComponent(destination.connection_id)}`),
+      'GET', destination.service_token, undefined,
+      { ...opts, authHeader: 'bearer', extraHeaders: { 'x-wallet-owner': destination.owner_id, 'x-wallet-profile': destination.profile_id } });
+    return { state: body?.state === 'active' ? 'active' : 'missing', version: body?.version ?? null };
+  } catch (error) {
+    if (/^HTTP 404$/.test(error.message)) return { state: 'missing', version: null };
+    throw error;
+  }
+}
+
+async function testZerocredsVaultDestination(destination, opts = {}) {
+  custodyScope(destination);
+  const status = await custodyStatus(destination, opts);
+  if (status.state === 'active') throw new Error('zerocreds_vault: slot already holds a value');
+  return { checked: true, at: new Date().toISOString() };
+}
+
 async function saveToDestination(destination, fields, opts = {}) {
   switch (destination.type) {
     case 'local_file':                  return saveLocalFile(destination, fields, opts);
     case 'gcp_secret_manager':          return saveGcpSecret(destination, fields);
     case 'aws_secrets_manager':         return saveAwsSecret(destination, fields);
     case 'vault':                       return saveVault(destination, fields, opts);
+    case 'zerocreds_vault':             return saveZerocredsVault(destination, fields, opts);
     case 'http_post':                   return saveHttpPost(destination, fields, opts);
     case 'macos_keychain':              return saveMacosKeychain(destination, fields, opts);
     case 'windows_credential_manager':  return saveWindowsCredentialManager(destination, fields);
@@ -481,7 +558,10 @@ function vaultJsonRequest(url, method, token, body, opts = {}) {
       path: parsed.pathname + parsed.search,
       method,
       headers: {
-        'X-Vault-Token': token,
+        ...(opts.authHeader === 'bearer'
+          ? { authorization: `Bearer ${token}` }
+          : { 'X-Vault-Token': token }),
+        ...(opts.extraHeaders ? opts.extraHeaders : {}),
         ...(payload === null ? {} : { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }),
       },
       agent: false,
@@ -581,13 +661,16 @@ async function testDestination(destination, opts = {}, fields = []) {
   if (destination.type === 'vault' && destination.preflight_path_prefix) {
     return testVaultDestination(destination, fields, opts);
   }
+  if (destination.type === 'zerocreds_vault') {
+    return testZerocredsVaultDestination(destination, opts);
+  }
   if (destination.type === 'http_post') {
     await saveHttpPost(destination, { _zerocreds_preflight: true }, { ...opts, preflight: true });
   }
 }
 
 const DESTINATION_TYPES = ['local_file', 'gcp_secret_manager', 'aws_secrets_manager', 'vault',
-  'http_post', 'macos_keychain', 'windows_credential_manager', 'os_keychain'];
+  'zerocreds_vault', 'http_post', 'macos_keychain', 'windows_credential_manager', 'os_keychain'];
 
 // Static validation of a destination config at session-create / registration time.
 // Returns an error string, or null if the config is acceptable under opts.
@@ -607,6 +690,28 @@ function validateDestination(destination, opts = {}) {
     if (destination.type === 'vault') {
       if (typeof destination.address !== 'string') return 'vault: missing address';
       checkOutboundUrl(destination.address, opts, 'vault');
+    }
+    if (destination.type === 'zerocreds_vault') {
+      if (typeof destination.vault_url !== 'string') return 'zerocreds_vault: missing vault url';
+      checkOutboundUrl(destination.vault_url, opts, 'zerocreds_vault');
+      if (typeof destination.service_token !== 'string' || destination.service_token.length < 32) {
+        return 'zerocreds_vault: missing service token';
+      }
+      if (typeof destination.data_key !== 'string' || Buffer.from(destination.data_key, 'base64').length !== CUSTODY_KEY_BYTES) {
+        return 'zerocreds_vault: data key must be 32 bytes in base64';
+      }
+      if (typeof destination.key_ref !== 'string' || !/^[a-zA-Z0-9_-]{1,32}$/.test(destination.key_ref)) {
+        return 'zerocreds_vault: invalid key ref';
+      }
+      if (typeof destination.connection_id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(destination.connection_id)) {
+        return 'zerocreds_vault: invalid connection id';
+      }
+      if (typeof destination.owner_id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(destination.owner_id)) {
+        return 'zerocreds_vault: invalid owner id';
+      }
+      if (typeof destination.profile_id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(destination.profile_id)) {
+        return 'zerocreds_vault: invalid profile id';
+      }
     }
     if (destination.type === 'aws_secrets_manager' && !/^[a-z0-9-]{1,32}$/.test(String(destination.region))) {
       return 'aws_secrets_manager: invalid region';
