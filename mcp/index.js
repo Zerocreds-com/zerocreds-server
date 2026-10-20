@@ -43,9 +43,10 @@ if (LOCAL_MODE) {
   }
 }
 
-async function apiCall(method, path, body) {
+async function apiCall(method, path, body, timeoutMs) {
   const res = await fetch(`${BASE_URL}${path}`, {
     method,
+    ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${ADMIN_TOKEN}`,
@@ -73,12 +74,12 @@ const server = new McpServer({
 
 server.tool(
   'form_create',
-  'Create a ZeroCreds credential-collection session. The user fills in credentials directly — the agent never sees them. When sharing the form, show the returned user_message verbatim so the link has a friendly label; do not expose the raw URL by itself.',
+  'Create a ZeroCreds credential-collection session. Each submitted field is stored as a key in a JSON object; the exact names and field metadata are returned as credential_contract on creation and status. Use that contract when calling the provider; never infer field names from the Keychain storage reference. The user fills in credentials directly — the agent never sees values. Show user_message verbatim. If the host supports event subscriptions, subscribe to this form’s credential-ready event and continue the originating task when notified. Otherwise, check form_status when the user returns. If status is done, continue using provider/account_alias and credential_contract; do not create another form because a later provider request failed. Never read the secret from Keychain or ask the user to paste it into chat.',
   {
     title: z.string().describe('Heading shown on the form (e.g. "Connect GitHub")'),
     description: z.string().optional().describe('Subtext explaining what credentials are needed and why'),
     fields: z.array(z.object({
-      name: z.string().describe('Key in the saved credentials JSON (alphanumeric + underscore). Prefer token for provider tokens; custom names can be verified with connection_verify token_field.'),
+      name: z.string().describe('Exact key in the saved JSON object (alphanumeric + underscore); this name is preserved in credential_contract.'),
       label: z.string().describe('Label shown on the form'),
       type: z.enum(['text', 'password', 'email', 'tel', 'number', 'textarea', 'url']).optional().describe('Input type (default: text)'),
       placeholder: z.string().optional(),
@@ -132,6 +133,15 @@ server.tool(
           url: data.url,
           expires_at: data.expires_at,
           user_message: userMessage,
+          ...(service ? { provider: service } : {}),
+          ...(uid ? { account_alias: uid } : {}),
+          credential_contract: data.credential_contract || {
+            format: 'json',
+            provider: service || null,
+            account_alias: uid || null,
+            fields: fields.map(field => ({ name: field.name, label: field.label,
+              type: field.type || 'text', required: field.required !== false, level: field.level || 'default' })),
+          },
         }, null, 2),
       }],
     };
@@ -200,18 +210,19 @@ if (LOCAL_MODE) {
     });
 
   server.tool('share_direct_setup',
-    'Set up direct credential sharing on the sender’s computer. Speak in the user’s language. If no public address is already configured, ask ZeroCreds to check the computer’s internet address and whether the selected port can be reached from outside. The check sends only a random test value, not the credential. Use port 3457 by default; the owner can choose another port. If the check fails, explain simply that the router or network may block incoming connections. This tool cannot change router settings.',
-    { public_url: z.string().url().optional().describe('Optional known public address and port. If omitted, ZeroCreds discovers the public address and checks the selected port.'),
+    'Set up direct credential sharing on the sender’s computer. Speak in the user’s language. By default, ZeroCreds checks whether the selected port is reachable from outside using a random test value, not the credential. This check is optional: if the owner does not want ZeroCreds to make an incoming test request, set verify_reachability=false and provide the known public IPv4 address and port. The link can still be created, but reachability will be unverified and the recipient may not be able to connect. If the hosted checker returns its per-IP rate limit, retry the same port with exponential backoff starting at 200 ms and doubling, for no more than 10 seconds total. Do not try other ports automatically: they usually share the same router/firewall result. If the check fails, explain simply that the router or network may block incoming connections. This tool cannot change router settings.',
+    { public_url: z.string().url().optional().describe('Known public IPv4 address and port. Required when verify_reachability is false; otherwise ZeroCreds can discover it during the check.'),
+      verify_reachability: z.boolean().optional().describe('Defaults to true. Set false to skip ZeroCreds external port testing; public_url is then required.'),
       port: z.number().int().min(1024).max(65535).optional().describe('Port to test and use when public_url is omitted; defaults to 3457.'),
       cert_file: z.string().optional().describe('Local TLS certificate path for HTTPS only'),
       key_file: z.string().optional().describe('Local TLS private-key path for HTTPS only') }, async input => {
-      const data = await apiCall('POST', '/api/local/shares/direct/setup', input);
+      const data = await apiCall('POST', '/api/local/shares/direct/setup', input, 15000);
       if (data.error) throw new Error(data.error);
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
     });
 
   server.tool('share_create',
-    'Use when the owner asks to share or give an existing saved credential to a colleague, including "share my GitHub token". Reply in the language the user is using, and translate forward_message before showing it if needed; keep the link unchanged. First list matching connections and select the exact connection_id. Call share_options. Ask the owner which option they prefer before creating a link and explain choices in plain everyday words. For direct transfer, inspect whether a successful port check is already saved. If not, call share_direct_setup once to discover the sender’s public address and ask ZeroCreds to test whether the port is reachable from outside; the test contains no credential. If reachable, create a short-lived direct link that the owner sends through any trusted chat. The recipient pastes the link into their local ZeroCreds agent, which saves the credential directly in Keychain. The ZeroCreds website does not carry the credential or the invitation link. If the port cannot be reached, explain that the router or network may block incoming connections and let the owner decide whether to adjust it or use the configured relay. Neither agent sees the secret. The sender computer stays online until claimed. Explain that a copied personal GitHub PAT lets the recipient act as its owner. The full link grants access once. setup_prompt must contain no secret value.',
+    'Use when the owner asks to share or give an existing saved credential to a colleague, including "share my GitHub token". Reply in the language the user is using, and translate forward_message before showing it if needed; keep the link unchanged. First list matching connections and select the exact connection_id. Call share_options. Ask the owner which option they prefer before creating a link and explain choices in plain everyday words. For direct transfer, inspect whether a successful port check is already saved. If not, offer the normal ZeroCreds port check (no credential is sent) or skip it if the owner prefers and supplies a known public IPv4 address and port. On skip, state clearly that reachability is unverified and the link may fail. The tool retries a rate-limited check of the same port with bounded exponential backoff for up to 10 seconds; never probe a series of different ports. If the check succeeds, create a short-lived direct link that the owner sends through any trusted chat. The recipient pastes the link into their local ZeroCreds agent, which saves the credential directly in Keychain. The ZeroCreds website does not carry the credential or the invitation link. If the port cannot be reached, explain that the router or network may block incoming connections and let the owner decide whether to adjust it or use the configured relay. Neither agent sees the secret. The sender computer stays online until claimed. Explain that a copied personal GitHub PAT lets the recipient act as its owner. The full link grants access once. setup_prompt must contain no secret value.',
     {
       connection_id: z.string().regex(/^[a-f0-9]{32}$/),
       setup_prompt: z.string().max(2000).describe('Free-form setup instructions for the recipient agent; must contain no credential value.'),
@@ -221,7 +232,7 @@ if (LOCAL_MODE) {
       const data = await apiCall('POST', '/api/local/shares', input);
       if (data.error) throw new Error(data.error);
       const heading = data.transport === 'direct' ? '🔐 **Direct one-time invitation**' : '🔐 **ZeroCreds relay invitation**';
-      data.forward_message = `${heading}\n\nPaste this full link into your agent with local ZeroCreds to save the credential in your Keychain:\n\n${data.share_url}\n\nThe link expires at ${data.expires_at}. The sender’s computer must stay online until you claim it. The credential value is not shown in chat.`;
+      data.forward_message = `${heading}\n\nPaste this full link into your agent with local ZeroCreds to save the credential in your Keychain:\n\n${data.share_url}\n\nThe link expires at ${data.expires_at}. The sender’s computer must stay online until you claim it.${data.external_reachability_verified === false ? ' The network connection was not tested, so the link may not work.' : ''} The credential value is not shown in chat.`;
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
     });
 
@@ -356,7 +367,7 @@ if (LOCAL_MODE) {
 
 server.tool(
   'form_status',
-  'Check whether the user has submitted the ZeroCreds form. Poll every 5–10 seconds until status is "done" or "expired".',
+  'Recover the durable state of a ZeroCreds credential form when the user returns or an event needs reconciliation. Status includes the original credential_contract (JSON format and exact field names) without values. If status is "pending", keep waiting for the form. If status is "done", ZeroCreds has already saved the credential; continue using provider/account_alias and the contract field names. Do not create another form because a later provider request failed; explain the provider error and ask before replacing the credential. Never read the secret from Keychain or ask the user to paste it into chat.',
   {
     token: z.string().describe('Session token returned by form_create'),
   },

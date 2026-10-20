@@ -75,7 +75,11 @@ function createShareRelay({ clientIp, probePort } = {}) {
         answer(res, 400, { error: 'invalid port probe request' }); return true;
       }
       const lastProbe = probeTimes.get(ip) || 0;
-      if (Date.now() - lastProbe < 10000) { answer(res, 429, { error: 'please wait before trying again' }); return true; }
+      if (Date.now() - lastProbe < 10000) {
+        const retryAfterSeconds = Math.ceil((10000 - (Date.now() - lastProbe)) / 1000);
+        answer(res, 429, { error: 'port check rate limit; wait before retrying', retry_after_seconds: retryAfterSeconds });
+        return true;
+      }
       if (probeTimes.size >= 10000) {
         const cutoff = Date.now() - 60000;
         for (const [address, at] of probeTimes) if (at < cutoff) probeTimes.delete(address);

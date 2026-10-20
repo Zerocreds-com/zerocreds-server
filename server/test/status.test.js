@@ -45,6 +45,32 @@ test('after form submission → { status: "done" }', async () => {
   assert.equal(r.body.status, 'done');
 });
 
+test('form creation and status preserve the JSON input contract without values', async () => {
+  const fields = [
+    { name: 'api_token_custom', label: 'API token', type: 'password', level: 'secret' },
+    { name: 'workspace', label: 'Workspace', type: 'text', required: false },
+  ];
+  const created = await request(ctx.port, 'POST', '/api/session/create', {
+    title: 'WEEEK test', fields, destination: localDest, service: 'weeek', uid: 'flexi-test-bot',
+  }, auth());
+  assert.equal(created.status, 200);
+  const expected = {
+    format: 'json', provider: 'weeek', account_alias: 'flexi-test-bot',
+    fields: [
+      { name: 'api_token_custom', label: 'API token', type: 'password', required: true, level: 'secret' },
+      { name: 'workspace', label: 'Workspace', type: 'text', required: false, level: 'default' },
+    ],
+  };
+  assert.deepEqual(created.body.credential_contract, expected);
+  const token = created.body.token;
+  const pending = await request(ctx.port, 'GET', `/api/session/${token}/status`, undefined, auth());
+  assert.deepEqual(pending.body.credential_contract, expected);
+  await submitForm(token, { api_token_custom: 'synthetic-secret-value', workspace: 'demo' });
+  const done = await request(ctx.port, 'GET', `/api/session/${token}/status`, undefined, auth());
+  assert.deepEqual(done.body.credential_contract, expected);
+  assert.equal(JSON.stringify(done.body).includes('synthetic-secret-value'), false);
+});
+
 test('nonexistent token → { status: "expired" }', async () => {
   const r = await request(ctx.port, 'GET', `/api/session/${'b'.repeat(32)}/status`, undefined, auth());
   assert.equal(r.status, 200);

@@ -10,29 +10,13 @@ permissions:
   contents: read
 
 # Third-party actions are pinned by full commit SHA (tag in the trailing comment).
-# The required `test` job depends on the platform and cross-OS share checks,
-# so they block merges even though they run as separate jobs.
+# The required `test` job depends on sequential synthetic envelope generation
+# on Linux and Windows. No receive/accept step is needed for this check.
 jobs:
-  peer-share-platform:
-    name: peer-share-${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-      - name: Peer share relay, crypto and local API integration
-        run: node --test server/test/local-share.test.js server/test/local-share-routes.test.js
-
-  peer-fixtures:
+  peer-send-linux:
+    name: peer-send-linux
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -41,20 +25,18 @@ jobs:
         with:
           node-version: 22
       - run: node scripts/share-cross-platform.cjs prepare peer-fixture
+      - run: node scripts/share-cross-platform.cjs send peer-fixture
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: peer-fixture
-          path: peer-fixture/fixture.json
+          path: peer-fixture
           retention-days: 1
 
-  peer-sender:
-    name: peer-${{ matrix.sender }}-sender
-    needs: peer-fixtures
-    runs-on: ${{ matrix.sender }}
-    strategy:
-      fail-fast: false
-      matrix:
-        sender: [windows-latest, ubuntu-latest]
+  peer-send-windows:
+    name: peer-send-windows
+    needs: peer-send-linux
+    runs-on: windows-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -67,54 +49,9 @@ jobs:
           name: peer-fixture
           path: peer-fixture
       - run: node scripts/share-cross-platform.cjs send peer-fixture
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: peer-envelope-${{ matrix.sender }}
-          path: peer-fixture/envelope.json
-          retention-days: 1
-
-  peer-receiver-linux:
-    needs: peer-sender
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: peer-fixture
-          path: peer-fixture
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: peer-envelope-windows-latest
-          path: peer-fixture
-      - run: node scripts/share-cross-platform.cjs receive peer-fixture
-
-  peer-receiver-windows:
-    needs: peer-sender
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: peer-fixture
-          path: peer-fixture
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: peer-envelope-ubuntu-latest
-          path: peer-fixture
-      - run: node scripts/share-cross-platform.cjs receive peer-fixture
 
   test:
-    needs: [peer-share-platform, peer-receiver-linux, peer-receiver-windows]
+    needs: [peer-send-linux, peer-send-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:

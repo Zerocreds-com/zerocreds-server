@@ -1789,6 +1789,21 @@ function createApp(config = {}) {
     try { return JSON.parse(fs.readFileSync(pendingPath(token), 'utf8')); } catch { return null; }
   }
 
+  function credentialContract(pending) {
+    return {
+      format: 'json',
+      provider: pending.service_slug || null,
+      account_alias: pending.uid || null,
+      fields: (Array.isArray(pending.fields) ? pending.fields : []).map(field => ({
+        name: field.name,
+        label: field.label,
+        type: field.type || 'text',
+        required: field.required !== false,
+        level: field.level || 'default',
+      })),
+    };
+  }
+
   function deletePending(token) {
     try { fs.unlinkSync(pendingPath(token)); } catch {}
   }
@@ -1807,10 +1822,11 @@ function createApp(config = {}) {
     try { fs.unlinkSync(pendingPath(token, 'claimed')); } catch {}
   }
 
-  function markUnknown(token, integratorId) {
+  function markUnknown(token, integratorId, pending = null) {
     try {
       fs.writeFileSync(pendingPath(token, 'unknown'), JSON.stringify({
         status: 'unknown', _integrator_id: integratorId, retry_safe: false,
+        ...(pending ? { credential_contract: credentialContract(pending) } : {}),
       }), { mode: 0o600, flag: 'wx' });
       dropClaim(token);
       if (LOCAL_MODE) publishLocalFormEvent(token, 'unknown');
@@ -2148,7 +2164,7 @@ function createApp(config = {}) {
     } catch (e) {
       // A later destination can fail after an earlier one saved. Replaying the
       // form would repeat that earlier write, so report the uncertain outcome.
-      if (destinationsSaved > 0) markUnknown(token, pending.integrator_id);
+      if (destinationsSaved > 0) markUnknown(token, pending.integrator_id, pending);
       else releaseClaim(token);
       console.error('[dynamic] save failed:', e.message);
       const diagnostic = `zc-${crypto.randomBytes(6).toString('hex')}`;
@@ -2166,6 +2182,7 @@ function createApp(config = {}) {
       } };
     }
 
+    let savedConnectionRef = null;
     if (LOCAL_MODE && pending.service_slug && pending.uid) {
       try {
         const entries = readLocalCatalog();
@@ -2188,9 +2205,14 @@ function createApp(config = {}) {
         if (index >= 0) entries[index] = entry;
         else entries.push(entry);
         writeLocalCatalog(entries);
+        savedConnectionRef = {
+          connection_id: entry.connection_id,
+          provider: entry.provider,
+          account_alias: entry.account_alias,
+        };
       } catch (error) {
         console.error('[local-catalog] metadata write failed:', error.message);
-        markUnknown(token, pending.integrator_id);
+        markUnknown(token, pending.integrator_id, pending);
         return { status: 503, body: { error: 'credential saved but local catalog update failed',
           outcome: 'unknown', retry_safe: false } };
       }
@@ -2220,13 +2242,15 @@ function createApp(config = {}) {
     // Record the successful write before releasing the claim. A failed rename
     // still leaves a readable receipt, so status never lies after a save.
     const completed = { status: 'done', form_id: token, ...(saveResult || {}),
+      credential_contract: credentialContract(pending),
+      ...(savedConnectionRef ? { connection: savedConnectionRef } : {}),
       ...(formResult || {}), _integrator_id: pending.integrator_id };
     try {
       fs.writeFileSync(pendingPath(token, 'written'), JSON.stringify(completed), { mode: 0o600, flag: 'wx' });
     } catch {
       // The destination may already hold the value. Do not release the form for
       // another submit; record an explicit uncertain outcome if storage permits.
-      markUnknown(token, pending.integrator_id);
+      markUnknown(token, pending.integrator_id, pending);
       return { status: 503, body: { error: 'credential saved but completion status unavailable',
         outcome: 'unknown', retry_safe: false } };
     }
@@ -2280,11 +2304,12 @@ function createApp(config = {}) {
           direct_reachability_verified_at: directConfig.reachability_verified_at || null,
           choice_required: true,
           relay_description: 'Use the ZeroCreds website at this address to pass the invitation. The credential is sealed before it leaves this computer, and the website cannot open and read it.',
-          direct_description: 'Send straight from this computer without using the ZeroCreds website. ZeroCreds can test whether the chosen port is reachable from the internet before creating a link. If it is blocked, the router or network may need a change.' });
+          direct_description: 'Send straight from this computer without using the ZeroCreds website. The owner can ask ZeroCreds to test whether the port is reachable, or skip the test by supplying a known public IPv4 address and port. Without the test, the link may not work.' });
       }
       if (req.method === 'POST' && url.pathname === '/api/local/shares/direct/setup') {
         const body = await readJson(req);
         if (!body || (body.public_url !== undefined && (typeof body.public_url !== 'string' || body.public_url.length > 256))
+            || (body.verify_reachability !== undefined && typeof body.verify_reachability !== 'boolean')
             || (body.port !== undefined && (!Number.isInteger(body.port) || body.port < 1024 || body.port > 65535))
             || (body.cert_file !== undefined && (typeof body.cert_file !== 'string' || body.cert_file.length > 1024))
             || (body.key_file !== undefined && (typeof body.key_file !== 'string' || body.key_file.length > 1024))) {
@@ -2307,16 +2332,35 @@ function createApp(config = {}) {
           const loopbackTest = config.allowLoopbackShares === true && body.public_url
             && ['127.0.0.1', 'localhost'].includes(new URL(body.public_url).hostname);
           if (loopbackTest) publicUrl = body.public_url;
-          else {
+          else if (body.verify_reachability === false) {
+            if (!body.public_url) throw new Error('provide a known public IPv4 address and port when skipping the reachability check');
+            publicUrl = body.public_url;
+          } else {
             if (!SHARE_RELAY_URL) throw new Error('ZeroCreds reachability check is unavailable');
             const probeToken = crypto.randomBytes(32).toString('hex');
             const temporary = createDirectShareEndpoints({ publicUrl: `http://1.1.1.1:${port}`, probeToken });
             try {
               await temporary.start();
               const probeUrl = new URL('/api/share-relay/probe', SHARE_RELAY_URL);
-              const response = await fetch(probeUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ port, token: probeToken }), signal: AbortSignal.timeout(8000), redirect: 'error' });
-              const result = await response.json().catch(() => ({}));
+              const retryStarted = Date.now();
+              let backoffMs = 200;
+              let response;
+              let result;
+              while (true) {
+                const remainingMs = Math.max(1, 10000 - (Date.now() - retryStarted));
+                response = await fetch(probeUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ port, token: probeToken }),
+                  signal: AbortSignal.timeout(Math.min(3000, remainingMs)), redirect: 'error' });
+                result = await response.json().catch(() => ({}));
+                if (response.status !== 429) break;
+                const retryAfterMs = Number.isInteger(result.retry_after_seconds)
+                  ? result.retry_after_seconds * 1000 : 10000;
+                const elapsed = Date.now() - retryStarted;
+                const waitMs = Math.min(backoffMs, retryAfterMs, 10000 - elapsed);
+                if (waitMs <= 0) throw new Error('port check is rate-limited; retry budget of 10 seconds expired');
+                await new Promise(resolve => setTimeout(resolve, waitMs));
+                backoffMs = Math.min(backoffMs * 2, 10000);
+              }
               if (!response.ok || !result.public_ip) throw new Error(result.error || 'ZeroCreds could not check the public address');
               if (!result.reachable) throw new Error('the port is not reachable from the internet; check the router and firewall');
               const requestedHost = body.public_url ? new URL(body.public_url).hostname : result.public_ip;
@@ -2345,7 +2389,7 @@ function createApp(config = {}) {
           reachability_verified_at: candidate.reachability_verified_at,
           next_step: externalReachabilityVerified
             ? 'ZeroCreds tested that this port can be reached from the internet. The direct invitation link will point to this computer; keep it online until the colleague claims it.'
-            : 'The local listener is ready. External reachability was not tested.' });
+            : 'The local listener is ready. External reachability was not tested; the invitation may not work if this address or port is unreachable.' });
       }
       if (req.method === 'POST' && url.pathname === '/api/local/shares') {
         const body = await readJson(req);
@@ -2398,7 +2442,7 @@ function createApp(config = {}) {
         if (transport === 'relay') LOCAL_PEER_SHARES.set(share.id, share);
         return json(res, 200, { share_id: share.id, share_url: share.url,
           expires_at: share.expires_at, provider: entry.provider, account_alias: entry.account_alias,
-          transport,
+          transport, ...(transport === 'direct' ? { external_reachability_verified: !!directConfig.reachability_verified_at } : {}),
           warning: 'The link is a one-time bearer invitation. Send it only to the intended recipient.' });
       }
       const shareMatch = url.pathname.match(/^\/api\/local\/shares\/([a-f0-9]{32})$/);
@@ -3290,6 +3334,7 @@ function createApp(config = {}) {
             url: `${BASE_URL}/${integrator_id}/${service_slug}/${user_hash}?gen=${existing.token}`,
             expires_at: new Date(existing.expires).toISOString(),
             reused: true,
+            credential_contract: credentialContract(existing),
           });
         }
       }
@@ -3333,6 +3378,7 @@ function createApp(config = {}) {
         token,
         url: url_out,
         expires_at: new Date(expires).toISOString(),
+        credential_contract: credentialContract(pending),
       });
     }
 
@@ -3670,14 +3716,15 @@ function createApp(config = {}) {
       try {
         const unknown = JSON.parse(fs.readFileSync(pendingPath(token, 'unknown'), 'utf8'));
         if (!owns(unknown._integrator_id)) return json(res, 200, { status: 'expired' });
-        return json(res, 200, { status: 'unknown', retry_safe: false });
+        return json(res, 200, { status: 'unknown', retry_safe: false,
+          ...(unknown.credential_contract ? { credential_contract: unknown.credential_contract } : {}) });
       } catch (error) { if (error.code !== 'ENOENT') return json(res, 503, { error: 'status unavailable' }); }
       let p = readPending(token);
       if (!p) {
         try { p = JSON.parse(fs.readFileSync(pendingPath(token, 'claimed'), 'utf8')); } catch {}
       }
       if (!p || !owns(p.integrator_id) || p.expires < Date.now()) return json(res, 200, { status: 'expired' });
-      return json(res, 200, { status: 'pending' });
+      return json(res, 200, { status: 'pending', credential_contract: credentialContract(p) });
     }
 
     // Local OpenCode plugin signal. The admin token never leaves loopback and the

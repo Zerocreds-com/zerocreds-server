@@ -141,13 +141,14 @@ Tool names carry only the action and the object (`form_create`, `discovery_sourc
 **`form_create`** — create a form, get a URL to send to the user:
 ```
 title, description, fields[], destination, ttl_minutes, notify
-→ { token, url, expires_at }
+→ { token, url, expires_at, credential_contract: { format: "json", provider, account_alias, fields: [{ name, label, type, required, level }] } }
 ```
+Submitted values are stored as a JSON object keyed by the exact `fields[].name` values. The same value-free contract is returned by `form_status` while pending or after completion, so an agent can select the declared key without inspecting the secret store.
 
 **`form_status`** — poll until the user submits:
 ```
 token
-→ { status: "pending" | "done" | "expired" | "unknown" }
+→ { status: "pending" | "done" | "expired" | "unknown", credential_contract? }
 ```
 
 ### Local credential discovery (macOS)
@@ -179,7 +180,7 @@ Every candidate carries a unique `ref`; two Keychain items that share an account
 
 **`connection_verify`** — verify a saved credential against its provider. Provider-native verification exists for `github`, `cloudflare` and `deepgram`; any other provider slug is accepted and answered with `verification: "unsupported_provider"` (nothing is contacted), so the tool stays honest for services ZeroCreds cannot check. The tool never returns the credential or a grant value.
 
-**`share_create` / `share_claim`** — transfer an existing local Keychain connection between two Macs when the owner explicitly requests it. The sender's agent creates a short-lived, one-time link with a free-form setup prompt; the recipient pastes the full link into their agent, which saves a new local Keychain item. `share_status` and `share_cancel` let the sender track or stop a pending invitation. The agent explains the choice in the user's language and asks whether to use the configured ZeroCreds website or connect directly to the sender's computer. Direct transfer may require changing the sender's router so the colleague can reach the Mac from the internet; use the relay if that is not practical. `share_direct_setup` configures the local listener, and `share_create` requires the explicit choice. The invitation page uses Russian or English based on the recipient's browser language and never reads the bearer fragment. See [local macOS setup and sharing](docs/local-mac-setup.md#share-an-existing-credential-with-another-mac) for setup and limits.
+**`share_create` / `share_claim`** — transfer an existing local Keychain connection between two Macs when the owner explicitly requests it. The user flow has two outcomes: the sender first checks direct reachability if needed (reachable returns the public address and port; unreachable offers the relay), then chooses a route and receives a one-time link; the recipient claims the full link and receives a `saved` result with the new connection ID, provider and account alias. The value is never returned. `share_status` and `share_cancel` let the sender track or stop a pending transfer. `share_create` requires the owner's explicit choice between the configured ZeroCreds relay and direct transfer. Direct transfer may require changing the sender's router; the relay needs only outbound HTTPS and does not let the website read the encrypted credential. If the optional direct check is rate-limited, the same port is retried with bounded exponential backoff for at most 10 seconds; checks are limited per public IP to prevent port-scanning abuse. See the two step-by-step user scenarios in [local macOS setup and sharing](docs/local-mac-setup.md#share-an-existing-credential-with-another-mac).
 
 Use `token` as the field name for a new GitHub token form (`label` can be descriptive, and `uid` distinguishes accounts). Legacy aliases `github_token` and `personal_access_token` also work. Custom field names are supported: if an existing credential was saved as `github_pat_admin`, call:
 
@@ -576,6 +577,7 @@ Landing: `/home/vova/zerocreds-landing/`
 
 - `main` is protected: PR + required `test` check, enforced for admins. There is no auto-merge — a human merges.
 - `test.yml` (job `test`, the required check): gitleaks over full history (pinned binary, sha256-verified) → `npm ci` in `server/` and `mcp/` (lockfiles are mandatory) → `npm audit --omit=dev` → syntax lint (`node --check`) → `node --test`. Node 22.
+- Peer share envelope generation is checked sequentially on Linux and Windows using the same synthetic fixture. CI tests sending only; receiving is already covered by the standard test suite. There is no macOS runner.
 - `deploy.yml`: runs on push to `main` (or manual dispatch from `main` only), re-runs `test` on that exact sha, then the `deploy` job waits for approval in the GitHub Environment `production` (required reviewer) before SSHing to the server.
 - All third-party actions are pinned by full commit SHA (tag in a trailing comment). When bumping, resolve the new SHA with `git ls-remote https://github.com/<owner>/<repo> refs/tags/<tag>`.
 - Changing dependencies: update `package.json` and commit the regenerated `package-lock.json`; CI fails on lockfile drift.
