@@ -1289,6 +1289,7 @@ function createApp(config = {}) {
   if (directConfig.public_url && !LOCAL_MODE) throw new Error('direct sharing requires local mode');
   let directEndpoint = null;
   let directStopping = null;
+  let directShareCreates = 0;
   const directShareIds = new Set();
   async function startDirectEndpoint() {
     if (!directConfig.public_url) throw new Error('direct sharing is not configured; call share_direct_setup first');
@@ -1299,12 +1300,24 @@ function createApp(config = {}) {
     try { return await directEndpoint.start(); }
     catch (error) { directEndpoint = null; throw error; }
   }
+  async function withDirectShareEndpoint(create) {
+    directShareCreates++;
+    try {
+      const direct = await startDirectEndpoint();
+      const share = await create(direct);
+      LOCAL_PEER_SHARES.set(share.id, share);
+      directShareIds.add(share.id);
+      return share;
+    } finally {
+      directShareCreates--;
+    }
+  }
   const directSweep = setInterval(() => {
     for (const id of directShareIds) {
       const status = LOCAL_PEER_SHARES.get(id)?.status();
       if (!status || ['complete', 'expired', 'cancelled'].includes(status)) directShareIds.delete(id);
     }
-    if (directShareIds.size === 0 && directEndpoint && !directStopping) {
+    if (directShareIds.size === 0 && directShareCreates === 0 && directEndpoint && !directStopping) {
       const endpoint = directEndpoint;
       directEndpoint = null;
       directStopping = endpoint.stop().finally(() => { directStopping = null; });
@@ -2275,7 +2288,7 @@ function createApp(config = {}) {
             || (body.key_file !== undefined && (typeof body.key_file !== 'string' || body.key_file.length > 1024))) {
           return json(res, 400, { error: 'invalid direct share configuration' });
         }
-        if (directShareIds.size || directStopping) return json(res, 409, { error: 'wait until active direct shares finish' });
+        if (directShareIds.size || directShareCreates || directStopping) return json(res, 409, { error: 'wait until active direct shares finish' });
         let candidate;
         try {
           const publicUrl = directOrigin(body.public_url, { allowLoopback: config.allowLoopbackShares === true });
@@ -2323,30 +2336,27 @@ function createApp(config = {}) {
         const exists = await (config.localCredentialExists || checkLocalKeychainEntry)(entry.storage);
         if (exists !== 'present') return json(res, 409, { error: `credential ${exists}` });
         const transport = body.transport;
-        let direct;
-        if (transport === 'direct') {
-          try { direct = await startDirectEndpoint(); }
-          catch (error) { return json(res, 503, { error: `direct share unavailable: ${error.message}` }); }
-        }
+        const create = direct => (config.peerShareCreator || createPeerShare)({ relayUrl: direct?.localUrl || SHARE_RELAY_URL,
+          publicUrl: direct?.publicUrl, ttlMinutes: body.ttl_minutes || 15,
+          allowLoopback: !!direct || config.allowLoopbackShares === true,
+          metadata: { provider: entry.provider, account_alias: entry.account_alias,
+            credential_expires_at: entry.credential_expires_at || null, setup_prompt: body.setup_prompt },
+          readCredential: async () => {
+            const fresh = readLocalCatalog().find(item => item.connection_id === entry.connection_id);
+            if (!fresh || fresh.state !== 'active' || fresh.storage !== entry.storage
+                || fresh.credential_version !== entry.credential_version
+                || (fresh.credential_expires_at && Date.parse(fresh.credential_expires_at) <= Date.now())) {
+              throw new Error('connection changed');
+            }
+            return (config.localCredentialReader || readLocalKeychainEntry)(fresh.storage);
+          } });
         let share;
         try {
-          share = await createPeerShare({ relayUrl: direct?.localUrl || SHARE_RELAY_URL,
-            publicUrl: direct?.publicUrl, ttlMinutes: body.ttl_minutes || 15,
-            allowLoopback: !!direct || config.allowLoopbackShares === true,
-            metadata: { provider: entry.provider, account_alias: entry.account_alias,
-              credential_expires_at: entry.credential_expires_at || null, setup_prompt: body.setup_prompt },
-            readCredential: async () => {
-              const fresh = readLocalCatalog().find(item => item.connection_id === entry.connection_id);
-              if (!fresh || fresh.state !== 'active' || fresh.storage !== entry.storage
-                  || fresh.credential_version !== entry.credential_version
-                  || (fresh.credential_expires_at && Date.parse(fresh.credential_expires_at) <= Date.now())) {
-                throw new Error('connection changed');
-              }
-              return (config.localCredentialReader || readLocalKeychainEntry)(fresh.storage);
-            } });
-        } catch { return json(res, 503, { error: transport === 'direct' ? 'direct share unavailable' : 'share relay unavailable' }); }
-        LOCAL_PEER_SHARES.set(share.id, share);
-        if (transport === 'direct') directShareIds.add(share.id);
+          share = transport === 'direct' ? await withDirectShareEndpoint(create) : await create();
+        } catch {
+          return json(res, 503, { error: transport === 'direct' ? 'direct share unavailable' : 'share relay unavailable' });
+        }
+        if (transport === 'relay') LOCAL_PEER_SHARES.set(share.id, share);
         return json(res, 200, { share_id: share.id, share_url: share.url,
           expires_at: share.expires_at, provider: entry.provider, account_alias: entry.account_alias,
           transport,

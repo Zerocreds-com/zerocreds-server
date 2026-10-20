@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const net = require('node:net');
 const { createApp } = require('../src/server');
+const { createPeerShare } = require('../src/local-share');
 
 async function freePort() {
   const probe = net.createServer();
@@ -109,6 +110,10 @@ test('local API shares by direct IP after explicit choice, with no hosted relay 
   const recipientPort = await freePort();
   const sourceCatalog = path.join(root, 'source.json');
   const recipientCatalog = path.join(root, 'recipient.json');
+  let signalCreation;
+  const creationStarted = new Promise(resolve => { signalCreation = resolve; });
+  let continueCreation;
+  const creationReleased = new Promise(resolve => { continueCreation = resolve; });
   fs.writeFileSync(sourceCatalog, JSON.stringify([{ connection_id: sourceId, provider: 'example',
     account_alias: 'work', storage: 'keychain:zerocreds/example-work', state: 'active',
     credential_version: 'v1', credential_expires_at: null }]));
@@ -122,6 +127,11 @@ test('local API shares by direct IP after explicit choice, with no hosted relay 
     baseUrl: `http://127.0.0.1:${sourcePort}`,
     shareDirectConfigFile: path.join(root, 'direct-config.json'),
     directShareSweepIntervalMs: 25,
+    peerShareCreator: async input => {
+      signalCreation();
+      await creationReleased;
+      return createPeerShare(input);
+    },
     localCredentialExists: async () => 'present',
     localCredentialReader: async () => ({ token: 'synthetic-direct-credential' }) });
   const writes = [];
@@ -147,8 +157,14 @@ test('local API shares by direct IP after explicit choice, with no hosted relay 
     const withoutChoice = await request(sourceUrl, 'POST', '/api/local/shares', adminToken,
       { connection_id: sourceId, setup_prompt: 'Configure the example service.' });
     assert.equal(withoutChoice.status, 409);
-    const created = await request(sourceUrl, 'POST', '/api/local/shares', adminToken,
+    const creating = request(sourceUrl, 'POST', '/api/local/shares', adminToken,
       { connection_id: sourceId, setup_prompt: 'Configure the example service.', ttl_minutes: 1, transport: 'direct' });
+    await Promise.race([creationStarted, creating.then(() => { throw new Error('share creation finished before the pause'); })]);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const stillOpen = await fetch(`http://127.0.0.1:${directPort}/api/share-relay/invite/${'c'.repeat(32)}`);
+    assert.equal(stillOpen.status, 200, 'cleanup cannot close the listener while a share is being created');
+    continueCreation();
+    const created = await creating;
     assert.equal(created.status, 200);
     assert.equal(created.body.transport, 'direct');
     assert.match(created.body.share_url, new RegExp(`^http://127\\.0\\.0\\.1:${directPort}/api/share-relay/invite/`));
@@ -174,6 +190,7 @@ test('local API shares by direct IP after explicit choice, with no hosted relay 
     }
     assert.equal(closed, true, 'direct listener closes after the last share completes');
   } finally {
+    continueCreation();
     await Promise.all([source, recipient].map(app => new Promise(resolve => app.close(resolve))));
     fs.rmSync(root, { recursive: true, force: true });
   }
