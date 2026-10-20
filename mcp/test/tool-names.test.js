@@ -30,7 +30,9 @@ test('local MCP tools do not repeat the provider name', async () => {
   const token = 'local-admin-token-12345678901234567890';
   const api = http.createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({}));
+    res.end(JSON.stringify(req.url === '/api/local/connections?provider=github'
+      ? { connections: [{ account_alias: 'first' }, { account_alias: 'second' }] }
+      : {}));
   });
   await new Promise(resolve => api.listen(0, '127.0.0.1', resolve));
   const client = new Client({ name: 'tool-names-test-client', version: '1.0.0' });
@@ -51,6 +53,15 @@ test('local MCP tools do not repeat the provider name', async () => {
     }
     const share = (await client.listTools()).tools.find(tool => tool.name === 'share_create');
     assert.match(share.description, /share my GitHub token/);
+    assert.match(share.description, /When asking which, also explain/);
+    const connections = (await client.listTools()).tools.find(tool => tool.name === 'connections_list');
+    assert.match(connections.description, /If several match, ask which one and explain what happens after the choice/);
+    assert.match(connections.description, /share_claim saves the credential in Keychain/);
+    const listed = await client.callTool({ name: 'connections_list', arguments: { provider: 'github' } });
+    const listedData = JSON.parse(listed.content[0].text);
+    assert.match(listedData.sharing_next_step, /after they choose, share_create/);
+    assert.match(listedData.sharing_next_step, /share_claim and writes the credential directly/);
+    assert.match(listedData.sharing_next_step, /Neither agent receives or displays the raw credential/);
     for (const name of ['connections_list', 'connection_resolve', 'doctor', 'share_status', 'form_status']) {
       assert.equal((await client.listTools()).tools.find(tool => tool.name === name).annotations.readOnlyHint, true);
     }
