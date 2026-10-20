@@ -51,6 +51,9 @@ test('local MCP tools do not repeat the provider name', async () => {
     }
     const share = (await client.listTools()).tools.find(tool => tool.name === 'share_create');
     assert.match(share.description, /share my GitHub token/);
+    for (const name of ['connections_list', 'connection_resolve', 'doctor', 'share_status', 'form_status']) {
+      assert.equal((await client.listTools()).tools.find(tool => tool.name === name).annotations.readOnlyHint, true);
+    }
   } finally {
     await client.close();
     await new Promise(resolve => api.close(resolve));

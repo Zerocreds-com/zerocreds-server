@@ -157,6 +157,7 @@ codex mcp add zerocreds \
   --env ZEROCREDS_DEFAULT_DESTINATION=mac-keychain \
   --env ZEROCREDS_LOCAL_CATALOG_FILE="$CONFIG/connections.json" \
   -- "$(command -v node)" "$ROOT/mcp/index.js"
+node "$ROOT/scripts/install-codex-guidance.js"
 
 if command -v claude >/dev/null 2>&1; then
   claude mcp remove zerocreds --scope user >/dev/null 2>&1 || true
