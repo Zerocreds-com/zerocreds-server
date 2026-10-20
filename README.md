@@ -147,7 +147,7 @@ title, description, fields[], destination, ttl_minutes, notify
 **`form_status`** — poll until the user submits:
 ```
 token
-→ { status: "pending" | "done" | "expired" }
+→ { status: "pending" | "done" | "expired" | "unknown" }
 ```
 
 ### Local credential discovery (macOS)
@@ -280,7 +280,7 @@ Limits: `title` ≤ 200 chars, `description` ≤ 2000 chars (rendered as plain t
 
 ### GET /api/session/{token}/status
 
-Returns `{ "status": "pending" | "done" | "expired" }`. An integrator only sees its own sessions — anyone else's token reports `expired`. `done` markers are kept for 24 hours.
+Returns `{ "status": "pending" | "done" | "expired" | "unknown" }`. `unknown` means the server cannot safely determine whether an interrupted write completed; do not submit the form again automatically. An integrator only sees its own sessions — anyone else's token reports `expired`. `done` and `unknown` markers are kept for 24 hours.
 
 ### API-friendly forms (handles and signed receipts)
 

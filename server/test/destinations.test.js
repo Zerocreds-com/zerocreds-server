@@ -89,18 +89,28 @@ test('field without level → falls back to "default" in destinations_by_level',
   assert.ok(fs.existsSync(path.join(tokenDir(uid), 'creds-default')));
 });
 
-test('field without level, no default, no destination → warns but does not crash → 200', async () => {
-  // destinations_by_level exists but has no "default" key and no fallback destination
+test('field without a destination is rejected before the form is shown', async () => {
   const uid = '88004';
   const destSecret = { type: 'local_file', uid, filename: 'creds-secret' };
-  // Field has no level → key = "default", but destinations_by_level has no "default"
-  const { submitRes } = await createAndSubmit(
-    [{ name: 'tok', label: 'Token' }], // no level → "default"
-    null,
-    { secret: destSecret }, // no "default" key
-  );
-  // Should still return 200 — it just skips the field
+  const created = await request(ctx.port, 'POST', '/api/session/create', {
+    title: 'T', fields: [{ name: 'tok', label: 'Token' }],
+    destinations_by_level: { secret: destSecret },
+  }, auth());
+  assert.equal(created.status, 400);
+  assert.match(created.body.error, /destination missing for field: tok/);
+  assert.equal(fs.existsSync(path.join(tokenDir(uid), 'creds-secret')), false);
+});
+
+test('levels routed to the same destination are saved together', async () => {
+  const uid = '88005';
+  const shared = { type: 'local_file', uid, filename: 'combined' };
+  const { submitRes } = await createAndSubmit([
+    { name: 'token', label: 'Token', level: 'secret' },
+    { name: 'email', label: 'Email', level: 'pii' },
+  ], null, { secret: shared, pii: shared });
   assert.equal(submitRes.status, 200);
+  const data = JSON.parse(fs.readFileSync(path.join(tokenDir(uid), 'combined'), 'utf8'));
+  assert.deepEqual(Object.keys(data).sort(), ['email', 'token']);
 });
 
 test('http_post — upstream returns 200 → form submission succeeds', async () => {
@@ -630,4 +640,34 @@ test('local_file — {{uid}} template in filename → resolved from session uid'
   const r2 = await request(ctx.port, 'POST', `/f/${token}`, { t: token, fields: { tok: 'val' } });
   assert.equal(r2.status, 200);
   assert.ok(fs.existsSync(path.join(tokenDir('88098'), sessionUid)));
+});
+
+test('partial multi-destination save is uncertain and cannot be submitted again', async () => {
+  const mock = await startMockServer((req, res) => {
+    req.resume();
+    req.on('end', () => res.writeHead(500).end('{}'));
+  });
+  try {
+    const created = await request(ctx.port, 'POST', '/api/session/create', {
+      title: 'T', fields: [
+        { name: 'token', label: 'Token', level: 'secret' },
+        { name: 'email', label: 'Email', level: 'pii' },
+      ],
+      destinations_by_level: {
+        secret: { type: 'local_file', uid: 'partial-audit', filename: 'first' },
+        pii: { type: 'http_post', url: `http://127.0.0.1:${mock.port}/second` },
+      }, test_destination: false,
+    }, auth());
+    assert.equal(created.status, 200);
+    const token = created.body.token;
+    const payload = { t: token, fields: { token: 'invented', email: 'invented@example.test' } };
+    const submitted = await request(ctx.port, 'POST', `/f/${token}`, payload);
+    assert.equal(submitted.status, 500);
+    assert.equal(submitted.body.outcome, 'unknown');
+    assert.equal(submitted.body.retry_safe, false);
+    assert.equal(fs.existsSync(path.join(tokenDir('partial-audit'), 'first')), true);
+    const status = await request(ctx.port, 'GET', `/api/session/${token}/status`, undefined, auth());
+    assert.equal(status.body.status, 'unknown');
+    assert.equal((await request(ctx.port, 'POST', `/f/${token}`, payload)).status, 403);
+  } finally { await mock.close(); }
 });

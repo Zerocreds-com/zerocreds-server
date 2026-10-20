@@ -301,3 +301,28 @@ test('saved token alias survives later checks; temporary overrides and failed sa
     return { status: tokenField === 'invalid' ? 'invalid' : 'valid' };
   } });
 });
+
+test('a slow verification cannot overwrite a newer saved field alias', async () => {
+  let releaseSlow;
+  let enteredSlow;
+  const slowEntered = new Promise(resolve => { enteredSlow = resolve; });
+  const slowMayFinish = new Promise(resolve => { releaseSlow = resolve; });
+  let calls = 0;
+  await withLocalServer(async ({ port, token, catalogFile }) => {
+    const input = { provider: 'github', account_alias: 'work' };
+    const slow = call(port, 'POST', '/api/local/connections/verify', input, token);
+    await slowEntered;
+    const saved = await call(port, 'POST', '/api/local/connections/verify', {
+      ...input, token_field: 'replacement', save_token_field: true,
+    }, token);
+    assert.equal(saved.body.token_field_saved, true);
+    releaseSlow();
+    const stale = await slow;
+    assert.equal(stale.status, 409);
+    assert.equal(stale.body.verification, 'stale');
+    assert.equal(JSON.parse(fs.readFileSync(catalogFile, 'utf8'))[0].token_field, 'replacement');
+  }, { verifier: async () => {
+    if (++calls === 1) { enteredSlow(); await slowMayFinish; }
+    return { status: 'valid' };
+  } });
+});

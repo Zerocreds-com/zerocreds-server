@@ -119,3 +119,61 @@ test('no "remember me": submitted values are never stored for pre-fill', async (
   assert.ok(!page.raw.includes('me@example.com'));
   assert.ok(!page.raw.includes('SECRET-KEY-VALUE'));
 });
+
+test('a saved credential remains done when final marker rename fails', async () => {
+  const s = await request(ctx.port, 'POST', '/api/session/create',
+    { title: 'T', fields, destination: { type: 'local_file', uid: 'saved-marker', filename: 'cred' } }, auth());
+  const token = s.body.token;
+  const original = fs.renameSync;
+  let failed = false;
+  fs.renameSync = function (from, to) {
+    if (!failed && String(from).endsWith(`${token}.written`) && String(to).endsWith(`${token}.done`)) {
+      failed = true;
+      throw new Error('synthetic marker rename failure');
+    }
+    return original.apply(this, arguments);
+  };
+  let submitted;
+  try { submitted = await request(ctx.port, 'POST', `/f/${token}`, { t: token, fields: { tok: 'invented' } }); }
+  finally { fs.renameSync = original; }
+  assert.equal(submitted.status, 200);
+  assert.equal(failed, true);
+  assert.equal((await request(ctx.port, 'GET', `/api/session/${token}/status`, undefined, auth())).body.status, 'done');
+  ctx.server.sweepPending();
+  assert.equal(fs.existsSync(path.join(ctx.pendingDir, `${token}.done`)), true);
+});
+
+test('a stale ordinary claim reports unknown outcome instead of expired', async () => {
+  const s = await request(ctx.port, 'POST', '/api/session/create',
+    { title: 'T', fields, destination: { type: 'local_file', uid: 'unknown-marker', filename: 'cred' } }, auth());
+  const token = s.body.token;
+  const claimed = path.join(ctx.pendingDir, `${token}.claimed`);
+  fs.renameSync(path.join(ctx.pendingDir, `${token}.json`), claimed);
+  const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  fs.utimesSync(claimed, old, old);
+  ctx.server.sweepPending();
+  const status = await request(ctx.port, 'GET', `/api/session/${token}/status`, undefined, auth());
+  assert.equal(status.body.status, 'unknown');
+  assert.equal(status.body.retry_safe, false);
+  assert.equal(fs.existsSync(claimed), false);
+});
+
+test('failure to record a completed write reports unknown and blocks resubmission', async () => {
+  const s = await request(ctx.port, 'POST', '/api/session/create',
+    { title: 'T', fields, destination: { type: 'local_file', uid: 'unrecorded', filename: 'cred' } }, auth());
+  const token = s.body.token;
+  const original = fs.writeFileSync;
+  fs.writeFileSync = function (file, ...args) {
+    if (String(file).endsWith(`${token}.written`)) throw new Error('synthetic marker write failure');
+    return original.call(this, file, ...args);
+  };
+  let submitted;
+  try { submitted = await request(ctx.port, 'POST', `/f/${token}`, { t: token, fields: { tok: 'invented' } }); }
+  finally { fs.writeFileSync = original; }
+  assert.equal(submitted.status, 503);
+  assert.equal(submitted.body.outcome, 'unknown');
+  assert.equal(submitted.body.retry_safe, false);
+  assert.equal((await request(ctx.port, 'GET', `/api/session/${token}/status`, undefined, auth())).body.status, 'unknown');
+  assert.equal(fs.existsSync(path.join(ctx.tokensDir, 'unrecorded', 'cred')), true);
+  assert.equal((await request(ctx.port, 'POST', `/f/${token}`, { t: token, fields: { tok: 'invented' } })).status, 403);
+});

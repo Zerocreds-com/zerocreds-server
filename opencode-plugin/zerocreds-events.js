@@ -30,6 +30,14 @@ function sessionTokenFrom(output) {
   }
 }
 
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+function continuation(event) {
+  if (event === 'done') return 'The ZeroCreds form is complete. Check form_status using the earlier form token and continue the original task using the saved connection. Never ask for the credential in chat.'
+  if (event === 'unknown') return 'The ZeroCreds form write has an unknown outcome. Check form_status using the earlier form token. Do not retry the submission or ask for the credential again automatically; explain that storage needs reconciliation.'
+  return 'The ZeroCreds form expired before completion. Check form_status using the earlier form token and explain what remains to finish the original task.'
+}
+
 module.exports = async function ZeroCredsEvents(input, options = {}) {
   const baseUrl = (options.baseUrl || 'http://localhost/zerocreds').replace(/\/+$/, '')
   const url = new URL(baseUrl)
@@ -47,32 +55,42 @@ module.exports = async function ZeroCredsEvents(input, options = {}) {
       active.add(formToken)
       void (async () => {
         try {
-          const response = await fetch(`${baseUrl}/api/session/${formToken}/events`, {
-            headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
-            signal: AbortSignal.timeout(24 * 60 * 60 * 1000),
-          })
-          if (!response.ok || !response.body) return
-          const reader = response.body.getReader()
-          const decoder = new TextDecoder()
-          let buffer = ''
+          let backoff = 1000
           while (true) {
-            const { value, done } = await reader.read()
-            if (done) break
-            buffer += decoder.decode(value, { stream: true })
-            const blocks = buffer.split('\n\n')
-            buffer = blocks.pop() || ''
-            for (const block of blocks) {
-              const event = block.match(/^event: (done|expired)$/m)?.[1]
-              if (event !== 'done') continue
-              await input.client.session.promptAsync({
-                path: { id: hook.sessionID },
-                body: { parts: [{ type: 'text', text: 'The ZeroCreds form has been completed. Check its status with form_status using the session token from the earlier tool result. If the status is done, continue the user’s original task using the saved credential through the appropriate ZeroCreds tool. Never ask the user to paste the credential into chat.' }] },
+            try {
+              const response = await fetch(`${baseUrl}/api/session/${formToken}/events`, {
+                headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
+                signal: AbortSignal.timeout(24 * 60 * 60 * 1000),
               })
-              return
+              if (!response.ok || !response.body) throw new Error('event stream unavailable')
+              backoff = 1000
+              const reader = response.body.getReader()
+              const decoder = new TextDecoder()
+              let buffer = ''
+              while (true) {
+                const { value, done } = await reader.read()
+                if (done) break
+                buffer += decoder.decode(value, { stream: true })
+                if (buffer.length > 16_384) buffer = buffer.slice(-16_384)
+                const blocks = buffer.split('\n\n')
+                buffer = blocks.pop() || ''
+                for (const block of blocks) {
+                  const event = block.match(/^event: (done|expired|unknown)$/m)?.[1]
+                  if (!event) continue
+                  await input.client.session.promptAsync({
+                    path: { id: hook.sessionID },
+                    body: { parts: [{ type: 'text', text: continuation(event) }] },
+                  })
+                  return
+                }
+              }
+            } catch {
+              // A new subscription starts with current state, recovering an
+              // event missed during a disconnect.
             }
+            await pause(backoff)
+            backoff = Math.min(backoff * 2, 15_000)
           }
-        } catch (error) {
-          console.error('[zerocreds] completion listener failed; check local server and private token file')
         } finally {
           active.delete(formToken)
         }

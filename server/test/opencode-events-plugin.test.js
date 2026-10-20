@@ -43,3 +43,33 @@ test('OpenCode plugin resumes the originating session on a value-free done event
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('OpenCode listener reconnects after an interrupted stream and resumes once', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zc-plugin-reconnect-'));
+  const tokenFile = path.join(dir, 'admin-token');
+  fs.writeFileSync(tokenFile, `test-${'x'.repeat(40)}`, { mode: 0o600 });
+  let requests = 0;
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.end(++requests === 1 ? 'event: pending\ndata: {"status":"pending"}\n\n'
+      : 'event: done\ndata: {"status":"done"}\n\n');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const resumed = [];
+  try {
+    const hooks = await plugin({ client: { session: { promptAsync: async value => resumed.push(value) } } }, {
+      baseUrl: `http://127.0.0.1:${server.address().port}`, adminTokenFile: tokenFile,
+    });
+    await hooks['tool.execute.after']({ tool: 'form_create', sessionID: 'original-session' }, {
+      output: JSON.stringify({ token: 'b'.repeat(32) }),
+    });
+    for (let i = 0; i < 100 && resumed.length === 0; i++) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(requests, 2);
+    assert.equal(resumed.length, 1);
+    assert.equal(resumed[0].path.id, 'original-session');
+  } finally {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
