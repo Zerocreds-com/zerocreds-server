@@ -58,6 +58,7 @@ jobs:
         run: |
           export EXPECTED_COMMIT="${EXPECTED_COMMIT:0:12}"
           python3 scripts/check-public.py
+          python3 scripts/check-share-relay.py
       - name: Record nginx diagnostics on failure
         if: failure()
         uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0

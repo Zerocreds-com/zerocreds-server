@@ -12,6 +12,8 @@ const { startNalogLogin, confirmNalogCode } = require('./nalog-login');
 const { saveToDestination, testDestination, validateDestination, resolveTemplate, readZerocredsVault } = require('./destinations');
 const { canonicalJson, sha256Hex, loadSigningKey, signPayload } = require('./receipts');
 const { discoverCredentialSources, searchCredentialMetadata, CATEGORIES } = require('./credential-discovery');
+const { createShareRelay } = require('./share-relay');
+const { createPeerShare, claimPeerShare } = require('./local-share');
 
 // ── Module-level pure helpers ──────────────────────────────────────────────────
 
@@ -1269,6 +1271,10 @@ function createApp(config = {}) {
   const LOCAL_BROKER_GRANTS = new Map();
   const LOCAL_BROKER_GRANT_TTL_MS = 60_000;
   const LOCAL_FORM_EVENT_STREAMS = new Map();
+  const LOCAL_PEER_SHARES = new Map();
+  const LOCAL_SHARE_IMPORTS = new Set();
+  const SHARE_RELAY_URL = config.shareRelayUrl ?? process.env.ZEROCREDS_SHARE_RELAY_URL ?? 'https://zerocreds.ru';
+  const SHARE_RELAY = (config.shareRelayEnabled ?? !LOCAL_MODE) ? createShareRelay({ clientIp }) : null;
 
   function publishLocalFormEvent(token, event) {
     const streams = LOCAL_FORM_EVENT_STREAMS.get(token);
@@ -2207,6 +2213,140 @@ function createApp(config = {}) {
       if (LOCAL_MODE && origin && origin !== LOCAL_ORIGIN) return json(res, 403, { error: 'cross-origin request denied' });
       res.writeHead(204, { ...(LOCAL_MODE ? (origin ? { 'Access-Control-Allow-Origin': LOCAL_ORIGIN } : {}) : { 'Access-Control-Allow-Origin': '*' }), 'Access-Control-Allow-Headers': 'Content-Type,Authorization', 'Access-Control-Allow-Methods': 'GET,POST' }).end();
       return;
+    }
+
+    if (SHARE_RELAY && await SHARE_RELAY.handle(req, res, url)) return;
+    if (SHARE_RELAY && req.method === 'GET' && /^\/api\/share-relay\/invite\/[a-f0-9]{32}$/.test(url.pathname)) {
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      return sendHtml(res, 200, '<!doctype html><meta charset="utf-8"><title>ZeroCreds share</title><h1>ZeroCreds share</h1><p>Paste the full link into your agent to save the credential locally. If ZeroCreds is not installed, follow the <a href="https://github.com/Zerocreds-com/zerocreds-server/blob/main/docs/local-mac-setup.md">local Mac setup</a> first. Keep the sender’s ZeroCreds running until the claim completes. The link expires and can be claimed once.</p>');
+    }
+
+    if (LOCAL_MODE && url.pathname.startsWith('/api/local/shares')) {
+      const { isAdmin } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin) return json(res, 401, { error: 'admin token required' });
+      if (req.method === 'POST' && url.pathname === '/api/local/shares') {
+        const body = await readJson(req);
+        if (!body || !/^[a-f0-9]{32}$/.test(body.connection_id || '')
+            || typeof body.setup_prompt !== 'string' || body.setup_prompt.length > 2000
+            || (body.ttl_minutes !== undefined && (!Number.isInteger(body.ttl_minutes)
+              || body.ttl_minutes < 1 || body.ttl_minutes > 120))) {
+          return json(res, 400, { error: 'invalid share request' });
+        }
+        let entries;
+        try { entries = readLocalCatalog(); }
+        catch { return json(res, 503, { error: 'local catalog unavailable' }); }
+        const entry = entries.find(item => item.connection_id === body.connection_id);
+        if (!entry) return json(res, 404, { error: 'connection not found' });
+        if (entry.state !== 'active' || (entry.credential_expires_at && Date.parse(entry.credential_expires_at) <= Date.now())) {
+          return json(res, 409, { error: 'connection unavailable' });
+        }
+        if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(entry.provider || '')
+            || !/^[a-zA-Z0-9_-]{1,64}$/.test(entry.account_alias || '')
+            || !/^keychain:[a-zA-Z0-9_@.-]{1,128}\/[a-zA-Z0-9_@.-]{1,128}$/.test(entry.storage || '')) {
+          return json(res, 409, { error: 'connection is not a local Keychain credential' });
+        }
+        const exists = await (config.localCredentialExists || checkLocalKeychainEntry)(entry.storage);
+        if (exists !== 'present') return json(res, 409, { error: `credential ${exists}` });
+        let share;
+        try {
+          share = await createPeerShare({ relayUrl: SHARE_RELAY_URL, ttlMinutes: body.ttl_minutes || 15,
+            allowLoopback: config.allowLoopbackShares === true,
+            metadata: { provider: entry.provider, account_alias: entry.account_alias,
+              credential_expires_at: entry.credential_expires_at || null, setup_prompt: body.setup_prompt },
+            readCredential: async () => {
+              const fresh = readLocalCatalog().find(item => item.connection_id === entry.connection_id);
+              if (!fresh || fresh.state !== 'active' || fresh.storage !== entry.storage
+                  || fresh.credential_version !== entry.credential_version
+                  || (fresh.credential_expires_at && Date.parse(fresh.credential_expires_at) <= Date.now())) {
+                throw new Error('connection changed');
+              }
+              return (config.localCredentialReader || readLocalKeychainEntry)(fresh.storage);
+            } });
+        } catch { return json(res, 503, { error: 'share relay unavailable' }); }
+        LOCAL_PEER_SHARES.set(share.id, share);
+        return json(res, 200, { share_id: share.id, share_url: share.url,
+          expires_at: share.expires_at, provider: entry.provider, account_alias: entry.account_alias,
+          warning: 'The link is a one-time bearer invitation. Send it only to the intended recipient.' });
+      }
+      const shareMatch = url.pathname.match(/^\/api\/local\/shares\/([a-f0-9]{32})$/);
+      if (shareMatch && req.method === 'GET') {
+        const share = LOCAL_PEER_SHARES.get(shareMatch[1]);
+        return share ? json(res, 200, { share_id: share.id, status: share.status(), expires_at: share.expires_at })
+          : json(res, 404, { error: 'share not found' });
+      }
+      if (shareMatch && req.method === 'DELETE') {
+        const share = LOCAL_PEER_SHARES.get(shareMatch[1]);
+        if (!share) return json(res, 404, { error: 'share not found' });
+        share.close();
+        return json(res, 200, { share_id: share.id, status: share.status() });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/local/shares/claim') {
+        const body = await readJson(req);
+        if (!body || typeof body.share_url !== 'string' || body.share_url.length > 512
+            || (body.account_alias !== undefined && !/^[a-zA-Z0-9_-]{1,64}$/.test(body.account_alias))) {
+          return json(res, 400, { error: 'invalid claim request' });
+        }
+        if (RUNTIME_PLATFORM !== 'darwin' && !config.localCredentialWriter) {
+          return json(res, 409, { error: 'local credential import is not configured on this OS' });
+        }
+        const preflight = await (config.localCredentialExists || checkLocalKeychainEntry)(
+          `keychain:zerocreds/share-probe-${crypto.randomBytes(8).toString('hex')}`);
+        if (preflight !== 'missing') return json(res, 503, { error: `Keychain ${preflight}` });
+        try {
+          const result = await claimPeerShare(body.share_url, async (meta, fields) => {
+            if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(meta.provider || '')
+                || !/^[a-zA-Z0-9_-]{1,64}$/.test(meta.account_alias || '')
+                || typeof meta.setup_prompt !== 'string' || meta.setup_prompt.length > 2000
+                || (meta.credential_expires_at !== null && meta.credential_expires_at !== undefined
+                  && (!Number.isFinite(Date.parse(meta.credential_expires_at))
+                    || Date.parse(meta.credential_expires_at) <= Date.now()))
+                || Object.entries(fields).length < 1 || Object.entries(fields).length > 20
+                || Object.entries(fields).some(([key, value]) => !/^[a-zA-Z0-9_]{1,64}$/.test(key)
+                  || typeof value !== 'string' || value.length > 65536)) throw new Error('invalid share contents');
+            const requestedAlias = body.account_alias || meta.account_alias;
+            const entriesBefore = readLocalCatalog();
+            let alias = requestedAlias;
+            const accountFor = value => {
+              const requested = `${meta.provider}-${value}`;
+              return requested.length <= 128 ? requested : `zc-${crypto.createHash('sha256').update(requested).digest('hex')}`;
+            };
+            for (let attempt = 0; attempt < 5; attempt++) {
+              const candidateStorage = `keychain:zerocreds/${accountFor(alias)}`;
+              const status = await (config.localCredentialExists || checkLocalKeychainEntry)(candidateStorage);
+              if (!['present', 'missing'].includes(status)) throw new Error(`Keychain ${status}`);
+              if (!entriesBefore.some(item => item.provider === meta.provider && item.account_alias === alias)
+                  && status === 'missing') break;
+              alias = `${requestedAlias.slice(0, 45)}-shared-${crypto.randomBytes(3).toString('hex')}`;
+            }
+            const key = `${meta.provider}/${alias}`;
+            if (LOCAL_SHARE_IMPORTS.has(key)) throw new Error('import already in progress');
+            LOCAL_SHARE_IMPORTS.add(key);
+            try {
+              const entries = readLocalCatalog();
+              if (entries.some(item => item.provider === meta.provider && item.account_alias === alias)) throw new Error('connection already exists');
+              const storage = `keychain:zerocreds/${accountFor(alias)}`;
+              if ((await (config.localCredentialExists || checkLocalKeychainEntry)(storage)) !== 'missing') {
+                throw new Error('Keychain item is not safely writable');
+              }
+              const saver = config.localCredentialWriter || (async (destination, values) => saveToDestination(destination, values, DEST_OPTS));
+              const saved = await saver({ type: 'macos_keychain', service: 'zerocreds',
+                account: `${meta.provider}-${alias}`, create_only: true }, fields);
+              if (saved?.secret_id !== storage) throw new Error('credential save outcome unknown');
+              const now = new Date().toISOString();
+              const connectionId = crypto.randomBytes(16).toString('hex');
+              entries.push({ connection_id: connectionId, provider: meta.provider,
+                account_alias: alias, storage, state: 'active', credential_expires_at: meta.credential_expires_at || null,
+                expiry_status: meta.credential_expires_at ? 'declared' : 'unknown', verification_status: 'unknown',
+                credential_version: crypto.randomBytes(16).toString('hex'), created_at: now, updated_at: now });
+              writeLocalCatalog(entries);
+              return { connection_id: connectionId, provider: meta.provider, account_alias: alias };
+            } finally { LOCAL_SHARE_IMPORTS.delete(key); }
+          }, { relayUrl: SHARE_RELAY_URL, allowLoopback: config.allowLoopbackShares === true });
+          return json(res, result.status === 'saved' ? 200 : 202, result);
+        } catch (error) { return json(res, 409, { error: error.message }); }
+      }
+      return json(res, 404, { error: 'not found' });
     }
 
     // GET / — redirect to landing
@@ -3533,7 +3673,11 @@ function createApp(config = {}) {
   sweepPending();
   const sweepTimer = setInterval(() => sweepPending(), SWEEP_INTERVAL_MS);
   sweepTimer.unref();
-  server.on('close', () => clearInterval(sweepTimer));
+  server.on('close', () => {
+    clearInterval(sweepTimer);
+    SHARE_RELAY?.stop();
+    for (const share of LOCAL_PEER_SHARES.values()) share.close();
+  });
   server.sweepPending = sweepPending;
 
   return server;
