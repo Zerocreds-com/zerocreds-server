@@ -8,6 +8,7 @@ AGENTS.md — короткая точка входа. Основные инст�
 - GitHub default PAT: service `github.com`, account `kobzevvv`, item `Trained Agent GitHub Token`.
 - Azure Cloud / GHA / `zen-rings` PAT: service `github.com`, account `gha-compute-cluster`.
 - Cloudflare sandbox token: service `cloudflare.com`, account `trained-assist-sandbox`, expected account `d740a05e9442c1d0feacae2dfc673e93`.
+- Если владелец просит передать сохранённую креду коллеге, найдите точный `connection_id` и используйте локальные ZeroCreds `share_create` / `share_claim`: передавайте только одноразовую ссылку, не значение секрета. Для GitHub PAT предупредите, что коллега получит доступ от имени владельца; при неоднозначности выбора спросите, какую именно креду передать. Если инструментов передачи нет в текущей сессии, проверьте MCP и предложите переподключить ZeroCreds вместо общего отказа.
 
 ## Sandbox / deploy
 
