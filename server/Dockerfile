@@ -2,6 +2,9 @@ FROM --platform=linux/amd64 openbao/openbao:2.7.1 AS openbao
 
 FROM --platform=linux/amd64 node:22-bookworm-slim
 WORKDIR /app
+# Serves both custody modes: the in-container OpenBao dev server (legacy) and durable
+# custody in D1, selected by the environment the container starts with.
+LABEL org.opencontainers.image.title="ZeroCreds wallet server"
 COPY --from=openbao /usr/bin/bao /usr/local/bin/bao
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
