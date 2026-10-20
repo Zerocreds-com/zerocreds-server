@@ -1,183 +1,117 @@
-# Продуктовый аудит ZeroCreds: сценарии и разрывы
+# ZeroCreds product audit: scenarios and gaps
 
-Дата: 2026-10-20. База: `main` после PR #138, `3ae313c9c920bb52e4cc73b6451ab3edaad98c36` (код текущей рабочей ветки эквивалентен этой версии). Аудит жизненного цикла: поиск → сбор → ожидание → сохранение → проверка → использование → обновление → отключение → восстановление.
+Date: 2026-10-20. Baseline: `main` after PR #138, commit `3ae313c9c920bb52e4cc73b6451ab3edaad98c36`. The review covered discovery → collection → waiting → storage → verification → use → rotation → revocation → recovery. It combined code and test review with synthetic HTTP scenarios on temporary local servers. It used no real secrets, Keychain items, or external APIs. This is a first product pass, not a comprehensive security audit.
 
-Метод: чтение реализации и тестов, синтетические HTTP-сценарии на временных локальных серверах. Настоящие секреты, Keychain и внешние API в пробах не используются. Production и чужие рабочие изменения не меняются. Это первый проход по продукту, не исчерпывающий security-аудит или проверка каждого внешнего адаптера.
+The original pass found nine reproduced defects (F01–F09), four code-confirmed gaps (F10–F13), one observed agent scenario (F14), and three follow-up questions. P1 means data loss, false success, or a blocked core journey; P2 means a recoverable dead end or unclear contract. These are product priorities, not vulnerability ratings.
 
-Результат: **9 воспроизведённых дефектов (F01–F09), 4 подтверждённых чтением кода разрыва (F10–F13), 1 наблюдение в реальном агентском сценарии (F14), 3 вопроса для дальнейшей проверки**. Приоритет P1 — потеря данных, ложный успех или блокировка основного сценария; P2 — восстановимый тупик/неясный контракт. Это продуктовые приоритеты, не оценка уязвимостей.
+After the first pass, the working branch fixed F01, F04, F05, and F09 in the probes. F13 was addressed for failed completion-marker writes, local catalog updates, and a failure after the first successful write to multiple destinations. An ambiguous outcome on the **first external POST** remained: without an idempotency contract, the server cannot prove whether the recipient stored the value before failing. The OpenCode subscription reconnects after stream loss, but restoring the host session after a restart and resuming in other clients still need integration. The findings below record the original baseline, so compare against current code before treating one as open.
 
-Прогресс в рабочей ветке после первичного аудита: F01, F04, F05 и F09 исправлены в описанных пробах; F13 закрыт для ошибки фиксации статуса после успешной записи, ошибки обновления local catalog и сбоя после первой успешной записи из нескольких destinations. Проба печатает текущее наблюдаемое поведение, поэтому её вывод на этой ветке отличается от снимка дефектов ниже. Неопределённый результат **первого** внешнего POST остаётся открытой частью F13: без контракта идемпотентности внешнего получателя сервер не может доказать, сохранил ли тот значение перед ошибкой. Подписка OpenCode теперь переподключается после разрыва потока, но восстановление самой host-сессии после перезапуска и автопродолжение в других клиентах всё ещё требуют отдельной интеграции.
+## User promise
 
-## Что пользователь должен получать
+“Grant the agent the required access once, and let it finish the task. If access already exists, use it. If something fails, recover without asking for the secret again whenever technically possible.” Storage success, provider token acceptance, and authorization for a specific operation are distinct results. Users should not need to understand JSON field names, storage internals, SSE wiring, or MCP version differences.
 
-«Дай агенту нужный доступ один раз, и он завершит задачу. Если доступ уже есть, используй его. Если что-то сломалось, восстановись без повторного ввода секрета, когда это технически возможно».
+## Scenario matrix
 
-Сохранение значения, принятие токена провайдером и доступ к конкретной операции — три разных результата. Пользователь не должен разбираться в именах JSON-полей, способе хранения, подключении SSE и различиях версий MCP, чтобы пройти этот путь.
-
-## Матрица сценариев
-
-| ID | Пользовательская ситуация | Критерий завершения | Состояние на проверенной базе |
+| ID | User situation | Completion criterion | Baseline gap |
 |---|---|---|---|
-| S01 | «Сделай задачу, доступ уже есть на Mac» | Быстро найти подходящий Keychain item, затем использовать его доступным прежним способом без формы или обязательного bind через ZeroCreds | Discovery возвращает метаданные; ZeroCreds не должен перехватывать обычное использование Keychain. Для желающего использовать ZeroCreds как единый путь bind/use в поставляемом MCP нет: F11 |
-| S02 | «Доступа нет — запроси его» | Короткая форма с понятной целью, правильным типом секрета и серверным disclosure | Формы и шаблоны есть; общей семантической роли поля нет, #138 помогает только verify |
-| S03 | «Назови поле как мне понятно» | Произвольный label/name не ломает дальнейшие операции; роль token хранится отдельно | Частично: явный/сохранённый token_field; F02, F06 |
-| S04 | «Я открыл форму, агент пусть дождётся» | **По умолчанию подписаться на завершение и сразу продолжить исходную задачу**, без сообщения «готово» от человека | Только локальный OpenCode plugin; общий контракт отсутствует: F09, F10 |
-| S05 | «Я заполнил быстрее, чем агент начал ждать» | Проверить сохранённое состояние при подписке и продолжить один раз | SSE отдаёт начальное состояние, но ошибается во время claimed: F09 |
-| S06 | «Пользователь всё отправил» | Done только после записи всех полей и надёжного статуса/receipt | Ложный done при отсутствии маршрута; ошибка записи done подавляется: F01, F13 |
-| S07 | «Сохранилось — продолжай задачу в репозитории X» | Проверить нужный account/resource/action и выполнить разрешённую операцию через любой уже доступный авторизованный путь | Verify подтверждает ограниченное свойство, а общей capability-проверки и локального API-use в main нет: F11, F12 |
-| S08 | «Есть личный и рабочий аккаунты» | Выбирать по устойчивому connection_id и проверенной identity; alias — только метка | В local verify выбор provider+alias; варианты регистра дают дубликаты: F03 |
-| S09 | «Токен протух, замени» | Обновить выбранное подключение, сохранить корректные метаданные, не потерять рабочую версию при ошибке | Неявное перезаписывание по provider+uid; теряется mapping: F02 |
-| S10 | «Агент ошибся в форме до отправки» | Исправить схему или явно заменить форму и аннулировать старую | Повторное создание может молча вернуть старую схему: F07 |
-| S11 | «Два агента работают одновременно» | Независимые изменения каталога не теряются; use сверяется с актуальной версией | Медленный verify затирает новое изменение: F04 |
-| S12 | «Сеть/процесс оборвались после Submit» | Различать pending, processing, saved, unknown; сверить запись и восстановиться без нового ввода | Stale claim удаляется; статус становится expired: F05, F13 |
-| S13 | «Покажи, что у меня подключено» | Видны identity, назначение, mapping, freshness, доступность и причины блокировок | Есть безопасный список local connections; mapping скрыт: F06; wallet требует известный ID: F11 |
-| S14 | «Отключи доступ» | Раздельно объяснить прекращение использования, удаление из хранилища и отзыв у провайдера | Wallet revoke есть; в local MCP lifecycle отключения не оформлен: F11 |
-| S15 | «После перезапуска продолжай ожидать» | Восстановить подписку и исходную задачу, прочитать терминальное состояние | Подписки и дедупликация OpenCode в памяти; reconnect не реализован: F10 |
-| S16 | «После обновления всё работает» | Сервер/MCP/host показывают фактические возможности и совместимость | Версия git есть, но локальный установленный код может отличаться от main; общего capability handshake нет: F10 |
-| S17 | «Сделай PR и запусти CI; способов доступа несколько» | При отказе одной авторизации агент проверяет уже доступные способы достичь цели, выбирает подходящий и сообщает, какая операция реально выполнена | Наблюдалось зацикливание на локальном `gh workflow_dispatch` при доступном подключённом GitHub; draft PR #170 создался через подключение и запустил CI событием `pull_request`: F14 |
+| S01 | Access already exists on the Mac | Find and use the Keychain item through an available authorized path | Discovery has metadata, but no shipped local bind/use path (F11) |
+| S02 | Access is missing | Show a concise, disclosed form for the right secret | Forms exist; field roles were incomplete |
+| S03 | User chooses a familiar field name | Custom names do not break later operations | Partial token-field mapping (F02, F06) |
+| S04 | User opens a form | Agent subscribes by default and resumes the original task on completion | Only local OpenCode integration (F09, F10) |
+| S05 | User submits before subscription | Stored terminal state triggers exactly one continuation | SSE mishandled claimed state (F09) |
+| S06 | Form is submitted | Done only after every value is stored with a durable receipt | Missing route and marker failures (F01, F13) |
+| S07 | Saved credential must work on repo X | Check account, resource, operation, and perform an authorized action | No unified task readiness or local use (F11, F12) |
+| S08 | Personal and work accounts coexist | Stable connection ID and verified identity | Case-colliding aliases (F03) |
+| S09 | Token expires | Rotate the selected connection without losing mappings or a working version | Implicit overwrite (F02) |
+| S10 | Agent made a form mistake | Correct or replace an unsubmitted form explicitly | Old schema silently reused (F07) |
+| S11 | Two agents work concurrently | Catalog writes and uses respect current version | Slow verification overwrites newer metadata (F04) |
+| S12 | Network or process dies after Submit | Distinguish pending, processing, saved, and unknown; reconcile | Stale claim becomes expired (F05, F13) |
+| S13 | Show saved connections | Show identity, purpose, mapping, freshness, readiness | Mapping hidden; wallet lookup needs known ID (F06, F11) |
+| S14 | Revoke access | Explain use disablement, storage deletion, and provider revocation separately | Local lifecycle incomplete (F11) |
+| S15 | Resume waiting after restart | Restore binding, subscription, and terminal state | Host memory only (F10) |
+| S16 | Keep working after an update | Report actual runtime capabilities and compatibility | Git HEAD can differ from loaded local code (F10) |
+| S17 | Create a PR and run CI with multiple access paths | After one authorization fails, try a verified alternate path | Local workflow dispatch failed, but connected GitHub created draft PR #170 and PR-triggered CI (F14) |
 
-## Ожидание credential-ready: обязательное требование
+## Default credential-ready waiting requirement
 
-Уточнение пользователя от 2026-10-20: **ожидание должно включаться по умолчанию; после заполнения формы агент автоматически продолжает исходную задачу**. Наличие SSE endpoint само по себе этого не обеспечивает.
+The user clarified on 2026-10-20 that waiting should be on by default and the agent should resume the original task immediately after the form is filled. An SSE endpoint alone does not fulfill this promise. Proposed contract, not fully implemented at audit time:
 
-Предлагаемый контракт (ещё не реализован):
+- `wait_mode: auto | event | poll | none`, default `auto`. The host binds form ID to a task/session/run before showing the link; create returns promptly.
+- Return truthful `waiting`, `resume_armed`, `wait_transport`, and `expires_at`. Do not promise auto-resume when the host cannot resume. Auto uses host events or polling where supported and reports unsupported hosts explicitly.
+- Persisted status is authoritative; an event only prompts reconciliation. No credential value enters the event or resume prompt.
+- Host persists the binding, reconnects with backoff, and checks status after reconnect. Handle early submit, duplicate events, server restart, and host restart.
+- Deduplicate by form ID, task reference, and terminal version. Never replay an already completed external mutation automatically.
+- Distinguish ready, expired, canceled/revoked, and failed/needs-attention. Waiting expiry, form-link expiry, and credential expiry are separate.
+- For multiple forms, resume only after all task requirements are met. After readiness, verify the receipt/reference and continue the original authorized task.
 
-- `wait_mode: auto | event | poll | none`, по умолчанию `auto`. Обычный сценарий не требует отдельной просьбы «подпишись» или выбора инструмента ожидания агентом.
-- Host регистрирует ожидание по form_id + task/session/run reference до показа ссылки. Ответ возвращается быстро, чтобы ссылку можно было показать человеку; нельзя удерживать единственный вызов create до Submit.
-- Ответ содержит честные `waiting`, `resume_armed`, `wait_transport`, `expires_at`. Нельзя обещать автопродолжение, если текущий host не умеет возобновлять задачу. При `auto` использовать доступный host-managed event transport либо polling; отсутствие обоих явно обозначать.
-- Источник истины — сохранённый статус. Событие сообщает только о необходимости сверки. Содержимое credential никогда не попадает в событие/продолжающий prompt.
-- Host хранит ожидание, повторяет подписку с backoff после разрыва и сверяет статус после reconnect. Submit до подписки, повторное событие и рестарт не должны терять продолжение.
-- Повторные доставки сводятся к одному логическому продолжению с ключом form_id + task reference + terminal version. Нельзя автоматически повторять уже выполненную внешнюю мутацию.
-- Терминальные состояния: ready, expired, cancelled/revoked, failed/needs_attention. Истечение ожидания отличается от истечения формы и от срока жизни секрета.
-- Несколько форм одной задачи: продолжение только когда выполнены все её credential requirements; завершение одной формы не должно запускать задачу преждевременно.
-- После ready агент проверяет receipt/connection reference и выполняет исходную задачу в пределах уже данного поручения. Не запрашивает секрет в чат и не заменяет задачу сообщением «credential saved».
+Acceptance covers normal and early submission, subscription during write, SSE loss, server/host restart, duplicate events, multiple forms, cancellation, expiration, and unsupported hosts. Test from form creation through resumption of a concrete task, not merely SSE delivery.
 
-Приёмка: обычное заполнение, заполнение до подписки, подписка во время записи, обрыв SSE, рестарт сервера, рестарт host, дубли событий, несколько форм, отмена, expiry и неподдерживаемый host. Нужен тест от form_create до возобновления конкретной задачи, а не только тест отправки SSE.
+## Reproduced findings
 
-## Воспроизведённые дефекты
+Run `node scripts/audit-product-scenarios.cjs` to reproduce using temporary directories, synthetic values, and an injected verifier. The probe does not call Keychain or real providers. Local metadata uses a local-file destination because the catalog-write defect is shared.
 
-Команда: `node scripts/audit-product-scenarios.cjs`. Проба использует временные каталоги, вымышленные значения и внедрённый verifier; реальный Keychain/провайдеры не вызываются. Local metadata lifecycle проверяется с local_file destination, поскольку обнаруженные ошибки находятся в общем коде записи каталога после destination save.
+### F01 · P1 · Done without a stored value
 
-### F01 · P1 · Done без сохранённого значения
+A required field without a level and a `destinations_by_level` map containing only `secret` produced create 200 → submit 200 → status done, with no output file. The missing route in `submitPending()` was skipped. Validate complete routing before issuing a link; never report done when a required value was omitted. Multi-destination writes also need partial-outcome tracking.
 
-Сценарий: обязательное поле без level, `destinations_by_level` содержит только `secret`, ни `default`, ни fallback destination нет.
+### F02 · P1 · Rotation loses a saved field alias
 
-Наблюдение: create 200 → submit 200 → status `done`, файл назначения отсутствует. В `submitPending()` отсутствующий маршрут приводит к `continue`, не к отказу. Существующий тест прямо закрепляет это как успешное поведение: [destinations.test.js](../../server/test/destinations.test.js), тест `field without level, no default, no destination`.
+Replacing `github/work` after saving `token_field: custom_pat` preserved the connection ID but dropped the mapping. Local submit built a new entry rather than transferring versioned role metadata. Rotation should select a connection ID, preserve only mappings compatible with the new schema, explicitly report `mapping_required` otherwise, and reset stale identity/scope evidence.
 
-Последствие: человек передал секрет, агент получил успех, но использовать нечего; понадобится повторный ввод. Исправление: проверять полное покрытие всех полей до выдачи ссылки; никакого done при пропущенном обязательном поле. Для нескольких destinations нужен учёт частичной записи, иначе повтор после сбоя может повторно записывать уже сохранённые группы.
+### F03 · P1 · Case variants create ambiguous connections
 
-### F02 · P1 · Обновление токена теряет сохранённый алиас поля
+Saving `github/work` and `GitHub/Work` created two entries. Reads and verification lowercased strings and selected the first match, while writes compared exact strings. Canonicalize providers, define alias case semantics, enforce identity uniqueness, and reveal conflicts during migration instead of blindly deleting duplicates.
 
-Seed: github/work с `token_field: custom_pat`. Отправка новой формы для того же provider/uid сохраняет прежний connection_id, но `token_field` исчезает.
+### F04 · P1 · Slow verification rolls back a newer change
 
-Причина: local submit создаёт новый объект entry с ограниченным набором полей, не переносит mapping: [server.js](../../server/src/server.js), блок `LOCAL_MODE && pending.service_slug && pending.uid`.
+Verification A read the catalog and paused; verification B saved `token_field: replacement`; A completed and wrote its stale catalog array. Atomic file rename prevents corruption but not lost updates. Patch a selected connection with optimistic version checks or use transactional storage. Validate the same boundary for concurrent submit and use metadata.
 
-Это ограничение нашего свежего #138: последовательные проверки работают, сценарий ротации не покрыт. Исправление: отдельная операция обновления выбранного connection_id и версия credential; mapping переносится только если соответствует новой схеме, иначе возвращается явное `mapping_required`. Проверенную identity/scopes старого значения нужно сбрасывать намеренно.
+### F05 · P1 · Crash during Submit makes a link disappear
 
-### F03 · P1 · Регистр создаёт два подключения, поиск различие скрывает
+A crash after pending → claimed caused the sweeper to delete an ordinary form's stale claim. Status became expired before the form TTL. Track durable processing/write outcomes and reconcile; simply restoring pending is unsafe if an external write may already have succeeded.
 
-Сохранить `github/work`, затем `GitHub/Work`: каталог содержит две записи. При записи сравнение строгое, при чтении и verify строки приводятся к lowercase. Verify выбирает первый `findIndex`, общего отказа при нескольких совпадениях нет.
+### F06 · P2 · Saved mapping is invisible in connection list
 
-Последствие: неоднозначный выбор значения и случайное использование старой записи. Исправление: единая канонизация provider, документированная семантика регистра alias, уникальность идентичности, выбор по connection_id. Миграция должна показывать конфликты, не удалять «дубликаты» вслепую.
+The catalog stored `token_field`, but `/api/local/connections` omitted it. Return safe role-to-field mapping metadata with source/version, never values, so a later agent can explain and reuse the configuration.
 
-### F04 · P1 · Медленная проверка откатывает уже сохранённое изменение
+### F07 · P1 · Corrected form reuses the old schema
 
-Проба удерживает verify A после чтения каталога; verify B сохраняет `token_field: replacement`; A завершается и записывает старый массив обратно. Результат: mapping снова `custom_pat`.
+An integrator created a form with `old_field`, then requested `token` for the same uid/service. Both calls returned 200; the second reused the first token and retained `old_field`. Deterministic reuse ignored field schema, destination, and purpose; MCP also hid `reused`. Fingerprint meaningful specifications and either return the identical form or explicitly conflict/replace it under a defined policy.
 
-Причина: read → await provider → write всего каталога: [server.js](../../server/src/server.js), local verify и `writeLocalCatalog()`. Атомарный rename защищает целостность файла, но не предотвращает lost update.
+### F08 · P2 · Large discovery suggests an impossible preview search
 
-Исправление: patch выбранного connection с optimistic concurrency/version check либо транзакционное хранилище. Ответ старой проверки не должен применяться к уже заменённой версии секрета. Та же граница требует проверки для параллельного Submit и use metadata.
+One source/category with 201 candidates returned HTTP 413 and advised searching a preview that had not been created. Persist the complete preview, page it with query/cursor, and separate the catalog-selection limit from inventory size. Recovery guidance must name an action the user can actually take.
 
-### F05 · P1 · После падения в Submit ссылка пропадает вместо восстановления
+### F09 · P1 · Subscribing during save yields false expiration
 
-Проба моделирует падение после rename pending → claimed. Sweeper удаляет stale claim обычной формы; status становится `expired`, хотя TTL формы ещё не закончился. Восстановление pending предусмотрено отдельно только для wallet.
+For a claimed form, status returned pending while events returned `expired` and closed. OpenCode did not reconnect. Use one state resolver for status and SSE, distinguish processing from expiration, and wait for a terminal outcome.
 
-Последствие: невозможно понять, была ли запись выполнена до падения, пользователь может получить повторный запрос секрета или произойдёт повторная внешняя запись. Исправление: устойчивые processing/write outcome/receipt и reconciliation. Просто вернуть claimed в pending недостаточно: нужно учитывать неизвестный исход записи.
+## Code-confirmed gaps
 
-### F06 · P2 · Сохранённая настройка невидима в списке подключений
+### F10 · P1 · No universal default waiting or durable host resume
 
-В каталоге есть `token_field`, но `/api/local/connections` проецирует запись без этого поля. Новый агент не видит, какой mapping уже выбран, и не может объяснить/восстановить его из стандартного списка.
+The OpenCode plugin responded to `form_create`, subscribed to loopback SSE, and called `session.promptAsync` on done. That did not cover wallet forms or other hosts. It stored active bindings in memory and did not originally reconnect. MCP notifications alone cannot prove that a host will resume an agent. Apply the waiting contract above and verify each host separately.
 
-Исправление: возвращать безопасные role→field mappings и их источник/version в connection metadata. Значений полей там быть не должно. Это вторая недоработка #138.
+### F11 · P1 · Discovery, collection, and use were separate paths
 
-### F07 · P1 · «Создай исправленную форму» возвращает прежнюю схему
+Discovery and active local connections used different catalogs. Shipped MCP lacked a bind operation, local API use, and local revoke/rotate. Wallet status required a known connection ID without wallet search. Uncommitted local checkout work was not counted as shipped. Define a common connection/reference contract and environment-specific collect, discover, bind, verify, use, rotate, and revoke capabilities. A provider with a form is not thereby fully supported.
 
-Integrator создаёт форму для одного uid/service с `old_field`, затем с теми же uid/service просит `token`. Оба запроса 200, второй `reused: true`, token тот же, фактическое поле по-прежнему `old_field`.
+### F12 · P1 · Valid token does not imply task readiness
 
-Причина: детерминированный reuse по integrator/service/user без сравнения схемы/назначения/цели. Дополнительно MCP `form_create` не переносит `reused` в свой ответ.
+GitHub verification checked `/user` and scopes; Cloudflare checked a user-token endpoint. Neither established permission for a specific repo, account, or operation. Report readiness as satisfied/denied/unknown for provider identity, resource, and action, with evidence source/time. Unknown permissions should not trigger a request for a broader token automatically.
 
-Исправление: fingerprint существенной спецификации. Повтор идентичного запроса возвращает прежнюю форму; изменённый запрос получает явный конфликт либо создаёт замену с аннулированием старой по определённой политике. Нужен безопасный способ исправлять незаполненные формы.
+### F13 · P1 · Storage success and durable confirmation diverged
 
-### F08 · P2 · Большой discovery предлагает поиск превью, которого не создал
+Ordinary submit originally dropped the claim before writing `.done`, suppressed marker-write errors, then returned 200 and emitted done. After restart, status could report expired despite a stored secret. Partial multi-destination writes were ambiguous. Durable receipts, write-outcome records, and reconciliation are needed; never require re-entering a value merely to check whether it was saved.
 
-201 кандидат в одном source/category → HTTP 413 и «select a source or search the preview», но preview_id отсутствует. Для одного большого Keychain фильтрация источника не помогает; поиск preview без ID невозможен.
+### F14 · P1 · One access failure blocks a reachable task
 
-Исправление: хранить preview целиком, выдавать ограниченную страницу и query/cursor; лимит выбранных к каталогизации записей не должен ограничивать размер инвентаря. Сообщения восстановления должны содержать реально выполнимый следующий шаг.
+In a real `gpt-mem/opencode-mem` scenario, local `gh workflow run test.yml` returned HTTP 403, while push worked. The agent kept examining that PAT and local Bun. Connected GitHub created draft PR #170, and `pull_request` triggered CI. Hash-only comparison showed the local `gh` token differed from two named Keychain PATs; their exact permissions were not established. A failed workflow dispatch proves only that operation was denied for that authorization. ZeroCreds should help find and map Keychain items without limiting ordinary Keychain use. The host should identify available authorizations, verify identity and target access, and try an authorized alternate path. PR-triggered CI does not imply manual dispatch permission.
 
-### F09 · P1 · Подписка во время сохранения получает ложный expired
+## Follow-up investigations
 
-На одной и той же форме в состоянии claimed status API отвечает `pending`, а events endpoint отвечает `event: expired` и закрывает поток. OpenCode plugin не переподписывается — автопродолжение теряется.
+1. **Wallet grant semantics:** A trusted machine caller receives fields and expiry. `vaultRead()` logs a grant but does not consume the value or make `run_id` unique. Define whether one-time means per assertion, run, or connection; verify TTL, cleanup, and runner redaction. A server expiry cannot retract plaintext already delivered to a trusted host.
+2. **Crash between custody write and journal/metadata completion:** Wallet `.written` and digest help retries, but fault-inject immediately after storage write and before `.written`, including across container restart. Confirm the actual durable sandbox and production backends; docs contained both historical OpenBao and newer D1 custody designs.
+3. **Release/runtime map:** A Mac checkout ran server and MCP with uncommitted code. `/version` reported git HEAD, not a hash of loaded sources. Verify main capability/version handshake, isolated local release installation, and rollback without losing subscriptions or metadata; inspect existing local runtime diagnostics before duplicating them.
 
-Причина: status читает и pending, и claimed, а events — только pending и done: [server.js](../../server/src/server.js), `/api/session/{token}/events`.
-
-Исправление: единый state resolver для status/SSE, различать processing и expiry; подключение во время записи должно дождаться терминального состояния. Эта гонка критична для требуемого ожидания по умолчанию.
-
-## Подтверждённые чтением кода разрывы
-
-### F10 · P1 · Нет общего ожидания по умолчанию и восстановления подписки
-
-[OpenCode plugin](../../opencode-plugin/zerocreds-events.js) уже автоматически реагирует на `form_create`, подписывается на local SSE и вызывает `session.promptAsync` после done. Поэтому утверждение «событий вообще нет» было бы неверным.
-
-Но это частная интеграция: только loopback и `form_create`, не `wallet_form_create`; в поставляемом [MCP](../../mcp/index.js) нет параметра ожидания/подписки, а wallet provider даёт status polling. OpenCode хранит active set в памяти, после EOF/ошибки не делает reconnect, не хранит durable task binding. Expired не вызывает продолжения, серверный sweeper не публикует событие expiry существующим подписчикам. README про «существующий status/event flow» не является доказательством автопродолжения каждого клиента.
-
-Исправление и приёмка — контракт ожидания выше. Возобновление агентской задачи требует участия host; простая отправка MCP notification не доказывает, что host запустит продолжение. Для Codex/других host поддержку нужно проверить отдельно, не обещать по аналогии с OpenCode.
-
-### F11 · P1 · Найти, собрать и использовать — разрозненные пути
-
-В main discovery добавляет отдельный metadata catalog, а `connection_verify` читает другой каталог активных connections. В поставляемом MCP нет bind найденного candidate к connection, нет общего local API-use tool, нет local revoke/rotate. Wallet status требует уже известный connection_id, инструмента поиска wallet connections нет: [mcp/index.js](../../mcp/index.js), [provider.js](../../mcp/provider.js), local discovery/connections routes.
-
-Последствие: агент может найти существующий доступ, но продолжить только новой формой или внешней интеграцией. Потеря ID после смены сессии затрудняет повторное использование wallet connection.
-
-В запущенном локальном checkout есть незакоммиченные реализации более широких инструментов. Они **не считаются поставленной возможностью main** и не переносятся/не оцениваются как завершённая работа в этом аудите. Следующая проверка должна сопоставить их поведение с S01/S07/S14, прежде чем писать новые дублирующие реализации.
-
-Исправление: единый контракт connection/reference и явно объявленные capabilities collect/discover/bind/verify/use/rotate/revoke по окружению. Нельзя объявлять provider «поддерживаемым» только потому, что для него есть форма.
-
-### F12 · P1 · Valid credential не отвечает на вопрос «можно выполнить задачу?»
-
-GitHub verify проверяет `/user`, считывает `x-oauth-scopes`; при отсутствии scopes возвращает evidence unknown. Cloudflare проверяет user token endpoint; отдельной поддержки account-owned token в main нет. Никакой из этих результатов не подтверждает конкретное действие над repo/account: [local-verification.js](../../server/src/local-verification.js).
-
-Это не обязательно ошибка verifier: узкая проверка честно обозначает часть evidence. Продуктовый разрыв — отсутствие сквозного ответа по requirement конкретной задачи. Агенту легко трактовать `valid` как «всё готово» или отказ другого типа как «нужен новый токен».
-
-Исправление: readiness по provider identity + target resource + required operation с `satisfied / denied / unknown`, источником и временем evidence. Неизвестные permissions не превращать в автоматический запрос более широкого токена; безопасный task-specific probe должен быть отдельным действием в рамках поручения.
-
-### F13 · P1 · Успех сохранения и durable подтверждение расходятся
-
-Обычный submit вызывает `dropClaim()` до записи `.done`; ошибка записи `.done` подавляется `catch {}`, затем возвращается 200 и публикуется done. После рестарта status может стать expired при реально сохранённом секрете. Также не гарантируется однозначное восстановление после частичной записи нескольких destinations.
-
-Подтверждение: порядок операций в [submitPending](../../server/src/server.js), после блока local catalog. Fault injection «сохранение успешно, запись marker не удалась» в этом проходе не выполнялся, поэтому F13 — статически подтверждённая ветка, не динамический repro.
-
-Исправление: durable receipt/state transition до подтверждения пользователю, устойчивый журнал write outcomes и отдельный outcome unknown при неоднозначном результате. Нужен recovery endpoint, который не требует повторно передать значение только для проверки факта сохранения.
-
-### F14 · P1 · Ошибка одного способа доступа блокирует достижимую задачу
-
-В отдельном реальном сценарии с `gpt-mem/opencode-mem` локальный `gh workflow run test.yml` получил HTTP 403 `Resource not accessible by personal access token`. Push ветки работал, а агент продолжал разбираться с этим PAT и локальным Bun. Между тем подключённый GitHub создал draft PR #170; событие `pull_request` запустило CI. Активный локальный `gh` использовал значение токена, отличное от обоих PAT в указанных Keychain items (сравнивались только хеши, значения не выводились). Это подтверждает различие авторизаций, но не утверждает, какими именно правами обладает каждый токен.
-
-Продуктовый разрыв находится на границе ZeroCreds и host/агента: `connection_verify` удостоверяет узкое свойство одного сохранённого секрета, но нет общей карты способов выполнить конкретное действие через локальный Keychain, подключённое приложение и событие workflow. ZeroCreds служит для быстрого поиска и сопоставления Keychain item; он не ограничивает и не должен опосредовать привычное использование этого item другими программами. Отказ `workflow_dispatch` означает отказ этой операции для этой авторизации; он не означает, что невозможно создать PR или запустить CI другим разрешённым путём.
-
-Исправление: для каждой задачи описывать требуемую операцию и ресурс, доступные авторизации/инструменты и их подтверждённые возможности; после 403 сверять identity и выбранный credential, затем пробовать уже разрешённый альтернативный путь к той же цели. Поиск через ZeroCreds не должен требовать миграции секрета или изменения обычного вызова `gh`/Keychain. Не просить новый токен, когда существующее подключение может завершить задачу. Подстановка другого токена для той же мутации требует отдельной проверки его применимости; успех PR-triggered CI не доказывает право на ручной dispatch. Приёмка: локальный `gh` получает 403, подключённый GitHub создаёт draft PR, CI стартует по `pull_request`, агент продолжает проверку CI и явно сообщает об оставшемся ограничении ручного запуска.
-
-## Дополнительные проверки перед расширением обещаний продукта
-
-1. **Wallet grant semantics.** Grant route отдаёт fields и expires_at доверенному machine caller; `vaultRead()` пишет событие granted, но не потребляет значение и не делает run_id уникальным. Повтор той же assertion блокируется, новая assertion может запросить значение снова. Уточнить, обещается ли однократная выдача на assertion, run или connection; проверить TTL/очистку и redaction в реальном host/runner. Это не доказанная утечка: host является доверенной границей, а удаление уже переданного plaintext невозможно обеспечить одной серверной датой expiry.
-2. **Сбой между custody write и journal/metadata complete.** Wallet имеет `.written` и digest для retry, но нужен fault injection непосредственно после storage write до записи `.written`, в том числе после рестарта container. Отдельно подтвердить, какой durable backend развёрнут в каждом sandbox/production lane: документы содержат исторические OpenBao и новые D1 custody описания.
-3. **Карта release/runtime.** На этом Mac сервер и MCP запускаются из checkout с другими незакоммиченными изменениями. `/version` сообщает git HEAD, не хеш фактически загруженных исходников. Проверить capability/version handshake на main, установку в отдельный release directory и rollback без потери подписок/метаданных. В local WIP уже есть runtime diagnostics; их следует сначала изучить, а не дублировать.
-
-## Предлагаемый порядок работы
-
-1. Убрать ложный успех и потерю состояния: F01, F04, F05, F13. Приёмка: каждый success проверяем, любой неопределённый write восстанавливаем без слепого повтора.
-2. Закрыть ожидание по умолчанию целиком: F09 + F10. В первую очередь сделать надёжный вертикальный сценарий на одном host, затем явно расширять матрицу клиентов. Не называть готовым универсальное ожидание после одного SSE теста.
-3. Довести connection lifecycle: F02, F03, F06, F07. Role mappings принадлежат версии connection; новая форма не должна незаметно разрушать существующую связь.
-4. Соединить inventory → bind → task readiness → use и локальное отключение: F11, F12, F14; использовать уже существующий WIP как материал для проверки. В task readiness учитывать разные авторизации и альтернативные разрешённые пути к цели. Затем pagination discovery F08.
-5. Сделать сценарную приёмку обязательной: не только unit «endpoint вернул 200», а пользователь получил результат и может восстановиться после каждого промежуточного сбоя.
-
-После первичного аудита в этой ветке исправлена часть findings, указанная в начале документа. Findings не публиковались как отдельные GitHub issues. Для следующих исправлений этот документ служит исходным backlog; воспроизводимая проба фиксирует наблюдения текущей версии и не является регрессионным тестом желаемого поведения.
+Original proposed order: eliminate false success and state loss (F01, F04, F05, F13); complete default waiting (F09, F10) in one host before expanding; repair connection lifecycle (F02, F03, F06, F07); join inventory → bind → task readiness → use → local revoke (F11, F12, F14), then discovery pagination (F08). Accept full user journeys and recovery outcomes, not merely endpoint 200s. The probe documents observations, not desired-behavior regression tests; findings were not individually published as GitHub issues.

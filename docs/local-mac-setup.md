@@ -61,6 +61,8 @@ To stop the service:
 launchctl bootout "gui/$(id -u)/com.zerocreds.local-server"
 ```
 
+The local `form_create` defaults to an English interface. Set `language: "ru"` for Russian and write custom form text in Russian.
+
 The local MCP exposes `doctor`, `form_create`, `form_status`, `connections_list`, `connection_resolve`, `connection_verify`, `share_create`, `share_status`, `share_cancel`, `share_claim`, and the `playground_*` test tools. Start with `doctor` when setup or storage is unclear; it reports safe readiness checks and repair steps, and never reads or returns credential values. Use the playground only with invented strings: it can replay generic format rules and local form lifecycle paths, but never contacts a provider or stores the submitted value. For a new real credential, request a normal form with a provider slug and a distinct account alias (for example provider `github`, aliases `work` and `personal`). Include `credential_expires_at` only when the actual expiry is known; omit it otherwise. Credential expiry is independent of the one-time form link expiry.
 
 ## Share an existing credential with another Mac

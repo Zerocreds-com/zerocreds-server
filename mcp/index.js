@@ -73,10 +73,11 @@ const server = new McpServer({
 
 server.tool(
   'form_create',
-  'Create a ZeroCreds credential-collection session. The user fills in credentials directly — the agent never sees them. When sharing the form, show the returned user_message verbatim so the link has a friendly label; do not expose the raw URL by itself.',
+  'Create a ZeroCreds credential-collection session. Use English for the form title, description, labels, and placeholders by default; set language to ru and write those strings in Russian only when requested. The user fills in credentials directly — the agent never sees them. When sharing the form, show the returned user_message verbatim so the link has a friendly label; do not expose the raw URL by itself.',
   {
     title: z.string().describe('Heading shown on the form (e.g. "Connect GitHub")'),
     description: z.string().optional().describe('Subtext explaining what credentials are needed and why'),
+    language: z.enum(['en', 'ru']).optional().describe('Form interface language: en (default) or ru. Write the title, description, field labels, and placeholders in the same language.'),
     fields: z.array(z.object({
       name: z.string().describe('Key in the saved credentials JSON (alphanumeric + underscore). Prefer token for provider tokens; custom names can be verified with connection_verify token_field.'),
       label: z.string().describe('Label shown on the form'),
@@ -102,7 +103,7 @@ server.tool(
       tg_chat_id: z.string(),
     }).optional().describe('Send the form link via Telegram automatically'),
   },
-  async ({ title, description, fields, destination, uid, service, credential_expires_at, ttl_minutes, notify }) => {
+  async ({ title, description, language = 'en', fields, destination, uid, service, credential_expires_at, ttl_minutes, notify }) => {
     const selectedDestination = LOCAL_MODE ? DEFAULT_DESTINATION : destination;
     if (!selectedDestination) throw new Error('ZeroCreds destination is not configured');
     if (LOCAL_MODE && (!uid || !service)) throw new Error('Local credential setup requires a provider slug and a distinct account alias');
@@ -112,6 +113,7 @@ server.tool(
     const data = await apiCall('POST', '/api/session/create', {
       title,
       description,
+      language,
       fields,
       destination: selectedDestination,
       uid,
@@ -121,7 +123,7 @@ server.tool(
       notify,
     });
     if (data.error) throw new Error(data.error);
-    const userMessage = LOCAL_MODE
+    const userMessage = language === 'ru'
       ? `Запрос создан. Попросите пользователя открыть форму и ввести данные напрямую в ZeroCreds: [Открыть защищённую форму ZeroCreds](${data.url})`
       : `Credential request created. Ask the user to enter their credentials directly in ZeroCreds: [Open secure ZeroCreds form](${data.url})`;
     return {

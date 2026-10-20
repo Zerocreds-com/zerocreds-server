@@ -28,6 +28,8 @@ def check(domain, marker, expected=None):
 
 if __name__ == '__main__':
     failed = False
+    # The Russian landing-page marker checks an external legacy site. It does
+    # not control the language of forms or documentation in this repository.
     for domain, marker in [('zerocreds.ru', 'Данные уходят'), ('zerocreds.com', 'Credentials go straight')]:
         try:
             check(domain, marker, os.environ.get('EXPECTED_COMMIT'))

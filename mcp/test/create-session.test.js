@@ -9,6 +9,7 @@ const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio
 test('local credential form response gives the agent a friendly user-facing link', async () => {
   const token = 'local-admin-token-12345678901234567890';
   const formUrl = 'http://127.0.0.1:3456/f/' + 'a'.repeat(32);
+  const languages = [];
   const api = http.createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
@@ -16,6 +17,7 @@ test('local credential form response gives the agent a friendly user-facing link
     assert.equal(req.url, '/api/session/create');
     const body = JSON.parse(raw);
     assert.equal(body.service, 'deepgram');
+    languages.push(body.language);
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ token: 'a'.repeat(32), url: formUrl, expires_at: '2030-01-01T00:00:00.000Z' }));
   });
@@ -36,8 +38,16 @@ test('local credential form response gives the agent a friendly user-facing link
     } });
     const response = JSON.parse(result.content[0].text);
     assert.equal(response.url, formUrl);
-    assert.match(response.user_message, /\[Открыть защищённую форму ZeroCreds\]\(http:\/\/127\.0\.0\.1:3456\/f\//);
-    assert.equal(response.user_message.match(/\[([^\]]+)\]\(/)[1], 'Открыть защищённую форму ZeroCreds');
+    assert.match(response.user_message, /\[Open secure ZeroCreds form\]\(http:\/\/127\.0\.0\.1:3456\/f\//);
+    assert.equal(response.user_message.match(/\[([^\]]+)\]\(/)[1], 'Open secure ZeroCreds form');
+    const ruResult = await client.callTool({ name: 'form_create', arguments: {
+      title: 'Подключить Deepgram', language: 'ru',
+      fields: [{ name: 'api_key', label: 'Ключ API', type: 'password' }],
+      service: 'deepgram', uid: 'work-ru',
+    } });
+    const ruResponse = JSON.parse(ruResult.content[0].text);
+    assert.match(ruResponse.user_message, /Открыть защищённую форму ZeroCreds/);
+    assert.deepEqual(languages, ['en', 'ru']);
   } finally {
     await client.close();
     await new Promise(resolve => api.close(resolve));

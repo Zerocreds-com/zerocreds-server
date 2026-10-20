@@ -20,6 +20,13 @@ test('valid request with destination → 200 + token/url/expires_at', async () =
   assert.ok(r.body.expires_at);
 });
 
+test('unsupported form language is rejected', async () => {
+  const r = await request(ctx.port, 'POST', '/api/session/create',
+    { title: 'Test', language: 'fr', fields: [{ name: 'tok', label: 'Token' }], destination: localDest }, auth());
+  assert.equal(r.status, 400);
+  assert.match(r.body.error, /language must be en or ru/);
+});
+
 test('valid request with destinations_by_level → 200', async () => {
   const r = await request(ctx.port, 'POST', '/api/session/create',
     { title: 'T', fields: [{ name: 'tok', label: 'L', level: 'secret' }],

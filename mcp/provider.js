@@ -57,7 +57,7 @@ const tools = [
   },
   {
     name: 'wallet_form_create',
-    description: 'Create a ZeroCreds credential form for the current owner and profile. For a known service in service_catalog, pass its canonical provider slug only; omit kind and fields so the server chooses the safe default. Unknown services require a minimal explicit non-secret form spec. Ask the user only for required non-secret context (for example which GitHub account or what access is needed); never ask for or accept credential values in chat. Do not use service configuration APIs to satisfy a connection request. Returns one-time form URL and value-free metadata.',
+    description: 'Create a ZeroCreds credential form for the current owner and profile. English is the default; set language to ru only when a Russian form is requested. Write custom presentation text in the selected language. For a known service in service_catalog, pass its canonical provider slug only; omit kind and fields so the server chooses the safe default. Unknown services require a minimal explicit non-secret form spec. Ask the user only for required non-secret context (for example which GitHub account or what access is needed); never ask for or accept credential values in chat. Do not use service configuration APIs to satisfy a connection request. Returns one-time form URL and value-free metadata.',
     inputSchema: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -65,6 +65,7 @@ const tools = [
         kind: { type: 'string', enum: ['token', 'ssh', 'login'], default: 'token' },
         title: { type: 'string', maxLength: 200 },
         description: { type: 'string', maxLength: 2000 },
+        language: { type: 'string', enum: ['en', 'ru'], default: 'en', description: 'Form interface language. Defaults to English; write custom form text in the same language.' },
         fields: { type: 'array', minItems: 1, items: { type: 'object', additionalProperties: false, required: ['name', 'label'], properties: {
           name: { type: 'string' }, label: { type: 'string' },
           type: { type: 'string', enum: ['text', 'password', 'email', 'tel', 'number', 'textarea', 'url'] },

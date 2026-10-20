@@ -140,9 +140,10 @@ Tool names carry only the action and the object (`form_create`, `discovery_sourc
 
 **`form_create`** — create a form, get a URL to send to the user:
 ```
-title, description, fields[], destination, ttl_minutes, notify
+title, description, language?, fields[], destination, ttl_minutes, notify
 → { token, url, expires_at }
 ```
+`language` accepts `en` or `ru` and defaults to `en`, including in local mode. It translates the form interface; write your own title, description, labels, and placeholders in the selected language.
 
 **`form_status`** — poll until the user submits:
 ```
@@ -263,6 +264,7 @@ Poll every 5–10 seconds. When `done`, credentials are in the secret store — 
 |-------|------|----------|-------------|
 | `title` | string | yes | Form heading shown to the user |
 | `description` | string | no | Subtext on the form |
+| `language` | `en` or `ru` | no | Form interface language (default: `en`); supply custom text in the same language |
 | `fields` | array | yes | Form fields (see below) |
 | `destination` | string or object | yes | Where to save credentials |
 | `ttl_minutes` | number | no | Link expiry (default: 30, max: 1440) |
@@ -301,7 +303,7 @@ Authorization: Bearer {integrator or admin token}
 | `kind` | string | no | `token` (default: one password field `token`) · `ssh` (`private_key`) · `login` (`username`, `password`) |
 | `fields` | array | no | Overrides the kind's default fields (same rules as sessions) |
 | `destination` | string or object | yes | Same rules as sessions: named destinations only unless inline is enabled; `http_post` allowlist applies |
-| `title`, `description`, `ttl_minutes`, `test_destination` | | no | As for sessions (`title` defaults to `Save <name>`) |
+| `title`, `description`, `language`, `ttl_minutes`, `test_destination` | | no | As for sessions (`title` defaults to `Save <name>` in English) |
 
 Response: `form_id`, `handle`, `url` (human form, `/f/{form_id}`), `submit_url`, `status_url`, a one-time `submit_token` (returned once, stored only as a hash), `expires_at`, a signed `manifest` (`manifest_id` = sha256 of the canonical manifest: fields, destination, exact submit request, owner, server version) and `api_example` (`curl` and `sar cred put` with placeholders).
 

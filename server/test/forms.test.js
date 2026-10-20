@@ -31,6 +31,25 @@ after(async () => { await ctx.stop(); });
 const admin = () => ({ Authorization: `Bearer ${ctx.adminToken}` });
 const bearer = (t) => ({ Authorization: `Bearer ${t}` });
 
+test('API form language defaults to English and localizes generated fields when Russian is selected', async () => {
+  const english = await request(ctx.port, 'POST', '/api/forms',
+    { name: 'english-form', destination: 'creds-file' }, admin());
+  assert.equal(english.status, 200);
+  assert.match((await request(ctx.port, 'GET', `/f/${english.body.form_id}`)).raw, /<html lang="en">/);
+
+  const russian = await request(ctx.port, 'POST', '/api/forms',
+    { name: 'russian-form', language: 'ru', destination: 'creds-file' }, admin());
+  assert.equal(russian.status, 200);
+  const page = (await request(ctx.port, 'GET', `/f/${russian.body.form_id}`)).raw;
+  assert.match(page, /<html lang="ru">/);
+  assert.match(page, /Сохранить russian-form/);
+  assert.match(page, /Токен/);
+
+  const invalid = await request(ctx.port, 'POST', '/api/forms',
+    { name: 'invalid-form', language: 'fr', destination: 'creds-file' }, admin());
+  assert.equal(invalid.status, 400);
+});
+
 test('named OpenBao form: verified preflight, redacted pending state, owner-scoped receipt', async () => {
   const calls = [];
   const mock = http.createServer((req, res) => {

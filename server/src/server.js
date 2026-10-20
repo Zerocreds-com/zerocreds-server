@@ -164,11 +164,11 @@ function clientIp(req) {
 
 function nalogFormHtml(token, nonce) {
   return `<!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Подключить Налог.ру</title>
+<title>Connect Nalog.ru</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d0f17;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;color:#c8cdd8}
@@ -199,29 +199,29 @@ function nalogFormHtml(token, nonce) {
 <body>
 <div class="card">
   <div id="step1">
-    <h1>Подключить Налог.ру</h1>
-    <p class="sub">Введите данные для входа в Госуслуги. Они поступают напрямую на сервер — в чат с ботом <b>не попадают</b>.</p>
-    <label for="login">Логин Госуслуг (телефон, email или СНИЛС)</label>
+    <h1>Connect Nalog.ru</h1>
+    <p class="sub">Enter your Gosuslugi sign-in details. They go directly to the server and <b>never enter the bot chat</b>.</p>
+    <label for="login">Gosuslugi login (phone, email, or SNILS)</label>
     <input id="login" type="text" autocomplete="username" inputmode="email" placeholder="+7 999 123-45-67">
-    <label for="password">Пароль Госуслуг</label>
-    <input id="password" type="password" autocomplete="current-password" placeholder="Пароль">
-    <button id="btn1" type="button">Войти через Госуслуги</button>
+    <label for="password">Gosuslugi password</label>
+    <input id="password" type="password" autocomplete="current-password" placeholder="Password">
+    <button id="btn1" type="button">Sign in through Gosuslugi</button>
     <div id="msg1" class="msg"></div>
   </div>
   <div id="step2">
-    <h1>Код подтверждения</h1>
-    <p class="sub">На ваш телефон или в приложение Госуслуги отправлен код. Введите его ниже.</p>
-    <label for="code">Код из SMS / приложения</label>
+    <h1>Verification code</h1>
+    <p class="sub">A code was sent to your phone or Gosuslugi app. Enter it below.</p>
+    <label for="code">Code from SMS or app</label>
     <input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" maxlength="8">
-    <button id="btn2" type="button">Подтвердить</button>
+    <button id="btn2" type="button">Confirm</button>
     <div id="msg2" class="msg"></div>
   </div>
   <div id="step3">
     <div class="check-icon">✓</div>
-    <h1>Налог.ру подключён</h1>
-    <p class="sub" id="expiresText">Данные авторизации сохранены. Можете закрыть эту страницу и вернуться в бот.</p>
+    <h1>Nalog.ru connected</h1>
+    <p class="sub" id="expiresText">Sign-in details saved. You can close this page and return to the bot.</p>
   </div>
-  <p class="lock">Данные не попадают в LLM &middot; Ссылка одноразовая &middot; <a href="/version">v${VERSION}</a></p>
+  <p class="lock">Data never enters the LLM &middot; One-time link &middot; <a href="/version">v${VERSION}</a></p>
 </div>
 <script nonce="${nonce}">
 const T = ${jsValue(token)};
@@ -236,10 +236,10 @@ function showMsg(n, cls, text) {
 async function submitCreds() {
   const login = document.getElementById('login').value.trim();
   const password = document.getElementById('password').value;
-  if (!login || !password) { showMsg(1, 'err', 'Введите логин и пароль'); return; }
+  if (!login || !password) { showMsg(1, 'err', 'Enter your login and password'); return; }
   const btn = document.getElementById('btn1');
-  btn.disabled = true; btn.textContent = 'Подключаюсь… (30–60 сек)';
-  showMsg(1, 'info', '⏳ Открываю браузер и вхожу через Госуслуги…');
+  btn.disabled = true; btn.textContent = 'Connecting… (30–60 seconds)';
+  showMsg(1, 'info', '⏳ Opening a browser and signing in through Gosuslugi…');
   try {
     const r = await fetch('/connect/nalog', {
       method: 'POST',
@@ -248,27 +248,27 @@ async function submitCreds() {
       signal: AbortSignal.timeout(95000),
     });
     const d = await r.json();
-    if (d.error) { showMsg(1, 'err', d.error); btn.disabled = false; btn.textContent = 'Войти через Госуслуги'; return; }
+    if (d.error) { showMsg(1, 'err', d.error); btn.disabled = false; btn.textContent = 'Sign in through Gosuslugi'; return; }
     if (d.status === 'ok') {
       document.getElementById('expiresText').textContent =
-        d.expires ? 'Токен действует до ' + new Date(d.expires).toLocaleString('ru-RU') + '. Можете закрыть страницу.' : 'Токен сохранён. Можете закрыть страницу.';
+        d.expires ? 'Token valid until ' + new Date(d.expires).toLocaleString('en-US') + '. You can close this page.' : 'Token saved. You can close this page.';
       show('step3'); return;
     }
     if (d.status === 'need_code') {
       sessionId = d.sessionId; show('step2'); document.getElementById('code').focus(); return;
     }
-    showMsg(1, 'err', 'Неожиданный ответ сервера'); btn.disabled = false; btn.textContent = 'Войти через Госуслуги';
+    showMsg(1, 'err', 'Unexpected server response'); btn.disabled = false; btn.textContent = 'Sign in through Gosuslugi';
   } catch(e) {
-    showMsg(1, 'err', e.name === 'TimeoutError' ? 'Превышено время ожидания (90 сек) — попробуйте ещё раз' : 'Сетевая ошибка: ' + e.message);
-    btn.disabled = false; btn.textContent = 'Войти через Госуслуги';
+    showMsg(1, 'err', e.name === 'TimeoutError' ? 'Timed out after 90 seconds — please try again' : 'Network error: ' + e.message);
+    btn.disabled = false; btn.textContent = 'Sign in through Gosuslugi';
   }
 }
 async function submitCode() {
   const code = document.getElementById('code').value.trim();
-  if (!code) { showMsg(2, 'err', 'Введите код'); return; }
+  if (!code) { showMsg(2, 'err', 'Enter the code'); return; }
   const btn = document.getElementById('btn2');
-  btn.disabled = true; btn.textContent = 'Проверяю…';
-  showMsg(2, 'info', '⏳ Завершаю вход…');
+  btn.disabled = true; btn.textContent = 'Checking…';
+  showMsg(2, 'info', '⏳ Completing sign-in…');
   try {
     const r = await fetch('/connect/nalog/code', {
       method: 'POST',
@@ -277,16 +277,16 @@ async function submitCode() {
       signal: AbortSignal.timeout(40000),
     });
     const d = await r.json();
-    if (d.error) { showMsg(2, 'err', d.error); btn.disabled = false; btn.textContent = 'Подтвердить'; return; }
+    if (d.error) { showMsg(2, 'err', d.error); btn.disabled = false; btn.textContent = 'Confirm'; return; }
     if (d.ok) {
       document.getElementById('expiresText').textContent =
-        d.expires ? 'Токен действует до ' + new Date(d.expires).toLocaleString('ru-RU') + '. Можете закрыть страницу.' : 'Токен сохранён. Можете закрыть страницу.';
+        d.expires ? 'Token valid until ' + new Date(d.expires).toLocaleString('en-US') + '. You can close this page.' : 'Token saved. You can close this page.';
       show('step3'); return;
     }
-    showMsg(2, 'err', 'Неожиданный ответ'); btn.disabled = false; btn.textContent = 'Подтвердить';
+    showMsg(2, 'err', 'Unexpected response'); btn.disabled = false; btn.textContent = 'Confirm';
   } catch(e) {
-    showMsg(2, 'err', 'Ошибка: ' + e.message);
-    btn.disabled = false; btn.textContent = 'Подтвердить';
+    showMsg(2, 'err', 'Error: ' + e.message);
+    btn.disabled = false; btn.textContent = 'Confirm';
   }
 }
 document.getElementById('btn1').addEventListener('click', submitCreds);
@@ -479,6 +479,71 @@ const LEVEL_META = {
   credential: { tag: 'SESSION',  label: 'Session credential', aiSees: 'Not via ZeroCreds', logs: 'Never logged', desc: 'Used only in the current session. Not saved to logs.' },
 };
 
+// Form chrome is English unless the creator explicitly chooses Russian. Caller-supplied
+// titles, descriptions and field labels are rendered verbatim and never machine-translated.
+const FORM_RU = {
+  'Enter your credentials': 'Введите учётные данные',
+  'Values go directly from this page to ZeroCreds, not through the AI chat.': 'Данные отправляются с этой страницы напрямую в ZeroCreds, минуя чат с ИИ.',
+  'What happens to this data?': 'Как обрабатываются эти данные?',
+  'ZeroCreds server': 'Сервер ZeroCreds', 'Receives': 'Получает',
+  'AI assistant': 'ИИ-ассистент', 'Logs': 'Журналы',
+  'Show/hide': 'Показать/скрыть', 'Show or hide': 'Показать или скрыть', 'Paste': 'Вставить',
+  'You are on': 'Вы на', 'Sent to': 'Отправляется в', 'Saved to': 'Сохранено в',
+  'Saved as': 'Сохранено как', 'Requested by': 'Запросил',
+  'Copy as API request ▾': 'Скопировать API-запрос ▾', 'Copy': 'Копировать',
+  'How is this data handled? ▾': 'Как обрабатываются данные? ▾',
+  'Submit': 'Отправить', 'Done': 'Готово', 'One-time link': 'Одноразовая ссылка',
+  'Credentials saved. You can close this page.': 'Данные сохранены. Эту страницу можно закрыть.',
+  'Switch to light theme': 'Включить светлую тему', 'Switch to dark theme': 'Включить тёмную тему',
+  'Toggle color theme': 'Переключить тему',
+  'Please fill in all required fields': 'Заполните все обязательные поля',
+  'Saving…': 'Сохранение…', 'Needs review': 'Требуется проверка',
+  'Server error': 'Ошибка сервера', 'Reference: ': 'Код: ',
+  'Copy details': 'Скопировать детали', 'Copied': 'Скопировано',
+  'Allow clipboard access or paste manually (Ctrl+V / ⌘V)': 'Разрешите доступ к буферу обмена или вставьте вручную (Ctrl+V / ⌘V)',
+  'Allow clipboard access or select the text and copy it manually': 'Разрешите доступ к буферу обмена или выделите и скопируйте текст вручную',
+  'Allow clipboard access, then select and copy the error details': 'Разрешите доступ к буферу обмена, затем выделите и скопируйте детали ошибки',
+  'Could not confirm whether ZeroCreds saved this form. Ask the requester to check its status before trying again.': 'Не удалось подтвердить сохранение формы. Попросите отправителя проверить её статус перед повторной попыткой.',
+  ' remaining': ' осталось', 'link expired': 'ссылка истекла',
+  'Secret': 'Секрет', 'Personal data': 'Персональные данные',
+  'SECRET': 'СЕКРЕТ', 'PII DATA': 'ПЕРСОНАЛЬНЫЕ ДАННЫЕ',
+  'CONFIG': 'НАСТРОЙКИ', 'SESSION': 'СЕССИЯ',
+  'Configuration': 'Конфигурация', 'Session credential': 'Сессионный токен',
+  'Not via ZeroCreds': 'Не через ZeroCreds', 'Never logged': 'Не записывается',
+  'For tasks only': 'Только для задачи', 'Anonymised': 'Обезличено',
+  'Openly': 'Открыто', 'Yes': 'Да',
+  'Treated as a secret. See "Sent to" above for exactly who receives it.': 'Обрабатывается как секрет. Точный получатель указан выше в поле «Отправляется в».',
+  'The AI can use this for tasks. Not stored in logs in plain form.': 'ИИ может использовать эти данные для задачи. Они не сохраняются в журналах открытым текстом.',
+  'Open configuration. The AI uses this in every request.': 'Открытая конфигурация. ИИ использует её в каждом запросе.',
+  'Used only in the current session. Not saved to logs.': 'Используется только в текущей сессии и не сохраняется в журналах.',
+  'Handled as a secret: ZeroCreds does not log submitted values.': 'Обрабатывается как секрет: ZeroCreds не записывает отправленные значения.',
+  'Agent receives this for task context. Not stored in conversation logs in plain form.': 'Агент получает данные для задачи. Они не сохраняются в журнале разговора открытым текстом.',
+  'Agent uses this openly in every request.': 'Агент открыто использует эти данные в каждом запросе.',
+  'Used in the current session only. Not written to persistent logs.': 'Используется только в текущей сессии и не записывается в постоянные журналы.',
+  'Operator of this ZeroCreds server': 'Оператор этого сервера ZeroCreds',
+  'File on the ZeroCreds server': 'Файл на сервере ZeroCreds',
+  'macOS Keychain on this Mac': 'Связка ключей macOS на этом Mac',
+  'macOS Keychain on the ZeroCreds server': 'Связка ключей macOS на сервере ZeroCreds',
+  'OS keychain on this Mac': 'Хранилище ключей ОС на этом Mac',
+  'OS keychain on the ZeroCreds server': 'Хранилище ключей ОС на сервере ZeroCreds',
+  'Windows Credential Manager': 'Диспетчер учётных данных Windows',
+  'Web endpoint of the requester': 'Веб-адрес отправителя запроса',
+  'Whoever runs this endpoint receives the values in readable form.': 'Владелец этого адреса получает значения в читаемом виде.',
+  'Vault-compatible secret store': 'Хранилище секретов, совместимое с Vault',
+  'ZeroCreds custody store': 'Хранилище ZeroCreds',
+  'Stored on the ZeroCreds server; programs run by the server operator can read it.': 'Хранится на сервере ZeroCreds; программы оператора сервера могут прочитать значение.',
+  'ZeroCreds is only given write access to this store (when configured as documented).': 'При указанной конфигурации ZeroCreds имеет только право записи в это хранилище.',
+  'Synthetic test value checked and discarded. Nothing was saved.': 'Тестовое значение проверено и удалено. Ничего не сохранено.',
+  'Same form from a script: values come from env variables, never from this page. Use the owner key or the one-time submit token as': 'Та же форма из скрипта: значения берутся из переменных окружения, а не с этой страницы. Используйте ключ владельца или одноразовый токен отправки как',
+  'Storage: OpenBao KV v2': 'Хранилище: OpenBao KV v2', 'Path:': 'Путь:',
+  'Storage checked:': 'Хранилище проверено:', 'Credential version: not created yet.': 'Версия секрета ещё не создана.',
+  'Wallet owner:': 'Владелец кошелька:', 'Profile:': 'Профиль:', 'Connection:': 'Подключение:',
+  'ZeroCreds operates this wallet; its infrastructure administrators can technically access stored values.': 'ZeroCreds обслуживает этот кошелёк; администраторы его инфраструктуры технически могут получить доступ к сохранённым значениям.',
+  'Wallet owner and profile: not verified by this form version.': 'Владелец и профиль кошелька не проверяются этой версией формы.',
+  'TEST PLAYGROUND — DO NOT ENTER REAL CREDENTIALS': 'ТЕСТОВАЯ СРЕДА — НЕ ВВОДИТЕ НАСТОЯЩИЕ УЧЁТНЫЕ ДАННЫЕ',
+  'This local form accepts synthetic test values only. Values are checked against the configured rules in memory, then discarded. Nothing is verified with a provider or saved to a credential store.': 'Эта локальная форма принимает только вымышленные тестовые значения. Они проверяются в памяти и затем удаляются. Проверка у провайдера и сохранение в хранилище не выполняются.',
+};
+
 // Design tokens for the dynamic form (/f/:token). Light is the default; dark applies via
 // prefers-color-scheme or an explicit data-theme="dark" on <html> (user toggle, persisted).
 const FORM_THEME_LIGHT = [
@@ -542,6 +607,12 @@ const WALLET_SERVICE_TEMPLATES = Object.freeze({
   stripe: { kind: 'token', title: 'Connect Stripe', description: 'Enter a Stripe restricted key with only the permissions required for the requested task.' },
   linear: { kind: 'token', title: 'Connect Linear', description: 'Enter a Linear API key with only the access required for the requested task.' },
 });
+const WALLET_SERVICE_NAMES_RU = Object.freeze({ github: 'GitHub', gitlab: 'GitLab', cloudflare: 'Cloudflare',
+  google_cloud: 'Google Cloud', aws: 'Amazon Web Services', openai: 'OpenAI', anthropic: 'Anthropic',
+  slack: 'Slack', notion: 'Notion', npm: 'npm', vercel: 'Vercel', sentry: 'Sentry',
+  stripe: 'Stripe', linear: 'Linear' });
+const WALLET_FIELD_LABELS_RU = Object.freeze({ Token: 'Токен', 'SSH private key': 'Приватный SSH-ключ',
+  Username: 'Имя пользователя', Password: 'Пароль' });
 const WALLET_SERVICE_ALIASES = Object.freeze({ gh: 'github', 'github.com': 'github', 'gitlab.com': 'gitlab', cf: 'cloudflare', 'cloudflare.com': 'cloudflare', gcp: 'google_cloud', aws: 'aws', 'amazon aws': 'aws', 'open ai': 'openai' });
 function canonicalWalletProvider(value) {
   if (typeof value !== 'string') return null;
@@ -640,30 +711,32 @@ function requesterLabel(pending) {
 }
 
 function dynamicFormHtml(token, pending, host, nonce, api = null) {
+  const language = pending.language === 'ru' ? 'ru' : 'en';
+  const t = (value) => language === 'ru' ? FORM_RU[value] || value : value;
   const fields = Array.isArray(pending.fields) ? pending.fields : [];
-  const title = pending.title || 'Enter your credentials';
-  const description = pending.description || 'Values go directly from this page to ZeroCreds, not through the AI chat.';
+  const title = pending.title || t('Enter your credentials');
+  const description = pending.description || t('Values go directly from this page to ZeroCreds, not through the AI chat.');
   const playgroundWarning = pending.playground_test
-    ? `<div class="storage-summary" role="note"><strong>TEST PLAYGROUND — DO NOT ENTER REAL CREDENTIALS</strong><br>This local form accepts synthetic test values only. Values are checked against the configured rules in memory, then discarded. Nothing is verified with a provider or saved to a credential store.</div>`
+    ? `<div class="storage-summary" role="note"><strong>${t('TEST PLAYGROUND — DO NOT ENTER REAL CREDENTIALS')}</strong><br>${t('This local form accepts synthetic test values only. Values are checked against the configured rules in memory, then discarded. Nothing is verified with a provider or saved to a credential store.')}</div>`
     : '';
 
   function levelBadge(f) {
     const lm = LEVEL_META[f.level];
     if (!lm) return '';
-    return `<div class="level-tag"><span class="level-chip lvl-${f.level}">${lm.tag}</span><button type="button" class="level-btn" data-action="toggle-info" data-target="info_${escHtml(f.name)}" aria-controls="info_${escHtml(f.name)}" aria-expanded="false" title="What happens to this data?" aria-label="What happens to this data?">ⓘ</button></div>`;
+    return `<div class="level-tag"><span class="level-chip lvl-${f.level}">${t(lm.tag)}</span><button type="button" class="level-btn" data-action="toggle-info" data-target="info_${escHtml(f.name)}" aria-controls="info_${escHtml(f.name)}" aria-expanded="false" title="${t('What happens to this data?')}" aria-label="${t('What happens to this data?')}">ⓘ</button></div>`;
   }
 
   function levelInfoCard(f) {
     const lm = LEVEL_META[f.level];
     if (!lm) return '';
     return `<div id="info_${escHtml(f.name)}" class="level-info lvl-${f.level}" hidden>
-  <div class="level-info-title">${lm.tag} — ${lm.label}</div>
+  <div class="level-info-title">${t(lm.tag)} — ${t(lm.label)}</div>
   <table class="level-table">
-    <tr><td>ZeroCreds server</td><td>Receives</td></tr>
-    <tr><td>AI assistant</td><td>${lm.aiSees}</td></tr>
-    <tr><td>Logs</td><td>${lm.logs}</td></tr>
+    <tr><td>${t('ZeroCreds server')}</td><td>${t('Receives')}</td></tr>
+    <tr><td>${t('AI assistant')}</td><td>${t(lm.aiSees)}</td></tr>
+    <tr><td>${t('Logs')}</td><td>${t(lm.logs)}</td></tr>
   </table>
-  <div class="level-desc">${lm.desc}</div>
+  <div class="level-desc">${t(lm.desc)}</div>
 </div>`;
   }
 
@@ -678,14 +751,14 @@ function dynamicFormHtml(token, pending, host, nonce, api = null) {
       return `${labelHtml}<textarea id="${id}" name="${name}" placeholder="${ph}" ${req} rows="4"></textarea>`;
     }
     if (type === 'password') {
-      return `${labelHtml}<div class="pw-wrap"><input id="${id}" name="${name}" type="password" placeholder="${ph}" autocomplete="current-password" spellcheck="false" ${req}><button type="button" class="pw-btn eye" data-action="toggle-pw" data-target="${id}" title="Show/hide" aria-label="Show or hide">👁</button><button type="button" class="pw-btn paste" data-action="paste" data-target="${id}">Paste</button></div>`;
+      return `${labelHtml}<div class="pw-wrap"><input id="${id}" name="${name}" type="password" placeholder="${ph}" autocomplete="current-password" spellcheck="false" ${req}><button type="button" class="pw-btn eye" data-action="toggle-pw" data-target="${id}" title="${t('Show/hide')}" aria-label="${t('Show or hide')}">👁</button><button type="button" class="pw-btn paste" data-action="paste" data-target="${id}">${t('Paste')}</button></div>`;
     }
     return `${labelHtml}<input id="${id}" name="${name}" type="${type}" placeholder="${ph}" autocomplete="off" spellcheck="false" ${req}>`;
   }).join('\n  ');
 
   const isLocal = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host);
   const hostBadge = isLocal
-    ? `You are on <a href="https://www.google.com/search?q=what+is+localhost" target="_blank" rel="noopener">localhost</a>`
+    ? `${t('You are on')} <a href="https://www.google.com/search?q=what+is+localhost" target="_blank" rel="noopener">localhost</a>`
     : escHtml(host || '');
 
   // Always-visible: who asked, and exactly where each group of fields is sent.
@@ -699,31 +772,31 @@ function dynamicFormHtml(token, pending, host, nonce, api = null) {
 
   }
   const destRows = destGroups.map(g => {
-    const k = destGroups.length > 1 ? `${escHtml(g.labels.join(', '))} →` : 'Sent to';
-    return `<div class="dest-row"><span class="dest-k">${k}</span><span class="dest-v">${escHtml(g.kind)}${g.target ? `<code class="dest-target">${escHtml(g.target)}</code>` : ''}${g.note ? `<span class="dest-note">${escHtml(g.note)}</span>` : ''}</span></div>`;
+    const k = destGroups.length > 1 ? `${escHtml(g.labels.join(', '))} →` : t('Sent to');
+    return `<div class="dest-row"><span class="dest-k">${k}</span><span class="dest-v">${escHtml(t(g.kind))}${g.target ? `<code class="dest-target">${escHtml(g.target)}</code>` : ''}${g.note ? `<span class="dest-note">${escHtml(t(g.note))}</span>` : ''}</span></div>`;
   }).join('');
   // The form view is replaced by the confirmation as soon as the submit succeeds,
   // so the destination has to be repeated there: that is the moment the user asks
   // where the value actually landed.
   const savedToRows = destGroups.map(g => {
-    const k = destGroups.length > 1 ? `${escHtml(g.labels.join(', '))} →` : 'Saved to';
-    return `<div class="dest-row"><span class="dest-k">${k}</span><span class="dest-v">${escHtml(g.kind)}${g.target ? `<code class="dest-target">${escHtml(g.target)}</code>` : ''}</span></div>`;
+    const k = destGroups.length > 1 ? `${escHtml(g.labels.join(', '))} →` : t('Saved to');
+    return `<div class="dest-row"><span class="dest-k">${k}</span><span class="dest-v">${escHtml(t(g.kind))}${g.target ? `<code class="dest-target">${escHtml(g.target)}</code>` : ''}</span></div>`;
   }).join('');
   const savedToHtml = savedToRows ? `<div class="dest-box" id="zc-saved-to">${savedToRows}</div>` : '';
-  const handleRow = pending.form ? `<div class="dest-row"><span class="dest-k">Saved as</span><span class="dest-v"><code class="dest-target">${escHtml(pending.form.handle)}</code></span></div>` : '';
+  const handleRow = pending.form ? `<div class="dest-row"><span class="dest-k">${t('Saved as')}</span><span class="dest-v"><code class="dest-target">${escHtml(pending.form.handle)}</code></span></div>` : '';
   const destBox = `<div class="dest-box" id="zc-destination">
-      <div class="dest-row"><span class="dest-k">Requested by</span><span class="dest-v">${escHtml(requesterLabel(pending))}</span></div>
+      <div class="dest-row"><span class="dest-k">${t('Requested by')}</span><span class="dest-v">${escHtml(t(requesterLabel(pending)))}</span></div>
       ${destRows}
       ${handleRow}
     </div>`;
 
   const apiHtml = api && !pending.wallet ? `<div class="where-wrap">
-  <button type="button" class="where-btn" data-action="toggle-where" data-target="api-info" aria-controls="api-info" aria-expanded="false">Copy as API request ▾</button>
+  <button type="button" class="where-btn" data-action="toggle-where" data-target="api-info" aria-controls="api-info" aria-expanded="false">${t('Copy as API request ▾')}</button>
   <div id="api-info" class="where-info" hidden>
-    <div class="wb"><div class="wb-note">Same form from a script: values come from env variables, never from this page. Use the owner key or the one-time submit token as <code>ZEROCREDS_SUBMIT_TOKEN</code>.</div></div>
-    <div class="wb"><div class="api-head"><span class="wb-fields">curl</span><button type="button" class="copy-btn" data-action="copy" data-target="api-curl">Copy</button></div><pre class="api-code"><code id="api-curl">${escHtml(api.curl)}</code></pre></div>
+    <div class="wb"><div class="wb-note">${t('Same form from a script: values come from env variables, never from this page. Use the owner key or the one-time submit token as')} <code>ZEROCREDS_SUBMIT_TOKEN</code>.</div></div>
+    <div class="wb"><div class="api-head"><span class="wb-fields">curl</span><button type="button" class="copy-btn" data-action="copy" data-target="api-curl">${t('Copy')}</button></div><pre class="api-code"><code id="api-curl">${escHtml(api.curl)}</code></pre></div>
     <div class="wb-sep"></div>
-    <div class="wb"><div class="api-head"><span class="wb-fields">sar CLI</span><button type="button" class="copy-btn" data-action="copy" data-target="api-sar">Copy</button></div><pre class="api-code"><code id="api-sar">${escHtml(api.sar)}</code></pre></div>
+    <div class="wb"><div class="api-head"><span class="wb-fields">sar CLI</span><button type="button" class="copy-btn" data-action="copy" data-target="api-sar">${t('Copy')}</button></div><pre class="api-code"><code id="api-sar">${escHtml(api.sar)}</code></pre></div>
   </div>
 </div>` : '';
 
@@ -749,31 +822,31 @@ function dynamicFormHtml(token, pending, host, nonce, api = null) {
     const fieldNames_ = group.map(f => escHtml(f.label)).join(', ');
 
     let html = `<div class="wb">`;
-    if (lm) html += `<div class="wb-head"><span class="wl-chip lvl-${lvl}">${lm.tag}</span><span class="wb-fields">${fieldNames_}</span></div>`;
+    if (lm) html += `<div class="wb-head"><span class="wl-chip lvl-${lvl}">${t(lm.tag)}</span><span class="wb-fields">${fieldNames_}</span></div>`;
     else     html += `<div class="wb-head"><span class="wb-fields">${fieldNames_}</span></div>`;
-    if (behavior) html += `<div class="wb-note">${behavior.note}</div>`;
+    if (behavior) html += `<div class="wb-note">${t(behavior.note)}</div>`;
     html += `</div>`;
     whereBlocks.push(html);
   }
 
   const whereHtml = whereBlocks.length ? `<div class="where-wrap">
-  <button type="button" class="where-btn" data-action="toggle-where" data-target="where-info" aria-controls="where-info" aria-expanded="false">How is this data handled? ▾</button>
+  <button type="button" class="where-btn" data-action="toggle-where" data-target="where-info" aria-controls="where-info" aria-expanded="false">${t('How is this data handled? ▾')}</button>
   <div id="where-info" class="where-info" hidden>${whereBlocks.join('<div class="wb-sep"></div>')}</div>
 </div>` : '';
   const storageSummary = pending.preflight?.checked && pending.destination?.type === 'vault'
-    ? `<div class="storage-summary"><strong>Storage: OpenBao KV v2</strong><br>
-       Path: <code>${escHtml(pending.destination.path)}</code><br>
-       Storage checked: ${escHtml(pending.preflight.at)}<br>
-       Credential version: not created yet.<br>
-       ${pending.wallet ? `Wallet owner: <code>${escHtml(pending.wallet.owner_id)}</code><br>
-       Profile: <code>${escHtml(pending.wallet.profile_id)}</code><br>
-       Connection: <code>${escHtml(pending.wallet.connection_id)}</code><br>
-       ZeroCreds operates this wallet; its infrastructure administrators can technically access stored values.`
-         : 'Wallet owner and profile: not verified by this form version.'}</div>`
+    ? `<div class="storage-summary"><strong>${t('Storage: OpenBao KV v2')}</strong><br>
+       ${t('Path:')} <code>${escHtml(pending.destination.path)}</code><br>
+       ${t('Storage checked:')} ${escHtml(pending.preflight.at)}<br>
+       ${t('Credential version: not created yet.')}<br>
+       ${pending.wallet ? `${t('Wallet owner:')} <code>${escHtml(pending.wallet.owner_id)}</code><br>
+       ${t('Profile:')} <code>${escHtml(pending.wallet.profile_id)}</code><br>
+       ${t('Connection:')} <code>${escHtml(pending.wallet.connection_id)}</code><br>
+       ${t('ZeroCreds operates this wallet; its infrastructure administrators can technically access stored values.')}`
+         : t('Wallet owner and profile: not verified by this form version.')}</div>`
     : '';
 
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="${language}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
@@ -885,6 +958,8 @@ function dynamicFormHtml(token, pending, host, nonce, api = null) {
 <script nonce="${nonce}">
 (function(){try{var t=localStorage.getItem('zc-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
 const T = ${jsValue(token)};
+const UI = ${jsValue(language === 'ru' ? FORM_RU : {})};
+const tr = text => UI[text] || text;
 const FIELD_NAMES = ${jsValue(fields.map(f => f.name))};
 const EXPIRES = ${Number(pending.expires) || 0};
 function currentTheme() {
@@ -896,7 +971,7 @@ function syncThemeBtn() {
   const b = document.getElementById('theme-btn');
   if (!b) return;
   const dark = currentTheme() === 'dark';
-  const label = dark ? 'Switch to light theme' : 'Switch to dark theme';
+  const label = tr(dark ? 'Switch to light theme' : 'Switch to dark theme');
   b.setAttribute('aria-pressed', String(dark));
   b.setAttribute('aria-label', label);
   b.title = label;
@@ -922,7 +997,7 @@ async function pastePw(id) {
     const text = await navigator.clipboard.readText();
     document.getElementById(id).value = text.trim();
   } catch {
-    showMsg('err', 'Allow clipboard access or paste manually (Ctrl+V / ⌘V)');
+    showMsg('err', tr('Allow clipboard access or paste manually (Ctrl+V / ⌘V)'));
   }
 }
 async function copyText(id, btn) {
@@ -930,10 +1005,10 @@ async function copyText(id, btn) {
   if (!el) return;
   try {
     await navigator.clipboard.writeText(el.textContent);
-    btn.textContent = 'Copied';
-    setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+    btn.textContent = tr('Copied');
+    setTimeout(() => { btn.textContent = tr('Copy'); }, 1500);
   } catch {
-    showMsg('err', 'Allow clipboard access or select the text and copy it manually');
+    showMsg('err', tr('Allow clipboard access or select the text and copy it manually'));
   }
 }
 let lastErrorDetails = '';
@@ -941,10 +1016,10 @@ async function copyErrorDetails(btn) {
   if (!lastErrorDetails) return;
   try {
     await navigator.clipboard.writeText(lastErrorDetails);
-    btn.textContent = 'Copied';
-    setTimeout(() => { btn.textContent = 'Copy details'; }, 1500);
+    btn.textContent = tr('Copied');
+    setTimeout(() => { btn.textContent = tr('Copy details'); }, 1500);
   } catch {
-    showMsg('err', 'Allow clipboard access, then select and copy the error details');
+    showMsg('err', tr('Allow clipboard access, then select and copy the error details'));
   }
 }
 async function submit() {
@@ -957,9 +1032,9 @@ async function submit() {
     const el = document.getElementById('f_' + n);
     return el && el.required && !fields[n];
   });
-  if (empty) { showMsg('err', 'Please fill in all required fields'); return; }
+  if (empty) { showMsg('err', tr('Please fill in all required fields')); return; }
   const btn = document.getElementById('btn');
-  btn.disabled = true; btn.textContent = 'Saving…';
+  btn.disabled = true; btn.textContent = tr('Saving…');
   try {
     const r = await fetch('/f/' + T, {
       method: 'POST',
@@ -971,20 +1046,20 @@ async function submit() {
       document.getElementById('form-view').hidden = true;
       document.getElementById('done').hidden = false;
     } else {
-      const detail = d.diagnostic ? 'Reference: ' + d.diagnostic : '';
+      const detail = d.diagnostic ? tr('Reference: ') + d.diagnostic : '';
       const safeDetails = [d.error_code, d.diagnostic, d.error].filter(Boolean).join(' | ');
-      showMsg('err', [d.message || d.error || 'Server error', detail].filter(Boolean).join(' — '), safeDetails);
+      showMsg('err', [d.message || d.error || tr('Server error'), detail].filter(Boolean).join(' — '), safeDetails);
       if (d.outcome === 'unknown' || d.retry_safe === false) {
-        btn.textContent = 'Needs review';
+        btn.textContent = tr('Needs review');
       } else {
-        btn.disabled = false; btn.textContent = 'Submit';
+        btn.disabled = false; btn.textContent = tr('Submit');
       }
     }
   } catch(e) {
     const diagnostic = 'local-' + Date.now().toString(36);
-    showMsg('err', 'Could not confirm whether ZeroCreds saved this form. Ask the requester to check its status before trying again.',
+    showMsg('err', tr('Could not confirm whether ZeroCreds saved this form. Ask the requester to check its status before trying again.'),
       ['NETWORK_ERROR', diagnostic, 'POST /f/[redacted]', location.origin].join(' | '));
-    btn.textContent = 'Needs review';
+    btn.textContent = tr('Needs review');
   }
 }
 function showMsg(cls, text, details = '') {
@@ -993,7 +1068,7 @@ function showMsg(cls, text, details = '') {
   lastErrorDetails = details;
   if (cls === 'err' && details) {
     const button = document.createElement('button');
-    button.type = 'button'; button.className = 'copy-btn'; button.textContent = 'Copy details';
+    button.type = 'button'; button.className = 'copy-btn'; button.textContent = tr('Copy details');
     button.style.marginTop = '8px'; button.addEventListener('click', () => copyErrorDetails(button));
     el.appendChild(document.createElement('br')); el.appendChild(button);
   }
@@ -1024,9 +1099,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const left = Math.max(0, EXPIRES - Date.now());
     const m = Math.floor(left / 60000);
     const s = Math.floor((left % 60000) / 1000);
-    el.textContent = m + ':' + String(s).padStart(2, '0') + ' remaining';
+    el.textContent = m + ':' + String(s).padStart(2, '0') + tr(' remaining');
     if (left > 0) setTimeout(tick, 1000);
-    else { el.textContent = 'link expired'; el.classList.add('expired'); }
+    else { el.textContent = tr('link expired'); el.classList.add('expired'); }
   }
   tick();
 });
@@ -1041,7 +1116,7 @@ document.addEventListener('DOMContentLoaded', () => {
     </div>
     <div class="zc-tools">
       <span class="zc-badge">${hostBadge}</span>
-      <button type="button" id="theme-btn" class="theme-btn" data-action="theme" aria-label="Toggle color theme" title="Toggle color theme">
+      <button type="button" id="theme-btn" class="theme-btn" data-action="theme" aria-label="${t('Toggle color theme')}" title="${t('Toggle color theme')}">
         <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
         <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
       </button>
@@ -1056,17 +1131,17 @@ document.addEventListener('DOMContentLoaded', () => {
     ${fieldHtml}
     ${destBox}
     <div class="actions">
-      <button id="btn" type="button" data-action="submit">Submit</button>
+      <button id="btn" type="button" data-action="submit">${t('Submit')}</button>
       <div id="msg" class="msg" role="alert" hidden></div>
     </div>
   </div>
   <div id="done" hidden>
     <div class="check-icon" aria-hidden="true">✓</div>
-    <h1>Done</h1>
-    <p class="sub">${pending.playground_test ? 'Synthetic test value checked and discarded. Nothing was saved.' : 'Credentials saved. You can close this page.'}</p>
+    <h1>${t('Done')}</h1>
+    <p class="sub">${pending.playground_test ? t('Synthetic test value checked and discarded. Nothing was saved.') : t('Credentials saved. You can close this page.')}</p>
     ${pending.playground_test ? '' : savedToHtml}
   </div>
-  <p class="lock"><span id="zc-timer"></span> &middot; One-time link &middot; <a href="https://github.com/Zerocreds-com/zerocreds-server" target="_blank" rel="noopener">v${VERSION}</a></p>
+  <p class="lock"><span id="zc-timer"></span> &middot; ${t('One-time link')} &middot; <a href="https://github.com/Zerocreds-com/zerocreds-server" target="_blank" rel="noopener">v${VERSION}</a></p>
   ${apiHtml}
   ${whereHtml}
 </main>
@@ -2392,9 +2467,9 @@ function createApp(config = {}) {
       if (result.userId && result.tgBotToken) {
         const expiresStr = result.expires
           ? new Date(result.expires).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })
-          : '~1 час';
+          : '~1 hour';
         tgNotify(result.tgBotToken, result.userId,
-          `✅ Налог.ру подключён! Токен действует до ${expiresStr} (МСК).`);
+          `✅ Nalog.ru connected! Token valid until ${expiresStr} (Moscow time).`);
       }
       return;
     }
@@ -2443,9 +2518,9 @@ function createApp(config = {}) {
             if (pending.tg_bot_token) {
               const expiresStr = result.expires
                 ? new Date(result.expires).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })
-                : '~1 час';
+                : '~1 hour';
               tgNotify(pending.tg_bot_token, pending.tg_chat_id || pending.uid,
-                `✅ Налог.ру подключён! Токен действует до ${expiresStr} (МСК).`);
+                `✅ Nalog.ru connected! Token valid until ${expiresStr} (Moscow time).`);
             }
             return;
           }
@@ -3060,13 +3135,14 @@ function createApp(config = {}) {
       const payload = await readJson(req);
       if (!payload) return json(res, 400, { error: 'bad json' });
 
-      const { title, description, destination, destinations_by_level, ttl_minutes = 30, notify, uid, service, credential_expires_at } = payload;
+      const { title, description, language = 'en', destination, destinations_by_level, ttl_minutes = 30, notify, uid, service, credential_expires_at } = payload;
       if (typeof title !== 'string' || !title.trim() || title.length > 200) {
         return json(res, 400, { error: 'missing title or fields' });
       }
       if (description != null && (typeof description !== 'string' || description.length > 2000)) {
         return json(res, 400, { error: 'description must be a string (max 2000 chars)' });
       }
+      if (language !== 'en' && language !== 'ru') return json(res, 400, { error: 'language must be en or ru' });
       const validated = validateFields(payload.fields);
       if (validated.error) return json(res, 400, { error: validated.error });
       const fields = validated.fields;
@@ -3153,6 +3229,9 @@ function createApp(config = {}) {
         // Idempotency: return existing active session for same integrator+service+user
         const existing = findActiveSession(integrator_id, service_slug, user_hash);
         if (existing) {
+          if ((existing.language || 'en') !== language) {
+            return json(res, 409, { error: 'active form uses a different language; choose another uid or wait for it to expire' });
+          }
           return json(res, 200, {
             token: existing.token,
             url: `${BASE_URL}/${integrator_id}/${service_slug}/${user_hash}?gen=${existing.token}`,
@@ -3170,7 +3249,7 @@ function createApp(config = {}) {
       if (pendingDestination && openbaoPreflight) {
         for (const key of ['token', 'role_id', 'secret_id', 'preflight_metadata_token']) delete pendingDestination[key];
       }
-      const pending = { token, title, description: description || '', fields,
+      const pending = { token, title, description: description || '', language, fields,
         destination: pendingDestination,
         ...(openbaoPreflight ? { preflight: preflight.preflight } : {}),
         ...(openbaoPreflight ? {
@@ -3220,20 +3299,32 @@ function createApp(config = {}) {
       const requestedProvider = payload.provider;
       const provider = canonicalWalletProvider(requestedProvider) || requestedProvider;
       const serviceTemplate = canonicalWalletProvider(requestedProvider) ? WALLET_SERVICE_TEMPLATES[canonicalWalletProvider(requestedProvider)] : null;
-      const { kind = serviceTemplate?.kind || 'token', title, description, ttl_minutes = 30, idempotency_key } = payload;
-      const resolvedTitle = serviceTemplate?.title || title || `Connect ${provider}`;
-      const resolvedDescription = serviceTemplate?.description || description || '';
+      const { kind = serviceTemplate?.kind || 'token', title, description, language = 'en', ttl_minutes = 30, idempotency_key } = payload;
+      const resolvedTitle = serviceTemplate
+        ? language === 'ru' ? `Подключить ${WALLET_SERVICE_NAMES_RU[provider]}` : serviceTemplate.title
+        : title || (language === 'ru' ? `Подключить ${provider}` : `Connect ${provider}`);
+      const resolvedDescription = serviceTemplate
+        ? language === 'ru'
+          ? provider === 'aws'
+            ? 'Введите AWS access key ID в поле имени пользователя и secret access key в поле пароля. Предоставьте только права, необходимые для задачи.'
+            : `Введите данные для ${WALLET_SERVICE_NAMES_RU[provider]} с правами, необходимыми для задачи.`
+          : serviceTemplate.description
+        : description || '';
       if (typeof requestedProvider !== 'string' || !(canonicalWalletProvider(requestedProvider) || /^[a-z0-9][a-z0-9_-]{0,63}$/.test(requestedProvider))
         || !Object.hasOwn(FORM_KINDS, kind) || (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 200))
         || (description !== undefined && (typeof description !== 'string' || description.length > 2000))
+        || (language !== 'en' && language !== 'ru')
         || !Number.isInteger(ttl_minutes) || ttl_minutes < 1 || ttl_minutes > 1440
         || (idempotency_key !== undefined && (typeof idempotency_key !== 'string' || !/^[a-zA-Z0-9_-]{16,128}$/.test(idempotency_key)))
       ) return json(res, 400, { error: 'invalid wallet form' });
-      const validated = validateFields(payload.fields === undefined ? FORM_KINDS[kind] : payload.fields);
+      const defaultFields = language === 'ru'
+        ? FORM_KINDS[kind].map(field => ({ ...field, label: WALLET_FIELD_LABELS_RU[field.label] || field.label }))
+        : FORM_KINDS[kind];
+      const validated = validateFields(payload.fields === undefined ? defaultFields : payload.fields);
       if (validated.error) return json(res, 400, { error: validated.error });
       const requestFingerprint = sha256Hex(canonicalJson({ provider, kind,
         title: resolvedTitle, description: resolvedDescription,
-        fields: validated.fields, ttl_minutes }));
+        fields: validated.fields, language, ttl_minutes }));
       let allocation, destination;
       try {
         allocation = await walletCall('POST', '/internal/connections/allocate', {
@@ -3268,7 +3359,7 @@ function createApp(config = {}) {
       const submitToken = 'zcs_' + crypto.randomBytes(24).toString('hex');
       const expires = Date.now() + ttl_minutes * 60_000;
       const pending = {
-        token: formId, title: resolvedTitle, description: resolvedDescription,
+        token: formId, title: resolvedTitle, description: resolvedDescription, language,
         fields: validated.fields, destination: Object.fromEntries(Object.entries(destination)
           .filter(([key]) => !['token', 'role_id', 'secret_id', 'preflight_metadata_token', 'service_token', 'data_key'].includes(key))),
         preflight: preflight?.preflight ?? null, destinations_by_level: null, expires, notify: null,
@@ -3406,7 +3497,7 @@ function createApp(config = {}) {
       const payload = await readJson(req);
       if (!payload) return json(res, 400, { error: 'bad json' });
 
-      const { name, kind = 'token', title, description, destination, ttl_minutes = 30 } = payload;
+      const { name, kind = 'token', title, description, language = 'en', destination, ttl_minutes = 30 } = payload;
       if (typeof name !== 'string' || !HANDLE_NAME_RE.test(name)) {
         return json(res, 400, { error: 'name must match [a-z0-9][a-z0-9_.-]{0,63} (it becomes the handle cred:<name>)' });
       }
@@ -3419,7 +3510,11 @@ function createApp(config = {}) {
       if (description != null && (typeof description !== 'string' || description.length > 2000)) {
         return json(res, 400, { error: 'description must be a string (max 2000 chars)' });
       }
-      const validated = validateFields(payload.fields === undefined ? FORM_KINDS[kind] : payload.fields);
+      if (language !== 'en' && language !== 'ru') return json(res, 400, { error: 'language must be en or ru' });
+      const defaultFields = language === 'ru'
+        ? FORM_KINDS[kind].map(field => ({ ...field, label: WALLET_FIELD_LABELS_RU[field.label] || field.label }))
+        : FORM_KINDS[kind];
+      const validated = validateFields(payload.fields === undefined ? defaultFields : payload.fields);
       if (validated.error) return json(res, 400, { error: validated.error });
       if (destination === undefined || destination === null || destination === '') {
         return json(res, 400, { error: 'missing destination' });
@@ -3440,8 +3535,9 @@ function createApp(config = {}) {
       const submitToken = 'zcs_' + crypto.randomBytes(24).toString('hex');
       const pending = {
         token: formId,
-        title: title || `Save ${name}`,
+        title: title || (language === 'ru' ? `Сохранить ${name}` : `Save ${name}`),
         description: description || '',
+        language,
         fields: validated.fields,
         destination: preflight?.preflight ? Object.fromEntries(Object.entries(r.dest).filter(([k]) => !['token', 'role_id', 'secret_id', 'preflight_metadata_token'].includes(k))) : r.dest,
         ...(preflight?.preflight ? {
