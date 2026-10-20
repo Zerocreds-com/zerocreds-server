@@ -1789,6 +1789,21 @@ function createApp(config = {}) {
     try { return JSON.parse(fs.readFileSync(pendingPath(token), 'utf8')); } catch { return null; }
   }
 
+  function credentialContract(pending) {
+    return {
+      format: 'json',
+      provider: pending.service_slug || null,
+      account_alias: pending.uid || null,
+      fields: (Array.isArray(pending.fields) ? pending.fields : []).map(field => ({
+        name: field.name,
+        label: field.label,
+        type: field.type || 'text',
+        required: field.required !== false,
+        level: field.level || 'default',
+      })),
+    };
+  }
+
   function deletePending(token) {
     try { fs.unlinkSync(pendingPath(token)); } catch {}
   }
@@ -1807,10 +1822,11 @@ function createApp(config = {}) {
     try { fs.unlinkSync(pendingPath(token, 'claimed')); } catch {}
   }
 
-  function markUnknown(token, integratorId) {
+  function markUnknown(token, integratorId, pending = null) {
     try {
       fs.writeFileSync(pendingPath(token, 'unknown'), JSON.stringify({
         status: 'unknown', _integrator_id: integratorId, retry_safe: false,
+        ...(pending ? { credential_contract: credentialContract(pending) } : {}),
       }), { mode: 0o600, flag: 'wx' });
       dropClaim(token);
       if (LOCAL_MODE) publishLocalFormEvent(token, 'unknown');
@@ -2148,7 +2164,7 @@ function createApp(config = {}) {
     } catch (e) {
       // A later destination can fail after an earlier one saved. Replaying the
       // form would repeat that earlier write, so report the uncertain outcome.
-      if (destinationsSaved > 0) markUnknown(token, pending.integrator_id);
+      if (destinationsSaved > 0) markUnknown(token, pending.integrator_id, pending);
       else releaseClaim(token);
       console.error('[dynamic] save failed:', e.message);
       const diagnostic = `zc-${crypto.randomBytes(6).toString('hex')}`;
@@ -2166,6 +2182,7 @@ function createApp(config = {}) {
       } };
     }
 
+    let savedConnectionRef = null;
     if (LOCAL_MODE && pending.service_slug && pending.uid) {
       try {
         const entries = readLocalCatalog();
@@ -2188,9 +2205,14 @@ function createApp(config = {}) {
         if (index >= 0) entries[index] = entry;
         else entries.push(entry);
         writeLocalCatalog(entries);
+        savedConnectionRef = {
+          connection_id: entry.connection_id,
+          provider: entry.provider,
+          account_alias: entry.account_alias,
+        };
       } catch (error) {
         console.error('[local-catalog] metadata write failed:', error.message);
-        markUnknown(token, pending.integrator_id);
+        markUnknown(token, pending.integrator_id, pending);
         return { status: 503, body: { error: 'credential saved but local catalog update failed',
           outcome: 'unknown', retry_safe: false } };
       }
@@ -2220,13 +2242,15 @@ function createApp(config = {}) {
     // Record the successful write before releasing the claim. A failed rename
     // still leaves a readable receipt, so status never lies after a save.
     const completed = { status: 'done', form_id: token, ...(saveResult || {}),
+      credential_contract: credentialContract(pending),
+      ...(savedConnectionRef ? { connection: savedConnectionRef } : {}),
       ...(formResult || {}), _integrator_id: pending.integrator_id };
     try {
       fs.writeFileSync(pendingPath(token, 'written'), JSON.stringify(completed), { mode: 0o600, flag: 'wx' });
     } catch {
       // The destination may already hold the value. Do not release the form for
       // another submit; record an explicit uncertain outcome if storage permits.
-      markUnknown(token, pending.integrator_id);
+      markUnknown(token, pending.integrator_id, pending);
       return { status: 503, body: { error: 'credential saved but completion status unavailable',
         outcome: 'unknown', retry_safe: false } };
     }
@@ -3310,6 +3334,7 @@ function createApp(config = {}) {
             url: `${BASE_URL}/${integrator_id}/${service_slug}/${user_hash}?gen=${existing.token}`,
             expires_at: new Date(existing.expires).toISOString(),
             reused: true,
+            credential_contract: credentialContract(existing),
           });
         }
       }
@@ -3353,6 +3378,7 @@ function createApp(config = {}) {
         token,
         url: url_out,
         expires_at: new Date(expires).toISOString(),
+        credential_contract: credentialContract(pending),
       });
     }
 
@@ -3690,14 +3716,15 @@ function createApp(config = {}) {
       try {
         const unknown = JSON.parse(fs.readFileSync(pendingPath(token, 'unknown'), 'utf8'));
         if (!owns(unknown._integrator_id)) return json(res, 200, { status: 'expired' });
-        return json(res, 200, { status: 'unknown', retry_safe: false });
+        return json(res, 200, { status: 'unknown', retry_safe: false,
+          ...(unknown.credential_contract ? { credential_contract: unknown.credential_contract } : {}) });
       } catch (error) { if (error.code !== 'ENOENT') return json(res, 503, { error: 'status unavailable' }); }
       let p = readPending(token);
       if (!p) {
         try { p = JSON.parse(fs.readFileSync(pendingPath(token, 'claimed'), 'utf8')); } catch {}
       }
       if (!p || !owns(p.integrator_id) || p.expires < Date.now()) return json(res, 200, { status: 'expired' });
-      return json(res, 200, { status: 'pending' });
+      return json(res, 200, { status: 'pending', credential_contract: credentialContract(p) });
     }
 
     // Local OpenCode plugin signal. The admin token never leaves loopback and the

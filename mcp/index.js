@@ -74,12 +74,12 @@ const server = new McpServer({
 
 server.tool(
   'form_create',
-  'Create a ZeroCreds credential-collection session. The user fills in credentials directly — the agent never sees them. Show the returned user_message verbatim so the link has a friendly label; do not expose the raw URL by itself. If the host supports event subscriptions, subscribe to this form’s credential-ready event and continue the originating task when notified. Otherwise, check form_status when the user returns. If status is done, continue using the returned provider/account_alias; do not create another form because a later provider request failed. Never read the secret from Keychain or ask the user to paste it into chat.',
+  'Create a ZeroCreds credential-collection session. Each submitted field is stored as a key in a JSON object; the exact names and field metadata are returned as credential_contract on creation and status. Use that contract when calling the provider; never infer field names from the Keychain storage reference. The user fills in credentials directly — the agent never sees values. Show user_message verbatim. If the host supports event subscriptions, subscribe to this form’s credential-ready event and continue the originating task when notified. Otherwise, check form_status when the user returns. If status is done, continue using provider/account_alias and credential_contract; do not create another form because a later provider request failed. Never read the secret from Keychain or ask the user to paste it into chat.',
   {
     title: z.string().describe('Heading shown on the form (e.g. "Connect GitHub")'),
     description: z.string().optional().describe('Subtext explaining what credentials are needed and why'),
     fields: z.array(z.object({
-      name: z.string().describe('Key in the saved credentials JSON (alphanumeric + underscore). Prefer token for provider tokens; custom names can be verified with connection_verify token_field.'),
+      name: z.string().describe('Exact key in the saved JSON object (alphanumeric + underscore); this name is preserved in credential_contract.'),
       label: z.string().describe('Label shown on the form'),
       type: z.enum(['text', 'password', 'email', 'tel', 'number', 'textarea', 'url']).optional().describe('Input type (default: text)'),
       placeholder: z.string().optional(),
@@ -135,6 +135,13 @@ server.tool(
           user_message: userMessage,
           ...(service ? { provider: service } : {}),
           ...(uid ? { account_alias: uid } : {}),
+          credential_contract: data.credential_contract || {
+            format: 'json',
+            provider: service || null,
+            account_alias: uid || null,
+            fields: fields.map(field => ({ name: field.name, label: field.label,
+              type: field.type || 'text', required: field.required !== false, level: field.level || 'default' })),
+          },
         }, null, 2),
       }],
     };
@@ -360,7 +367,7 @@ if (LOCAL_MODE) {
 
 server.tool(
   'form_status',
-  'Recover the durable state of a ZeroCreds credential form when the user returns or an event needs reconciliation. If status is "pending", keep waiting for the form. If status is "done", ZeroCreds has already saved the credential; continue the original task using the provider/account_alias returned by form_create. Do not create another form because a later provider request failed; explain the provider error and ask before replacing the credential. Never read the secret from Keychain or ask the user to paste it into chat.',
+  'Recover the durable state of a ZeroCreds credential form when the user returns or an event needs reconciliation. Status includes the original credential_contract (JSON format and exact field names) without values. If status is "pending", keep waiting for the form. If status is "done", ZeroCreds has already saved the credential; continue using provider/account_alias and the contract field names. Do not create another form because a later provider request failed; explain the provider error and ask before replacing the credential. Never read the secret from Keychain or ask the user to paste it into chat.',
   {
     token: z.string().describe('Session token returned by form_create'),
   },
