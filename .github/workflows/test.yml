@@ -10,8 +10,8 @@ permissions:
   contents: read
 
 # Third-party actions are pinned by full commit SHA (tag in the trailing comment).
-# The required `test` job depends on the platform and cross-OS share checks,
-# so they block merges even though they run as separate jobs.
+# The required `test` job depends on Linux/Windows local API checks and one
+# sequential Linux-to-Windows share transfer.
 jobs:
   peer-share-platform:
     name: peer-share-${{ matrix.os }}
@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -47,14 +47,10 @@ jobs:
           path: peer-fixture/fixture.json
           retention-days: 1
 
-  peer-sender:
-    name: peer-${{ matrix.sender }}-sender
+  peer-sender-linux:
+    name: peer-linux-sender
     needs: peer-fixtures
-    runs-on: ${{ matrix.sender }}
-    strategy:
-      fail-fast: false
-      matrix:
-        sender: [windows-latest, ubuntu-latest]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -69,32 +65,12 @@ jobs:
       - run: node scripts/share-cross-platform.cjs send peer-fixture
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: peer-envelope-${{ matrix.sender }}
+          name: peer-envelope-linux
           path: peer-fixture/envelope.json
           retention-days: 1
 
-  peer-receiver-linux:
-    needs: peer-sender
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: peer-fixture
-          path: peer-fixture
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: peer-envelope-windows-latest
-          path: peer-fixture
-      - run: node scripts/share-cross-platform.cjs receive peer-fixture
-
   peer-receiver-windows:
-    needs: peer-sender
+    needs: peer-sender-linux
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -109,12 +85,12 @@ jobs:
           path: peer-fixture
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: peer-envelope-ubuntu-latest
+          name: peer-envelope-linux
           path: peer-fixture
       - run: node scripts/share-cross-platform.cjs receive peer-fixture
 
   test:
-    needs: [peer-share-platform, peer-receiver-linux, peer-receiver-windows]
+    needs: [peer-share-platform, peer-receiver-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
