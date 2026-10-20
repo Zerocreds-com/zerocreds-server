@@ -74,7 +74,7 @@ const server = new McpServer({
 
 server.tool(
   'form_create',
-  'Create a ZeroCreds credential-collection session. The user fills in credentials directly — the agent never sees them. When sharing the form, show the returned user_message verbatim so the link has a friendly label; do not expose the raw URL by itself.',
+  'Create a ZeroCreds credential-collection session. The user fills in credentials directly — the agent never sees them. When sharing the form, show the returned user_message verbatim so the link has a friendly label; do not expose the raw URL by itself. After the user says they submitted it, call form_status with this session token. If status is done, the credential is already saved: continue the original task using the same provider/account alias and do not create another form. A provider API error such as 401 does not mean the form was missed; report that the provider rejected the saved credential and ask before requesting a replacement. Never read the secret from Keychain or ask the user to paste it into chat.',
   {
     title: z.string().describe('Heading shown on the form (e.g. "Connect GitHub")'),
     description: z.string().optional().describe('Subtext explaining what credentials are needed and why'),
@@ -358,7 +358,7 @@ if (LOCAL_MODE) {
 
 server.tool(
   'form_status',
-  'Check whether the user has submitted the ZeroCreds form. Poll every 5–10 seconds until status is "done" or "expired".',
+  'Check whether the user has submitted the ZeroCreds form. After the user says they submitted it, check this status. Poll every 5–10 seconds while pending. If status is "done", ZeroCreds has saved the credential already: continue the original task using the provider/account alias supplied to form_create. Do not create another form or ask the user to enter the credential again because a later provider request failed; explain the provider error and ask before replacing the credential. Never read the secret from Keychain or ask the user to paste it into chat.',
   {
     token: z.string().describe('Session token returned by form_create'),
   },
