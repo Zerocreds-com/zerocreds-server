@@ -144,6 +144,7 @@ server.tool(
   {
     provider: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional(),
   },
+  { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
   async ({ provider }) => {
     const query = provider ? `?provider=${encodeURIComponent(provider)}` : '';
     const data = await apiCall('GET', `/api/local/connections${query}`);
@@ -159,6 +160,7 @@ server.tool(
     provider: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
     account_alias: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional(),
   },
+  { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
   async ({ provider, account_alias }) => {
     const query = new URLSearchParams({ provider, resolve: '1' });
     if (account_alias) query.set('account_alias', account_alias);
@@ -199,7 +201,9 @@ if (LOCAL_MODE) {
     });
 
   server.tool('share_status', 'Check whether a one-time share is pending, claimed, complete, expired or cancelled.',
-    { share_id: z.string().regex(/^[a-f0-9]{32}$/) }, async ({ share_id }) => {
+    { share_id: z.string().regex(/^[a-f0-9]{32}$/) },
+    { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+    async ({ share_id }) => {
       const data = await apiCall('GET', `/api/local/shares/${share_id}`);
       if (data.error) throw new Error(data.error);
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
@@ -228,6 +232,7 @@ if (LOCAL_MODE) {
   server.tool('doctor',
     'Diagnose the local ZeroCreds path without reading or returning credential values. Checks that this MCP call reaches the local server, the private Keychain helper is installed, macOS Keychain answers a metadata-only query, the configured default destination is an OS Keychain, and the local catalog is readable. If a check fails, follow its action and rerun this tool. Then use connection_verify for a specific provider/account; that separate check proves provider acceptance only for the selected local credential, not a different Worker secret.',
     {},
+    { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async () => {
       const data = await apiCall('GET', '/api/local/doctor');
       if (data.error) throw new Error(data.error);
@@ -330,6 +335,7 @@ server.tool(
   {
     token: z.string().describe('Session token returned by form_create'),
   },
+  { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
   async ({ token }) => {
     const data = await apiCall('GET', `/api/session/${token}/status`);
     if (data.error) throw new Error(data.error);
