@@ -41,6 +41,40 @@ test('Cloudflare verification reports expiry but does not infer permissions', as
   assert.ok(!JSON.stringify(result).includes('synthetic-cf-secret'));
 });
 
+test('Cloudflare account token is not invalidated by the user-token endpoint', async () => {
+  const token = 'synthetic-account-token';
+  const accountId = 'a'.repeat(32);
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push(url);
+    assert.equal(options.headers.Authorization, `Bearer ${token}`);
+    return url.endsWith('/user/tokens/verify')
+      ? new Response('{}', { status: 401 })
+      : new Response(JSON.stringify({ success: true, result: { id: 'account-token-id', status: 'active' } }), { status: 200 });
+  };
+  const result = await verifyLocalCredential('cloudflare', { api_token: token }, fetchImpl, { account_id: accountId });
+  assert.equal(result.status, 'valid');
+  assert.deepEqual(calls, [
+    'https://api.cloudflare.com/client/v4/user/tokens/verify',
+    `https://api.cloudflare.com/client/v4/accounts/${accountId}/tokens/verify`,
+  ]);
+  assert.ok(!JSON.stringify(result).includes(token));
+});
+
+test('Cloudflare verification leaves an unconfirmed account token unknown', async () => {
+  const token = 'synthetic-account-token';
+  const denied = async () => new Response('{}', { status: 401 });
+  const noAccount = await verifyLocalCredential('cloudflare', { token }, denied);
+  assert.equal(noAccount.status, 'unknown');
+  assert.equal(noAccount.diagnostic.account_id_required, true);
+  const unavailableAccount = await verifyLocalCredential('cloudflare', { token }, async (url) => {
+    if (url.endsWith('/user/tokens/verify')) return new Response('{}', { status: 401 });
+    throw new Error('timeout');
+  }, { account_id: 'b'.repeat(32) });
+  assert.equal(unavailableAccount.status, 'unknown');
+  assert.ok(!JSON.stringify([noAccount, unavailableAccount]).includes(token));
+});
+
 test('Deepgram verification checks grant capability and discards the temporary token', async () => {
   const key = 'synthetic-deepgram-key';
   const accessToken = 'temporary-grant-must-not-escape';

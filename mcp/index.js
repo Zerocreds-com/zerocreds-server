@@ -170,15 +170,16 @@ server.tool(
 
 if (LOCAL_MODE) server.tool(
   'connection_verify',
-  'Verify a saved local credential against its provider. Provider-native verification is implemented for github, cloudflare and deepgram; any other provider slug returns verification "unsupported_provider" without contacting anything, so the tool stays honest for services ZeroCreds cannot check. For Deepgram this safely tests whether the key can mint a default 30-second grant, then discards the token; it does not make a billable transcription request. The one-time verify result includes a masked 3-character prefix/4-character suffix and length for alias comparison; this hint is not persisted or logged. The tool never returns the credential or grant value. This verifies the Mac Keychain credential, not whether a separate Cloudflare Worker secret was updated.',
+  'Verify a saved local credential against its provider. Provider-native verification is implemented for github, cloudflare and deepgram; any other provider slug returns verification "unsupported_provider" without contacting anything. A Cloudflare account token may fail the user-token endpoint yet still work for its account; use account_id or a read-only request to the target resource before calling it invalid. For Deepgram this safely tests whether the key can mint a default 30-second grant, then discards the token; it does not make a billable transcription request. The one-time verify result includes a masked 3-character prefix/4-character suffix and length for alias comparison; this hint is not persisted or logged. The tool never returns the credential or grant value. This verifies the Mac Keychain credential, not whether a separate Cloudflare Worker secret was updated.',
   {
     provider: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/).describe('Provider slug, for example github, cloudflare, deepgram or the service slug used when the credential was saved'),
     account_alias: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+    account_id: z.string().regex(/^[a-f0-9]{32}$/).optional().describe('Cloudflare target account ID for account-owned token verification. A failed user-token check alone does not invalidate an account token.'),
     token_field: z.string().regex(/^[a-zA-Z0-9_]{1,64}$/).optional().describe('Original saved field name, e.g. github_pat_admin. Overrides default token aliases for this verification. Use this to recover a custom-named credential without collecting it again; never pass the secret value.'),
     save_token_field: z.boolean().optional().describe('Save token_field as the connection’s persistent token alias after successful verification. Requires token_field. Later checks can omit token_field. Only the field name is saved; the secret stays in its existing store.'),
   },
-  async ({ provider, account_alias, token_field, save_token_field }) => {
-    const data = await apiCall('POST', '/api/local/connections/verify', { provider, account_alias, ...(token_field === undefined ? {} : { token_field }), ...(save_token_field === undefined ? {} : { save_token_field }) });
+  async ({ provider, account_alias, account_id, token_field, save_token_field }) => {
+    const data = await apiCall('POST', '/api/local/connections/verify', { provider, account_alias, ...(account_id === undefined ? {} : { account_id }), ...(token_field === undefined ? {} : { token_field }), ...(save_token_field === undefined ? {} : { save_token_field }) });
     if (data.error) throw new Error(data.error);
     return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
   },

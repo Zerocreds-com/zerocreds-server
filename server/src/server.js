@@ -2726,6 +2726,10 @@ function createApp(config = {}) {
           || !/^[a-zA-Z0-9_]{1,64}$/.test(payload.token_field))) {
         return json(res, 400, { error: 'invalid token_field: use a saved field name (1–64 letters, digits or underscores)' });
       }
+      if (payload.account_id !== undefined && (payload.provider.toLowerCase() !== 'cloudflare'
+          || typeof payload.account_id !== 'string' || !/^[a-f0-9]{32}$/.test(payload.account_id))) {
+        return json(res, 400, { error: 'account_id must be a Cloudflare account ID (32 lowercase hex characters)' });
+      }
       if (payload.save_token_field !== undefined && typeof payload.save_token_field !== 'boolean') {
         return json(res, 400, { error: 'save_token_field must be a boolean' });
       }
@@ -2752,7 +2756,8 @@ function createApp(config = {}) {
         return json(res, 200, { verification: status, connection_id: entry.connection_id });
       }
       const tokenField = payload.token_field ?? entry.token_field;
-      const result = await (config.localCredentialVerifier || verifyLocalCredential)(provider, fields, undefined, { tokenField });
+      const result = await (config.localCredentialVerifier || verifyLocalCredential)(provider, fields, undefined,
+        { tokenField, account_id: payload.account_id });
       const safeCredentialHint = credentialHint(provider, fields, { tokenField });
       // Reading the credential and contacting a provider both yield to other
       // requests. Never replace a newer catalog entry with this old snapshot.
