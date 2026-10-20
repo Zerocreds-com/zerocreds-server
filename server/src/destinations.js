@@ -463,6 +463,40 @@ async function saveZerocredsVault(destination, fields, opts = {}) {
   return { secret_id: destination.connection_id, version, key_ref: body?.key_ref || destination.key_ref || 'k1' };
 }
 
+// Reads a stored value back for the one caller that may hold it: the host acting
+// for a run. The store answers with ciphertext, the data key stays here, and the
+// store records which run consumed the value.
+async function readZerocredsVault(destination, runRef, opts = {}) {
+  const key = custodyKey(destination);
+  custodyScope(destination);
+  if (typeof runRef !== 'string' || !/^[A-Za-z0-9_.:-]{1,200}$/.test(runRef)) {
+    throw new Error('zerocreds_vault: a run reference is required');
+  }
+  const body = await vaultJsonRequest(
+    custodyUrl(destination, `/internal/vault/values/${encodeURIComponent(destination.connection_id)}/read`),
+    'POST', destination.service_token,
+    { owner_id: destination.owner_id, profile_id: destination.profile_id, run_id: runRef },
+    { ...opts, authHeader: 'bearer' });
+  const ciphertext = Buffer.from(String(body?.ciphertext || ''), 'base64');
+  const iv = Buffer.from(String(body?.iv || ''), 'base64');
+  const tag = Buffer.from(String(body?.tag || ''), 'base64');
+  if (!ciphertext.length || iv.length !== 12 || tag.length !== 16 || body?.alg !== 'A256GCM') {
+    throw new Error('zerocreds_vault: store returned an unusable value');
+  }
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(tag);
+  let plain;
+  try {
+    plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+  } catch { throw new Error('zerocreds_vault: stored value did not authenticate'); }
+  let fields;
+  try { fields = JSON.parse(plain); } catch { throw new Error('zerocreds_vault: stored value is not a field map'); }
+  if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
+    throw new Error('zerocreds_vault: stored value is not a field map');
+  }
+  return { fields, version: Number.isSafeInteger(Number(body?.version)) ? Number(body.version) : null, key_ref: body?.key_ref ?? null };
+}
+
 async function custodyStatus(destination, opts = {}) {
   try {
     const body = await vaultJsonRequest(
@@ -722,4 +756,4 @@ function validateDestination(destination, opts = {}) {
   return null;
 }
 
-module.exports = { saveToDestination, testDestination, validateDestination, resolveTemplate, isBlockedAddress, DESTINATION_TYPES };
+module.exports = { saveToDestination, testDestination, validateDestination, resolveTemplate, isBlockedAddress, readZerocredsVault, DESTINATION_TYPES };

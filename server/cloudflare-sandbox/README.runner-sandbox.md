@@ -31,6 +31,15 @@ and the database therefore only ever hold ciphertext; the metadata read answers
 existence and version, never a value. A revocation destroys the stored value
 instead of only closing the connection.
 
+A run gets a value through a **run-scoped grant**:
+`POST /api/wallet/connections/{connection_id}/grants`. Only a machine assertion
+(`caller_class: "machine"` with a `run_id`) may call it, the connection has to be
+owned by the assertion's owner and profile, and the custody store has to hold a
+live value — a revoked connection fails closed with `404`. The wallet decrypts
+with the data key and the store records a `granted` event whose actor is the
+`run_id`, so a use is attributable even though the store only ever sees
+ciphertext. Nothing else answers a value.
+
 The lane selects the custody mode by environment:
 
 - `ZEROCREDS_VAULT_DATA_KEY` set — durable custody in `ta-credential-vault`,

@@ -22,6 +22,16 @@ The runner lane therefore keeps the value in a dedicated D1 database, `ta-creden
 
 OpenBao stays available as a `vault` destination adapter for operators who run their own cluster. The shared sandbox lane still runs the legacy in-container OpenBao until it is moved to the same durable store.
 
+### Use boundary (updated): a run-scoped grant, not a read API
+
+A stored value is useless until a run can use it, and [#67](https://github.com/Zerocreds-com/zerocreds-server/issues/67) rules out a generic `GET secret`. The durable custody keeps that boundary:
+
+- `POST /api/wallet/connections/{connection_id}/grants` is the only route that answers a value. It requires a **machine** assertion (`caller_class: "machine"` plus a `run_id`) that the issuer configuration has to allow, so the human and browser paths can never call it; a human assertion is refused with 403 even when the profile allows both caller classes.
+- The connection has to belong to the assertion's owner and profile, and the custody store has to hold a live value: a connection whose value was revoked fails closed with 404.
+- The wallet decrypts with the data key, which never leaves the container. The store records a `granted` event whose actor is the `run_id`, so a use is attributable even though the store only ever sees ciphertext.
+- The answer carries the value exactly once, with an expiry the host must respect. Nothing else returns it — the status read, the receipt and the event log stay value-free.
+- The host owns the grant semantics for a run (which environment variable the value becomes, how long the run may keep it). That is what makes the same route usable from the Worker, from GHA and from a VM, and it is the ZeroCreds half of [ai-agent-runner#438](https://github.com/trained-assist/ai-agent-runner/issues/438).
+
 ### Storage choice: OpenBao values, D1 metadata
 
 OpenBao is a separate service, not a Cloudflare D1 feature. KV v2 supplies secret versions and path-scoped ACLs, and OpenBao has audit devices. It requires authentication, unseal, backups, monitoring and availability planning ([KV v2](https://openbao.org/docs/secrets/kv/kv-v2/), [storage operations](https://openbao.org/docs/configuration/storage/), [audit](https://openbao.org/docs/audit/)). ZeroCreds already has a `vault` destination adapter, but that does not mean a production OpenBao cluster or owner-scoped policies exist.

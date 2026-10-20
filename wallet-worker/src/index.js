@@ -4,6 +4,7 @@ const SHA256 = /^[a-f0-9]{64}$/;
 const PROVIDER = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const KEY = /^[a-zA-Z0-9_-]{16,128}$/;
 const ASSERTION_JTI = /^[a-f0-9]{64}$/;
+const RUN_REF = /^[A-Za-z0-9_.:-]{1,200}$/;
 
 function response(status, body) {
   return new Response(JSON.stringify(body), { status, headers: {
@@ -217,6 +218,27 @@ async function vaultRevoke(env, request, connectionId) {
     .bind(connectionId, body.owner_id, body.profile_id, versions, now).run();
   return response(200, { connection_id: connectionId, state: 'revoked', versions_revoked: versions });
 }
+// The wallet is the only component that holds the data key, so it is the only
+// caller that may read a stored ciphertext back. A read is bound to the run that
+// asked for it and is recorded before the ciphertext leaves the store, so a use
+// is attributable even though the store never sees the plaintext.
+async function vaultRead(env, request, connectionId) {
+  if (!env.VAULT_DB) return response(503, { error: 'vault_not_configured' });
+  const body = await readBody(request, ['owner_id', 'profile_id', 'run_id'], VAULT_BODY_LIMIT);
+  if (!body || !identity(body.owner_id, body.profile_id) || !validText(body.run_id, RUN_REF)) {
+    return response(400, { error: 'invalid_scope' });
+  }
+  const live = await env.VAULT_DB.prepare(`SELECT version, ciphertext, iv, tag, alg, key_ref FROM credential_values
+    WHERE connection_id = ? AND owner_id = ? AND profile_id = ? AND revoked_at IS NULL
+    ORDER BY version DESC LIMIT 1`).bind(connectionId, body.owner_id, body.profile_id).first();
+  if (!live) return response(404, { error: 'value_unavailable' });
+  await env.VAULT_DB.prepare(`INSERT INTO credential_events
+    (connection_id, owner_id, profile_id, action, version, actor, created_at)
+    VALUES (?, ?, ?, 'granted', ?, ?, ?)`)
+    .bind(connectionId, body.owner_id, body.profile_id, live.version, body.run_id, Date.now()).run();
+  return response(200, { connection_id: connectionId, version: live.version, ciphertext: live.ciphertext,
+    iv: live.iv, tag: live.tag, alg: live.alg, key_ref: live.key_ref });
+}
 async function claimAssertion(env, request) {
   const body = await readBody(request, ['jti_hash', 'expires_at']);
   const now = Date.now();
@@ -250,6 +272,8 @@ export default {
       if (vaultValue && request.method === 'GET') return vaultStatus(env, request, vaultValue[1]);
       const vaultRevoked = /^\/internal\/vault\/values\/([a-zA-Z0-9_-]{1,100})\/revoke$/.exec(url.pathname);
       if (vaultRevoked && request.method === 'POST') return vaultRevoke(env, request, vaultRevoked[1]);
+      const vaultReadBack = /^\/internal\/vault\/values\/([a-zA-Z0-9_-]{1,100})\/read$/.exec(url.pathname);
+      if (vaultReadBack && request.method === 'POST') return vaultRead(env, request, vaultReadBack[1]);
       return response(404, { error: 'not_found' });
     } catch (error) {
       console.error('wallet metadata operation failed', error?.name || 'unknown');
