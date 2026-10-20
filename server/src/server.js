@@ -9,7 +9,7 @@ const { diagnoseLocalSetup } = require('./local-doctor');
 const path = require('path');
 const crypto = require('crypto');
 const { startNalogLogin, confirmNalogCode } = require('./nalog-login');
-const { saveToDestination, testDestination, validateDestination, resolveTemplate } = require('./destinations');
+const { saveToDestination, testDestination, validateDestination, resolveTemplate, readZerocredsVault } = require('./destinations');
 const { canonicalJson, sha256Hex, loadSigningKey, signPayload } = require('./receipts');
 const { discoverCredentialSources, searchCredentialMetadata, CATEGORIES } = require('./credential-discovery');
 
@@ -1495,7 +1495,9 @@ function createApp(config = {}) {
     walletAssertionIssuers = JSON.parse(fs.readFileSync(WALLET_ASSERTION_ISSUERS_FILE, 'utf8'));
   }
   const WALLET_ASSERTION_ISSUERS = new Map();
-  const walletOperations = new Set(['wallet.forms.create', 'wallet.forms.status', 'wallet.connections.status', 'wallet.connections.revoke']);
+  // A granted value may stay in a run environment no longer than this.
+  const WALLET_GRANT_TTL_MS = 300 * 1000;
+  const walletOperations = new Set(['wallet.forms.create', 'wallet.forms.status', 'wallet.connections.status', 'wallet.connections.revoke', 'wallet.connections.grant']);
   for (const [issuer, record] of Object.entries(walletAssertionIssuers || {})) {
     if (!issuer || !record || typeof record !== 'object' || !record.keys || !record.profiles) {
       throw new Error('invalid wallet assertion issuer configuration');
@@ -1576,7 +1578,8 @@ function createApp(config = {}) {
           destination: scope.destination, callers: scope.callers }))[0];
       if (!profile || !profile.callers.has(claims.caller_class) || profile.owner_id !== claims.owner_id
         || claims.owner_id !== claims.owner_id.trim()) return null;
-      return { issuer: claims.iss, profile, jti: claims.jti, exp: claims.exp };
+      return { issuer: claims.iss, profile, jti: claims.jti, exp: claims.exp,
+        caller_class: claims.caller_class, run_id: claims.run_id };
     } catch { return null; }
   }
 
@@ -1642,7 +1645,8 @@ function createApp(config = {}) {
         expires_at: assertion.exp * 1000,
       });
     } catch { return null; }
-    return { ...assertion.profile, requester: assertion.issuer };
+    return { ...assertion.profile, requester: assertion.issuer,
+      caller_class: assertion.caller_class, run_id: assertion.run_id };
   }
 
   function saveIntegrators() {
@@ -3103,6 +3107,43 @@ function createApp(config = {}) {
       } catch (e) {
         return json(res, e.status === 404 ? 404 : 503,
           { error: e.status === 404 ? 'connection_unavailable' : 'wallet unavailable' });
+      }
+    }
+
+    // ── POST /api/wallet/connections/{id}/grants ───────────────────────────────
+    // A run-scoped grant: the host that acts for a run asks for the stored value.
+    // Only a machine assertion may ask, the connection has to hold a live value in
+    // the custody store, and the store records the run that consumed it. The value
+    // is answered once — there is no route that hands it out again.
+    const walletGrant = /^\/api\/wallet\/connections\/([a-zA-Z0-9_-]{1,100})\/grants$/.exec(url.pathname);
+    if (walletGrant && req.method === 'POST') {
+      const scope = await walletScope(req.headers.authorization, 'wallet.connections.grant');
+      if (!scope) return json(res, 401, { error: 'unauthorized' });
+      if (scope.caller_class !== 'machine' || typeof scope.run_id !== 'string' || !scope.run_id) {
+        return json(res, 403, { error: 'a run-scoped grant needs a machine caller' });
+      }
+      try {
+        const connectionId = walletGrant[1];
+        const base = NAMED_DESTINATIONS[scope.destination];
+        if (!base || base.type !== 'zerocreds_vault') {
+          return json(res, 503, { error: 'custody store is not configured for this profile' });
+        }
+        const destination = { ...base, connection_id: connectionId,
+          owner_id: scope.owner_id, profile_id: scope.profile_id };
+        const destinationError = validateDestination(destination, DEST_OPTS);
+        if (destinationError) return json(res, 503, { error: 'custody store unavailable' });
+        const stored = await readZerocredsVault(destination, scope.run_id, DEST_OPTS);
+        return json(res, 200, {
+          connection_id: connectionId,
+          value: stored.fields,
+          version: stored.version,
+          // The host may hold the value for the run, not longer than this.
+          expires_at: new Date(Date.now() + WALLET_GRANT_TTL_MS).toISOString(),
+        });
+      } catch (e) {
+        const missing = e.status === 404 || /HTTP 404/.test(String(e.message));
+        return json(res, missing ? 404 : 503,
+          { error: missing ? 'value_unavailable' : 'custody store unavailable' });
       }
     }
 

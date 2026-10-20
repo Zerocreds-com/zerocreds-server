@@ -29,7 +29,7 @@ function valueBody(ownerId, profileId = 'profile_a') {
     ciphertext, iv, tag, alg: 'A256GCM', key_ref: 'k1' };
 }
 
-test('a stored value is versioned, scoped and never handed back', async () => {
+test('a stored value is versioned, scoped and the metadata read never hands it back', async () => {
   const ownerId = owner();
   const connection = await allocate(ownerId);
   const first = await call(`/internal/vault/values/${connection.connection_id}`, valueBody(ownerId), { method: 'PUT' });
@@ -96,6 +96,38 @@ test('a revoked connection refuses new values and the value is destroyed', async
   const events = await env.VAULT_DB.prepare('SELECT action FROM credential_events WHERE connection_id = ?')
     .bind(connection.connection_id).all();
   expect(events.results.map((row) => row.action)).toEqual(['created', 'revoked']);
+});
+
+test('a run-scoped read hands the ciphertext back and records the run', async () => {
+  const ownerId = owner();
+  const connection = await allocate(ownerId);
+  await call(`/internal/vault/values/${connection.connection_id}`, valueBody(ownerId), { method: 'PUT' });
+
+  const runRef = 'run_2b1c0f6d9a4e_9f4e2a1b';
+  const read = await call(`/internal/vault/values/${connection.connection_id}/read`,
+    { owner_id: ownerId, profile_id: 'profile_a', run_id: runRef });
+  expect(read.status).toBe(200);
+  expect(read.body.ciphertext).toBe(ciphertext);
+  expect(read.body.iv).toBe(iv);
+  expect(read.body.tag).toBe(tag);
+  expect(read.body.alg).toBe('A256GCM');
+  expect(read.body.version).toBe(1);
+
+  const events = await env.VAULT_DB.prepare('SELECT action, actor FROM credential_events WHERE connection_id = ? ORDER BY event_id')
+    .bind(connection.connection_id).all();
+  expect(events.results.map((row) => [row.action, row.actor]))
+    .toEqual([['created', 'wallet'], ['granted', runRef]]);
+
+  // A read has to name the run it is for, and a foreign scope learns nothing.
+  expect((await call(`/internal/vault/values/${connection.connection_id}/read`,
+    { owner_id: ownerId, profile_id: 'profile_a' })).status).toBe(400);
+  expect((await call(`/internal/vault/values/${connection.connection_id}/read`,
+    { owner_id: owner(), profile_id: 'profile_a', run_id: runRef })).status).toBe(404);
+
+  // A revoked value is gone: the read fails closed.
+  await call(`/internal/vault/values/${connection.connection_id}/revoke`, { owner_id: ownerId, profile_id: 'profile_a' });
+  expect((await call(`/internal/vault/values/${connection.connection_id}/read`,
+    { owner_id: ownerId, profile_id: 'profile_a', run_id: runRef })).status).toBe(404);
 });
 
 test('custody routes need the service token and reject malformed values', async () => {
