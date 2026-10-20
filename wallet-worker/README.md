@@ -21,6 +21,21 @@ All endpoints are internal, require `Authorization: Bearer <WALLET_SERVICE_TOKEN
 | `GET /internal/connections/<connection_id>` | `X-Wallet-Owner`, `X-Wallet-Profile` headers | Returns a scoped, value-free connection status or 404. |
 | `POST /internal/connections/<connection_id>/revoke` | `owner_id`, `profile_id` | Prevents later form completion or new use. |
 
+## The custody vault
+
+The durable custody lives in a second D1 database (`VAULT_DB`), separate from the metadata database above. The wallet encrypts a value with a key only it holds (AES-256-GCM) before it reaches the store, so the store only ever holds ciphertext, and the metadata read never answers it. The vault routes are the same internal ones — service token, JSON, no-store:
+
+| Operation | Request | Effect |
+| --- | --- | --- |
+| `PUT /internal/vault/values/<connection_id>` | `owner_id`, `profile_id`, `provider`, `ciphertext`, `iv`, `tag`, `alg`, `key_ref` | Stores a new version of the value. The version is derived from the store, never from the request. |
+| `GET /internal/vault/values/<connection_id>` | `X-Wallet-Owner`, `X-Wallet-Profile` headers | Returns the scoped, value-free status and version, or 404. |
+| `POST /internal/vault/values/<connection_id>/read` | `owner_id`, `profile_id`, `run_id` | The only route that answers ciphertext. It records a `granted` event whose actor is the `run_id`. |
+| `POST /internal/vault/values/<connection_id>/revoke` | `owner_id`, `profile_id` | Destroys the stored values, not only the connection flag. The event log survives. |
+
+**One run, one grant.** The read route records the grant idempotently, per connection, run and value version: the same run asking again — a retry, a cut-over to another worker, a replacement host after the previous one died — is the same grant, so the journal keeps a single `granted` event. The answer carries `replay: true` when the run already held that grant, so the host can count its own deliveries. A rotated value is a different version and therefore a different grant.
+
+The vault migrations are applied with `npx wrangler d1 migrations apply VAULT_DB --remote --config <config>`; the first one creates the tables, the second the grant-once index.
+
 The current Worker cannot prove an OpenBao write by itself: the trusted ZeroCreds service must verify the KV-v2 version receipt before calling `complete`. The `receipt_ref` is a SHA-256 reference, not a signed receipt or secret. If OpenBao succeeds and D1 completion fails, retry `complete` with the same form/version/receipt; the Worker does not mint a second version. Runtime use must separately check that the connection is active and belongs to the run's owner/profile. No secret read endpoint exists here.
 
 Before production: connect a trusted identity source, bind the signed form manifest to this D1 record, provision scoped OpenBao and D1 environments, establish service-token rotation and audit, and prove end-to-end retry/revocation against a real sandbox. See [the integration contract](../docs/serverlessagence-runner-credential-intake.md).

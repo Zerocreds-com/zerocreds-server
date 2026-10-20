@@ -3384,6 +3384,11 @@ function createApp(config = {}) {
           version: stored.version,
           // The host may hold the value for the run, not longer than this.
           expires_at: new Date(Date.now() + WALLET_GRANT_TTL_MS).toISOString(),
+          // `replay` is true when the run already held this grant: the custody
+          // journal keeps one `granted` event per run, so the host learns that
+          // it is asking again — a retry or a cut-over — rather than the first
+          // time the value leaves the store.
+          replay: stored.replay === true,
         });
       } catch (e) {
         const missing = e.status === 404 || /HTTP 404/.test(String(e.message));

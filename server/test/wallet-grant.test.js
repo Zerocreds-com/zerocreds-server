@@ -61,7 +61,8 @@ test('a run-scoped grant hands the stored value to a machine caller and nobody e
       reads.push(payload);
       return send(res, 200, { connection_id: connectionId, version: 3,
         ciphertext: ciphertext.toString('base64'), iv: iv.toString('base64'),
-        tag: cipher.getAuthTag().toString('base64'), alg: 'A256GCM', key_ref: 'k1' });
+        tag: cipher.getAuthTag().toString('base64'), alg: 'A256GCM', key_ref: 'k1',
+        replay: reads.length > 1 });
     }
     return send(res, 404, { error: 'not_found' });
   });
@@ -104,6 +105,17 @@ test('a run-scoped grant hands the stored value to a machine caller and nobody e
     const refused = await request(srv.port, 'POST', `/api/wallet/connections/${connectionId}/grants`, {}, auth(human));
     assert.equal(refused.status, 403, JSON.stringify(refused.body));
     assert.equal(reads.length, 1, 'a refused grant never reaches the store');
+
+    // The same run asking again is the same grant: the value is still answered
+    // (the run needs it to work), and the host is told it is a replay so it
+    // can count the deliveries itself.
+    const again = await request(srv.port, 'POST', `/api/wallet/connections/${connectionId}/grants`, {},
+      auth(claims({ jti: crypto.randomBytes(20).toString('base64url') })));
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    assert.deepEqual(again.body.value, secret);
+    assert.equal(again.body.replay, true, 'the host learns the run already held this grant');
+    assert.equal(reads.length, 2, 'the repeat reached the store');
+    assert.equal(granted.body.replay, false, 'the first grant of a run is not a replay');
 
     // An assertion without the grant operation is rejected before anything else.
     const unscoped = claims({ operations: ['wallet.connections.status'], jti: crypto.randomBytes(20).toString('base64url') });
