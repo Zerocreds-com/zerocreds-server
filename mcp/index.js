@@ -140,7 +140,7 @@ server.tool(
 
 server.tool(
   'connections_list',
-  'List local ZeroCreds credential connections without returning credential values. Shows provider, account alias, expiry and verification status. When the owner asks to share an existing token with a colleague, select the exact connection_id, then use share_options to explain and ask whether to use the configured ZeroCreds relay or a direct public-IP connection. If several connections match, ask which one too. Explain that share_create gives a short-lived encrypted one-time link; the owner sends the full URL through a trusted channel; the recipient pastes it into an agent with local ZeroCreds, where share_claim saves the credential in Keychain. Neither agent receives the raw token. The full URL is a bearer invitation; the sender Mac must stay online until claimed.',
+  'List local ZeroCreds credential connections without returning credential values. Shows provider, account alias, expiry and verification status. When the owner asks to share a credential, select the exact connection_id, then call share_options. Speak in the language the user is using. Explain the two choices in plain everyday words and ask which they prefer before creating a link. Avoid terms such as inbound port, public IP, relay protocol or ciphertext unless the user asks for technical detail. If several connections match, ask which one too. Explain that the owner will send a short-lived private link; the recipient pastes it into an agent with local ZeroCreds, which saves the credential in Keychain. The secret itself is not shown to either agent. The full link grants access once; the sender Mac must stay online until claimed.',
   {
     provider: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional(),
   },
@@ -150,7 +150,7 @@ server.tool(
     const data = await apiCall('GET', `/api/local/connections${query}`);
     if (data.error) throw new Error(data.error);
     if (Array.isArray(data.connections) && data.connections.length > 1) {
-      data.sharing_next_step = 'If the user wants to share one of these connections, ask which account_alias they mean and use share_options to ask relay or direct. In the same reply, explain: after they choose, share_create makes a short-lived encrypted one-time link; they send the full link through a trusted channel; their colleague pastes it into an agent with local ZeroCreds, which calls share_claim and writes the credential directly to the colleague\'s Keychain. Neither agent receives or displays the raw credential. The full link is a bearer invitation and the sender Mac must remain online until claimed.';
+      data.sharing_next_step = 'If the user wants to share one of these connections, ask which account_alias they mean and use share_options. Reply in the user\'s language. Explain in plain language: relay means the link goes through the configured ZeroCreds website, which cannot read the encrypted credential; direct means the colleague connects to this computer over the internet, which may require a router change. Ask which they prefer before calling share_create. The owner sends the short-lived link through a trusted channel; the colleague pastes it into an agent with local ZeroCreds, which saves the credential directly to their Keychain. Neither agent sees the secret. The sender computer stays on until the colleague finishes.';
     }
     return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
   },
@@ -192,7 +192,7 @@ if (LOCAL_MODE) server.tool(
 
 if (LOCAL_MODE) {
   server.tool('share_options',
-    'Call before creating a share to present the actual configured relay domain and direct availability. Ask the owner which transport they want. The relay receives encrypted data, while direct requires a public IP and an inbound port. Never silently choose either transport.',
+    'Call before creating a share. Then explain the options in the language the user is using, with everyday words: relay means the transfer passes through the configured ZeroCreds website, which cannot read the encrypted credential; direct sends it from this computer to the colleague without using the ZeroCreds website, but their computer must be reachable over the internet and the router may need a change. If direct sounds difficult or is unavailable, recommend the relay. Ask which they prefer. Avoid networking jargon unless asked. Never silently choose.',
     {}, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async () => {
       const data = await apiCall('GET', '/api/local/shares/options');
       if (data.error) throw new Error(data.error);
@@ -200,8 +200,8 @@ if (LOCAL_MODE) {
     });
 
   server.tool('share_direct_setup',
-    'After the owner chooses direct sharing, configure this computer’s public-IP share listener. Ask for the public IPv4 address and inbound TCP port if unknown, then call this tool. It validates local binding and saves non-secret settings; it cannot configure a router or prove external reachability. Explain the returned port-forwarding/firewall step and check reachability from another network before sending an invitation. HTTP exposes network metadata; use HTTPS only with a certificate valid for the IP. Do not call for relay sharing.',
-    { public_url: z.string().url().describe('http://PUBLIC_IPV4:PORT or https://PUBLIC_IPV4:PORT'),
+    'After the owner chooses direct sharing, set up the sender’s computer. Speak in the user’s language. Ask for the public internet address and connection number only if they are not already known; explain that a router setting may also be needed so the colleague can reach this computer. This tool configures ZeroCreds on this computer, but it cannot change the router. If the user does not know how to do that, offer the relay instead. Do not call for relay sharing.',
+    { public_url: z.string().url().describe('The sender’s internet address and port, for example http://203.0.113.10:3457. Do not make the user find this manually if it can be discovered safely.'),
       cert_file: z.string().optional().describe('Local TLS certificate path for HTTPS only'),
       key_file: z.string().optional().describe('Local TLS private-key path for HTTPS only') }, async input => {
       const data = await apiCall('POST', '/api/local/shares/direct/setup', input);
@@ -210,12 +210,12 @@ if (LOCAL_MODE) {
     });
 
   server.tool('share_create',
-    'Use when the owner asks to share or give an existing saved credential to a colleague, including "share my GitHub token". First list matching connections, select the exact connection_id, call share_options, and ask the owner to choose the configured ZeroCreds relay or direct public-IP transfer. Never create a link until the owner chooses a transport. If direct is chosen, call share_direct_setup when needed and explain inbound network requirements. The relay sees encrypted data only; direct does not involve the ZeroCreds relay or website. After the choice, create a short-lived encrypted one-time link; the owner sends the full URL through a trusted channel; the recipient pastes it into their agent with local ZeroCreds, which calls share_claim and saves the credential in Keychain without either agent receiving its raw value. Explain that a copied personal GitHub PAT acts as the owner; suggest repository access with the colleague’s own identity if appropriate. The full URL is a bearer invitation; the sender Mac must stay online until claimed. setup_prompt must contain no secret value.',
+    'Use when the owner asks to share or give an existing saved credential to a colleague, including "share my GitHub token". Reply in the language the user is using, and translate forward_message before showing it if needed; keep the link unchanged. First list matching connections, select the exact connection_id, call share_options, and explain the choices in plain everyday words. A relay sends the invitation through the configured ZeroCreds website; it cannot read the encrypted credential. Direct avoids that website, but the recipient needs to connect to this computer over the internet, which may require a router change. Ask the owner which option they prefer before creating a link. If direct is chosen, call share_direct_setup and explain plainly what network step remains; recommend relay if direct setup is unfamiliar. After the choice, create a short-lived link; the owner sends it through a trusted channel; the recipient pastes it into their local ZeroCreds agent, which saves the credential directly in Keychain. Neither agent sees the secret. The sender computer stays online until claimed. Explain that a copied personal GitHub PAT lets the recipient act as its owner. The full link grants access once. setup_prompt must contain no secret value.',
     {
       connection_id: z.string().regex(/^[a-f0-9]{32}$/),
       setup_prompt: z.string().max(2000).describe('Free-form setup instructions for the recipient agent; must contain no credential value.'),
       ttl_minutes: z.number().int().min(1).max(120).optional(),
-      transport: z.enum(['direct', 'relay']).describe('Required explicit owner choice. Direct needs a configured public-IP endpoint and inbound port; relay uses the configured hosted or self-hosted relay.'),
+      transport: z.enum(['direct', 'relay']).describe('Required explicit owner choice. Ask in the user’s language and explain both choices in everyday words.'),
     }, async input => {
       const data = await apiCall('POST', '/api/local/shares', input);
       if (data.error) throw new Error(data.error);

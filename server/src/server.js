@@ -2268,7 +2268,7 @@ function createApp(config = {}) {
     if (SHARE_RELAY && req.method === 'GET' && /^\/api\/share-relay\/invite\/[a-f0-9]{32}$/.test(url.pathname)) {
       res.setHeader('Cache-Control', 'no-store');
       res.setHeader('Referrer-Policy', 'no-referrer');
-      return sendHtml(res, 200, shareInvitePage());
+      return sendHtml(res, 200, shareInvitePage(req.headers['accept-language'] || ''));
     }
 
     if (LOCAL_MODE && url.pathname.startsWith('/api/local/shares')) {
@@ -2278,8 +2278,8 @@ function createApp(config = {}) {
         return json(res, 200, { relay_url: SHARE_RELAY_URL, direct_url: directConfig.public_url || null,
           direct_configured: !!directConfig.public_url,
           choice_required: true,
-          relay_description: 'Encrypted one-time transfer through the configured ZeroCreds relay; the relay stores ciphertext, not the credential value.',
-          direct_description: 'Sender-hosted public IP and inbound port; the ZeroCreds relay and website do not handle this transfer. Public network reachability is required.' });
+          relay_description: 'Use the ZeroCreds website at this address to pass the invitation. The credential is sealed before it leaves this computer, and the website cannot open and read it.',
+          direct_description: 'Send straight from this computer without using the ZeroCreds website. Your colleague must be able to connect to this computer over the internet. The router may need a setting changed. If that is not possible, choose the ZeroCreds website.' });
       }
       if (req.method === 'POST' && url.pathname === '/api/local/shares/direct/setup') {
         const body = await readJson(req);
@@ -2306,7 +2306,7 @@ function createApp(config = {}) {
         directConfig = candidate;
         return json(res, 200, { direct_url: candidate.public_url, local_listener_ready: true,
           external_reachability_verified: false,
-          next_step: 'Forward the chosen TCP port to this computer and allow inbound traffic in its firewall. Confirm public reachability from another network before sharing.' });
+          next_step: 'This computer is configured, but people outside your network may not be able to reach it yet. Your router may need to be set to pass the connection through to this computer, and the computer firewall may need to allow it. Ask your internet provider or network administrator if these settings are unfamiliar. Test from another network before sending the link; if this cannot be arranged, use the ZeroCreds relay.' });
       }
       if (req.method === 'POST' && url.pathname === '/api/local/shares') {
         const body = await readJson(req);
