@@ -52,3 +52,8 @@ test('approves only metadata reads and preserves existing approval choices', () 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('manual installation guide contains the exact managed Codex block', () => {
+  const guide = fs.readFileSync(path.join(__dirname, '..', '..', 'docs', 'local-mac-setup.md'), 'utf8');
+  assert.ok(guide.includes(`\`\`\`md\n${GUIDANCE}\n\`\`\``));
+});
