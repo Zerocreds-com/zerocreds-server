@@ -27,16 +27,16 @@ async function boundedJson(response) {
 
 function selectToken(fields, names) {
   for (const name of names) {
-    if (typeof fields?.[name] === 'string' && fields[name].length > 0 && fields[name].length <= 8192) {
+    if (Object.hasOwn(fields || {}, name) && typeof fields[name] === 'string' && fields[name].length > 0 && fields[name].length <= 8192) {
       return fields[name];
     }
   }
   return null;
 }
 
-function credentialHint(provider, fields) {
+function credentialHint(provider, fields, { tokenField } = {}) {
   if (String(provider).toLowerCase() !== 'deepgram') return null;
-  const token = selectToken(fields, PROVIDERS.deepgram.tokenFields);
+  const token = selectToken(fields, tokenField === undefined ? PROVIDERS.deepgram.tokenFields : [tokenField]);
   if (!token) return null;
   return {
     character_count: token.length,
@@ -44,11 +44,11 @@ function credentialHint(provider, fields) {
   };
 }
 
-async function verifyLocalCredential(provider, fields, fetchImpl = fetch) {
+async function verifyLocalCredential(provider, fields, fetchImpl = fetch, { tokenField } = {}) {
   const normalizedProvider = String(provider).toLowerCase();
   const config = PROVIDERS[normalizedProvider];
   if (!config) return { status: 'unsupported_provider' };
-  const token = selectToken(fields, config.tokenFields);
+  const token = selectToken(fields, tokenField === undefined ? config.tokenFields : [tokenField]);
   if (!token) return { status: 'credential_field_missing' };
 
   let response;

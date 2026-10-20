@@ -2659,6 +2659,16 @@ function createApp(config = {}) {
           || !/^[a-zA-Z0-9_-]{1,64}$/.test(payload.account_alias)) {
         return json(res, 400, { error: 'invalid provider or account_alias' });
       }
+      if (payload.token_field !== undefined && (typeof payload.token_field !== 'string'
+          || !/^[a-zA-Z0-9_]{1,64}$/.test(payload.token_field))) {
+        return json(res, 400, { error: 'invalid token_field: use a saved field name (1–64 letters, digits or underscores)' });
+      }
+      if (payload.save_token_field !== undefined && typeof payload.save_token_field !== 'boolean') {
+        return json(res, 400, { error: 'save_token_field must be a boolean' });
+      }
+      if (payload.save_token_field && payload.token_field === undefined) {
+        return json(res, 400, { error: 'save_token_field requires token_field' });
+      }
       let entries;
       try { entries = readLocalCatalog(); }
       catch { return json(res, 503, { error: 'local catalog unavailable' }); }
@@ -2678,8 +2688,12 @@ function createApp(config = {}) {
         const status = error.message === 'keychain_locked' ? 'keychain_locked' : 'unavailable_here';
         return json(res, 200, { verification: status, connection_id: entry.connection_id });
       }
-      const result = await (config.localCredentialVerifier || verifyLocalCredential)(provider, fields);
-      const safeCredentialHint = credentialHint(provider, fields);
+      const tokenField = payload.token_field ?? entry.token_field;
+      const result = await (config.localCredentialVerifier || verifyLocalCredential)(provider, fields, undefined, { tokenField });
+      const safeCredentialHint = credentialHint(provider, fields, { tokenField });
+      if (payload.save_token_field && result.status === 'valid') {
+        entry.token_field = payload.token_field;
+      }
       const verifiedAt = new Date().toISOString();
       entry.last_verified_at = verifiedAt;
       entry.verification_status = result.status;
@@ -2697,6 +2711,11 @@ function createApp(config = {}) {
       console.info('[local-verify] provider=%s alias=%s outcome=%s', provider, alias, result.status);
       return json(res, 200, {
         verification: result.status,
+        ...(entry.token_field ? { token_field: entry.token_field } : {}),
+        ...(payload.save_token_field ? { token_field_saved: result.status === 'valid' } : {}),
+        ...(result.status === 'credential_field_missing' ? {
+          next_step: 'Retry connection_verify with token_field set to the original saved token field name. Reuse the existing credential; do not ask the user to fill another form.',
+        } : {}),
         connection_id: entry.connection_id,
         verified_at: verifiedAt,
         identity: entry.verified_identity,

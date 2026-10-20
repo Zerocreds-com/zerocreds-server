@@ -179,6 +179,15 @@ Every candidate carries a unique `ref`; two Keychain items that share an account
 
 **`connection_verify`** — verify a saved credential against its provider. Provider-native verification exists for `github`, `cloudflare` and `deepgram`; any other provider slug is accepted and answered with `verification: "unsupported_provider"` (nothing is contacted), so the tool stays honest for services ZeroCreds cannot check. The tool never returns the credential or a grant value.
 
+Use `token` as the field name for a new GitHub token form (`label` can be descriptive, and `uid` distinguishes accounts). Legacy aliases `github_token` and `personal_access_token` also work. Custom field names are supported: if an existing credential was saved as `github_pat_admin`, call:
+
+```json
+{ "provider": "github", "account_alias": "github-admin", "token_field": "github_pat_admin", "save_token_field": true }
+```
+
+`token_field` selects the original saved field; it does not rename, copy or return the secret. Add `save_token_field: true` to persist this alias on the connection after successful provider verification (`token_field_saved: true`). Later checks can omit `token_field`. Saving another successfully verified field replaces the alias; failed verification leaves the previous alias intact. Without this option the override applies only to the current check. An explicit field takes precedence over default aliases; a missing or empty field fails without contacting the provider. On `credential_field_missing`, retry with the original field name instead of asking the user to submit another form.
+
+
 ---
 
 For the planned ServerlessAgence wallet, see the [task-driven MCP form, OpenBao preflight and owner/profile disclosure contract](docs/serverlessagence-runner-credential-intake.md). OpenBao will store secret values; D1 will hold non-secret form and connection metadata. The current end-to-end integration is not deployed.

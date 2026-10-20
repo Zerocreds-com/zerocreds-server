@@ -61,6 +61,13 @@ test('local MCP verifies Deepgram grant capability and returns only safe diagnos
     assert.ok(!text.includes('access_token'));
     assert.ok(!text.includes('DEEPGRAM_API_KEY'));
 
+    await client.callTool({ name: 'connection_verify', arguments: {
+      provider: 'github', account_alias: 'github-admin', token_field: 'github_pat_admin', save_token_field: true,
+    } });
+    assert.deepEqual(request.body, {
+      provider: 'github', account_alias: 'github-admin', token_field: 'github_pat_admin', save_token_field: true,
+    });
+
     const unsupported = await client.callTool({ name: 'connection_verify', arguments: {
       provider: 'hogwarts', account_alias: 'hogwarts',
     } });
