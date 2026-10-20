@@ -195,3 +195,34 @@ test('local API shares by direct IP after explicit choice, with no hosted relay 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('direct setup can skip ZeroCreds reachability checks when given a known public address', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zc-direct-share-unchecked-'));
+  const adminToken = 'unchecked-direct-share-admin-' + 'x'.repeat(32);
+  const directPort = await freePort();
+  const sourcePort = await freePort();
+  const source = createApp({ localMode: true, adminToken, baseUrl: `http://127.0.0.1:${sourcePort}`,
+    shareRelayUrl: '', localCatalogFile: path.join(root, 'catalog.json'),
+    pendingDir: path.join(root, 'pending'), tokensDir: path.join(root, 'tokens'),
+    destinationsFile: path.join(root, 'destinations.json'), integratorsFile: path.join(root, 'integrators.json'),
+    signingKeyFile: path.join(root, 'signing.pem'), shareDirectConfigFile: path.join(root, 'direct.json') });
+  const sourceUrl = await listen(source, sourcePort);
+  try {
+    const missingAddress = await request(sourceUrl, 'POST', '/api/local/shares/direct/setup', adminToken,
+      { verify_reachability: false });
+    assert.equal(missingAddress.status, 503);
+    assert.match(missingAddress.body.error, /known public IPv4 address/);
+    const setup = await request(sourceUrl, 'POST', '/api/local/shares/direct/setup', adminToken,
+      { public_url: `http://8.8.8.8:${directPort}`, verify_reachability: false });
+    assert.equal(setup.status, 200, JSON.stringify(setup.body));
+    assert.equal(setup.body.direct_url, `http://8.8.8.8:${directPort}`);
+    assert.equal(setup.body.external_reachability_verified, false);
+    assert.match(setup.body.next_step, /was not tested/);
+    const saved = JSON.parse(fs.readFileSync(path.join(root, 'direct.json')));
+    assert.equal(saved.public_url, `http://8.8.8.8:${directPort}`);
+    assert.equal(saved.reachability_verified_at, undefined);
+  } finally {
+    await new Promise(resolve => source.close(resolve));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

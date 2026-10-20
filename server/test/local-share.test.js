@@ -101,6 +101,20 @@ test('port probe checks only the caller public address and returns no credential
   }, { clientIp: () => '192.168.1.20', probePort: async () => assert.fail('must reject private source address') });
 });
 
+test('port probe rate limit tells the caller when to retry', async () => {
+  await withRelay(async relayUrl => {
+    const probe = () => fetch(`${relayUrl}/api/share-relay/probe`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ port: 3457, token: 'd'.repeat(64) }) });
+    assert.equal((await probe()).status, 200);
+    const limited = await probe();
+    assert.equal(limited.status, 429);
+    assert.deepEqual(await limited.json(), {
+      error: 'port check rate limit; wait before retrying', retry_after_seconds: 10,
+    });
+  }, { clientIp: () => '8.8.4.4', probePort: async () => false });
+});
+
 test('sender and receiver on separate clients transfer once through a ciphertext-only relay', async () => {
   await withRelay(async (relayUrl, relay) => {
     const secret = 'synthetic-secret-that-must-never-appear';
