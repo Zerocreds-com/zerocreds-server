@@ -1811,15 +1811,16 @@ function createApp(config = {}) {
     sendHtml(res, 200, dynamicFormHtml(token, pending, String(req.headers.host || ''), nonce, api), nonce);
   }
 
-  // Probes an http_post destination before a session/form is created. Returns an error
+// Probes a destination before a session/form is created. Returns an error
   // response body, or null. The upstream response body is never returned — only the status.
   async function preflightDestination(dest, payload, fields) {
     const openbao = dest?.type === 'vault' && !!dest.preflight_path_prefix;
+    const custody = dest?.type === 'zerocreds_vault';
     if (openbao && payload.test_destination === false) return { error: 'openbao_preflight_required' };
-    if (!openbao && (payload.test_destination === false || dest?.type !== 'http_post')) return null;
+    if (!openbao && !custody && (payload.test_destination === false || dest?.type !== 'http_post')) return null;
     try {
       const receipt = await testDestination(dest, DEST_OPTS, fields);
-      return openbao ? { preflight: { checked: receipt?.checked === true, at: new Date().toISOString() } } : null;
+      return openbao || custody ? { preflight: { checked: receipt?.checked === true, at: new Date().toISOString() } } : null;
     } catch (e) {
       const detail = openbao ? e.message : /^HTTP \d{3}$/.test(e.message) ? e.message
         : e.code === 'EDESTBLOCKED' ? 'destination address is not allowed'
@@ -1828,6 +1829,7 @@ function createApp(config = {}) {
         error: 'destination_unreachable',
         detail,
         hint: openbao ? 'Check the configured OpenBao writer, owner probe path and metadata/cleanup policy.'
+          : custody ? 'Check the custody store URL, its service token and the data key.'
           : 'Check destination URL and Authorization header. Pass test_destination: false to skip this check.',
       };
     }
@@ -3020,7 +3022,7 @@ function createApp(config = {}) {
         token: formId, title: resolvedTitle, description: resolvedDescription,
         fields: validated.fields, destination: Object.fromEntries(Object.entries(destination)
           .filter(([key]) => !['token', 'role_id', 'secret_id', 'preflight_metadata_token', 'service_token', 'data_key'].includes(key))),
-        preflight: preflight.preflight, destinations_by_level: null, expires, notify: null,
+        preflight: preflight?.preflight ?? null, destinations_by_level: null, expires, notify: null,
         integrator_id: `wallet_${scope.owner_id}`, requester: String(scope.requester || 'ServerlessAgence').slice(0, 100),
         uid: null, form: { name: provider, kind, handle: `cred:${provider}`,
           submit_token_hash: tokenHash(submitToken).toString('hex') },
@@ -3152,7 +3154,7 @@ function createApp(config = {}) {
         fields: validated.fields,
         destination: preflight?.preflight ? Object.fromEntries(Object.entries(r.dest).filter(([k]) => !['token', 'role_id', 'secret_id', 'preflight_metadata_token'].includes(k))) : r.dest,
         ...(preflight?.preflight ? {
-          preflight: preflight.preflight,
+          preflight: preflight?.preflight ?? null,
           destination_ref: destination,
           destination_sha256: destinationFingerprint(r.dest),
         } : {}),
