@@ -140,10 +140,11 @@ Tool names carry only the action and the object (`form_create`, `discovery_sourc
 
 **`form_create`** — create a form, get a URL to send to the user:
 ```
-title, description, fields[], destination, ttl_minutes, notify
+title, description, language?, fields[], destination, ttl_minutes, notify
 → { token, url, expires_at, credential_contract: { format: "json", provider, account_alias, fields: [{ name, label, type, required, level }] } }
 ```
 Submitted values are stored as a JSON object keyed by the exact `fields[].name` values. The same value-free contract is returned by `form_status` while pending or after completion, so an agent can select the declared key without inspecting the secret store.
+The form interface defaults to English. Set `language: "ru"` for Russian and write any caller-provided title, description, labels, and placeholders in the selected language.
 
 **`form_status`** — poll until the user submits:
 ```

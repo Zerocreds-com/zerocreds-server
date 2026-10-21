@@ -10,7 +10,7 @@ def check(domain, marker, expected=None):
     days = (expires - time.time()) / 86400
     if days < 14:
         raise RuntimeError(f'{domain}: certificate expires in {days:.1f} days')
-    for route in ['/', '/health', '/version']:
+    for route in ['/', '/health', '/version', '/favicon.ico', '/favicon.svg']:
         with urllib.request.urlopen(f'https://{domain}{route}', timeout=20) as response:
             if response.status != 200 or response.url != f'https://{domain}{route}':
                 raise RuntimeError(f'{domain}{route}: unexpected status or redirect')
@@ -18,6 +18,9 @@ def check(domain, marker, expected=None):
         if route == '/':
             if marker not in body or 'ZeroCreds' not in body:
                 raise RuntimeError(f'{domain}: wrong landing content/language')
+        elif route.startswith('/favicon'):
+            if response.headers.get_content_type() != 'image/svg+xml' or not body.startswith('<svg '):
+                raise RuntimeError(f'{domain}{route}: favicon is not an SVG')
         else:
             data = json.loads(body)
             if route == '/health' and data.get('ok') is not True:

@@ -171,6 +171,7 @@ function nalogFormHtml(token, nonce) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <title>Connect Nalog.ru</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
@@ -307,6 +308,7 @@ function aboutHtml(baseUrl) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <title>How it works — ZeroCreds</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
@@ -470,7 +472,7 @@ function aboutHtml(baseUrl) {
 }
 
 function expiredHtml() {
-  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Link expired — ZeroCreds</title>
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><title>Link expired — ZeroCreds</title>
 <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d0f17;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;color:#c8cdd8}.card{background:#161924;border:1px solid #232635;border-radius:6px;padding:32px;max-width:460px;width:100%;text-align:center}.exp-icon{width:48px;height:48px;background:#1a1400;border:1px solid #3a2800;border-radius:4px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;color:#f59e0b;font-size:20px}h1{font-size:18px;font-weight:600;color:#e8eaf0;margin-bottom:8px;letter-spacing:-.2px}.sub{color:#6b7280;font-size:13.5px;line-height:1.55}</style>
 </head><body><div class="card"><div class="exp-icon">⏱</div><h1>Link expired</h1><p class="sub">This link has expired or has already been used. Request a new one.</p></div></body></html>`;
 }
@@ -853,6 +855,7 @@ function dynamicFormHtml(token, pending, host, nonce, api = null) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <meta name="color-scheme" content="light dark">
 <title>${escHtml(title)}</title>
 <style>
@@ -1158,6 +1161,7 @@ function connectFormHtml(service, meta, token, nonce) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <title>Connect ${meta.name} — ZeroCreds</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}

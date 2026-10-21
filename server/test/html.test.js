@@ -35,6 +35,11 @@ test('form defaults to English and explicitly supports Russian', async () => {
   assert.match(russian, /<h1>Connect<\/h1>/);
 });
 
+test('local form pages explicitly use the ZeroCreds favicon', async () => {
+  const html = await getFormHtml();
+  assert.match(html, /<link rel="icon" href="\/favicon\.svg" type="image\/svg\+xml">/);
+});
+
 test('XSS in title — <script>alert(1)</script> is escaped in <title> and <h1>', async () => {
   const html = await getFormHtml(undefined, '<script>alert(1)</script>');
   assert.ok(!html.includes('<script>alert(1)</script>'), 'raw script tag must not appear');
