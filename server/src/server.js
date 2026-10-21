@@ -1515,6 +1515,15 @@ function createApp(config = {}) {
     tunnelShareCreates++;
     try {
       const tunnel = await startTunnelEndpoint();
+      // A tunnel goes stale on its own after a while, so it is asked again
+      // before a link is created. A link the recipient cannot open is worse
+      // than no link at all.
+      const probe = await probeTunnel(tunnel.publicUrl);
+      if (!probe.ok) {
+        const error = new Error(probe.error);
+        error.code = 'tunnel_unreachable';
+        throw error;
+      }
       const share = await create(tunnel);
       LOCAL_PEER_SHARES.set(share.id, share);
       tunnelShareIds.add(share.id);
@@ -1523,25 +1532,33 @@ function createApp(config = {}) {
       tunnelShareCreates--;
     }
   }
-  // Verify a tunnel URL by asking the tunnel whether it reaches the loopback
-  // listener. The probe carries a random non-secret token and no credential.
-  async function configureTunnelShare(rawBaseUrl, localPort = SHARE_TUNNEL_PORT, extra = {}) {
-    let baseUrl;
-    try { baseUrl = tunnelOrigin(rawBaseUrl, { allowLoopback: config.allowLoopbackShares === true }); }
-    catch (error) { return { error: `invalid tunnel share URL: ${error.message}` }; }
+  // Ask the tunnel whether it still reaches the loopback listener. The probe
+  // carries a random non-secret token and no credential.
+  async function probeTunnel(baseUrl) {
     const probeToken = crypto.randomBytes(32).toString('hex');
     try {
-      await startTunnelEndpoint(baseUrl, localPort);
-      tunnelEndpoint.setProbeToken(probeToken);
+      tunnelEndpoint?.setProbeToken(probeToken);
       const response = await fetch(`${baseUrl}/api/share-relay/probe/${probeToken}`, { method: 'GET',
         redirect: 'error', signal: AbortSignal.timeout(10000) });
       await response.body?.cancel().catch(() => {});
       if (response.status !== 204) throw new Error('the tunnel did not answer a reachability check; check that it still points at this computer and restart it if it has gone stale');
+      return { ok: true };
     } catch (error) {
+      return { ok: false, error: error.cause?.code ? `${error.message} (${error.cause.code})` : error.message };
+    } finally {
       tunnelEndpoint?.setProbeToken(null);
-      return { error: `tunnel setup failed: ${error.message}` };
     }
-    tunnelEndpoint.setProbeToken(null);
+  }
+  // Verify a tunnel URL and remember it, so a later link points at a tunnel
+  // that answers.
+  async function configureTunnelShare(rawBaseUrl, localPort = SHARE_TUNNEL_PORT, extra = {}) {
+    let baseUrl;
+    try { baseUrl = tunnelOrigin(rawBaseUrl, { allowLoopback: config.allowLoopbackShares === true }); }
+    catch (error) { return { error: `invalid tunnel share URL: ${error.message}` }; }
+    try { await startTunnelEndpoint(baseUrl, localPort); }
+    catch (error) { return { error: `tunnel setup failed: ${error.message}` }; }
+    const probe = await probeTunnel(baseUrl);
+    if (!probe.ok) return { error: `tunnel setup failed: ${probe.error}` };
     const candidate = { base_url: baseUrl, local_port: localPort, verified_at: new Date().toISOString(), ...extra };
     fs.mkdirSync(path.dirname(SHARE_TUNNEL_CONFIG_FILE), { recursive: true, mode: 0o700 });
     const temp = `${SHARE_TUNNEL_CONFIG_FILE}.${crypto.randomBytes(6).toString('hex')}.tmp`;
@@ -2856,7 +2873,12 @@ function createApp(config = {}) {
           share = transport === 'direct' ? await withDirectShareEndpoint(create)
             : transport === 'tunnel' ? await withTunnelShareEndpoint(create)
             : await create();
-        } catch {
+        } catch (error) {
+          if (error?.code === 'tunnel_unreachable') {
+            return json(res, 503, { error: `tunnel_unreachable: ${error.message}`,
+              tunnel_url: tunnelConfig.base_url || null,
+              next_step: 'The tunnel no longer reaches this computer. Start it again with share_tunnel_start (or share_tunnel_setup with the owner\'s address) and create the link after it answers, or share through the configured ZeroCreds website instead.' });
+          }
           return json(res, 503, { error: transport === 'direct' ? 'direct share unavailable'
             : transport === 'tunnel' ? 'tunnel share unavailable' : 'share relay unavailable' });
         }
