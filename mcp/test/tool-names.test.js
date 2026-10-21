@@ -65,6 +65,11 @@ test('local MCP tools do not repeat the provider name', async () => {
     assert.match(share.description, /Ask the owner which option they prefer before creating a link/);
     assert.match(share.description, /Reply in the language the user is using/);
     assert.match(share.description, /plain everyday words/);
+    // The agent has to be able to recover from a tunnel that died on its own.
+    assert.match(share.description, /tunnel_unreachable/);
+    assert.match(share.description, /share_tunnel_start again with the same provider and replace set to true/);
+    assert.match(share.description, /the address of a new tunnel is always different/);
+    assert.match(share.description, /Never send a link that was not just created successfully/);
     assert.deepEqual(share.inputSchema.properties.transport.enum, ['direct', 'relay', 'tunnel']);
     assert.ok(share.inputSchema.required.includes('transport'));
     const tunnelSetup = (await client.listTools()).tools.find(tool => tool.name === 'share_tunnel_setup');
@@ -79,6 +84,8 @@ test('local MCP tools do not repeat the provider name', async () => {
     assert.ok(tunnelStart.inputSchema.properties.replace);
     assert.match(tunnelStart.description, /cannot read the credential/);
     assert.match(tunnelStart.description, /ask before replacing it/);
+    assert.match(tunnelStart.description, /Every new tunnel gets a new address/);
+    assert.match(tunnelStart.description, /use the tunnel_url this call returns/);
     assert.equal(tunnelStart.annotations.destructiveHint, true);
     const tunnelStop = (await client.listTools()).tools.find(tool => tool.name === 'share_tunnel_stop');
     assert.match(tunnelStop.description, /owner started themselves is left alone/);
