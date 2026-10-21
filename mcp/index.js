@@ -205,9 +205,35 @@ if (LOCAL_MODE) server.tool(
 
 if (LOCAL_MODE) {
   server.tool('share_options',
-    'Call before creating a share. Then explain the options in the language the user is using, with everyday words: relay means the transfer passes through one of the configured ZeroCreds websites, which cannot read the encrypted credential; direct sends it from this computer to the colleague without using a ZeroCreds website, but their computer must be reachable over the internet and the router may need a change; tunnel publishes this computer through a tunnel the owner runs (for example cloudflared or an SSH reverse tunnel), so the ZeroCreds website is not involved at all, but the tunnel operator sees the encrypted blob and the timing and can refuse or delay the delivery. When relay_urls contains more than one address, ask the owner which site to use. If direct or tunnel sounds difficult or is unavailable, recommend a relay. Ask which they prefer. Avoid networking jargon unless asked. Never silently choose.',
+    'Call before creating a share. Then explain the options in the language the user is using, with everyday words. Every option keeps the credential unreadable for everyone on the way. Relay means the invitation passes through one of the configured ZeroCreds websites: the website is the only party on the way and cannot open the encrypted credential. Direct sends it from this computer to the colleague with nobody on the way, but their computer must be reachable over the internet and the router may need a change. Tunnel publishes this computer through a tunnel the owner runs, so the ZeroCreds website is not involved, but the tunnel operator is on the way: it sees the encrypted blob, the timing and the addresses, and it can refuse or delay the delivery. The transports array states for every option who is in the path, what that party can see and what the recipient has to confirm. When relay_urls contains more than one address, ask the owner which site to use. If direct or tunnel sounds difficult or is unavailable, recommend a relay. Ask which they prefer. Avoid networking jargon unless asked. Never silently choose.',
     {}, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async () => {
       const data = await apiCall('GET', '/api/local/shares/options');
+      if (data.error) throw new Error(data.error);
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+    });
+
+  server.tool('share_tunnel_providers',
+    'List the ready-made tunnel configurations this computer can use to publish its ZeroCreds without the ZeroCreds website. Each entry has the exact command to run, what the owner has to set up first and whether it can run here right now. Use it instead of inventing a tunnel command, and never make up a tunnel address. Speak in the user\'s language.',
+    {}, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async () => {
+      const data = await apiCall('GET', '/api/local/shares/tunnel/providers');
+      if (data.error) throw new Error(data.error);
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+    });
+
+  server.tool('share_tunnel_start',
+    'Raise one of the ready-made tunnels and check that it reaches this computer. ZeroCreds starts the tunnel client itself, waits for the published https address and asks the tunnel whether it reaches this computer; the check carries a random token and no credential. Call share_tunnel_providers first and pick a provider the owner agreed on, and explain in the user\'s language which operator that provider is and that the operator sees the sealed invitation, the timing and the addresses but cannot read the credential. The tunnel keeps running after this call ends, so the invitation stays reachable. If the answer says a tunnel is already configured, that tunnel belongs to the owner: tell the owner which address is configured and ask before replacing it, then repeat the call with replace set. Only create the link once this call succeeded.',
+    { provider: z.enum(['localhost-run', 'cloudflared', 'ngrok']).describe('The ready-made tunnel configuration to start.'),
+      replace: z.boolean().optional().describe('Set true only after the owner agreed to replace the tunnel that is already configured.') },
+    { readOnlyHint: false, destructiveHint: true, openWorldHint: false }, async input => {
+      const data = await apiCall('POST', '/api/local/shares/tunnel/start', input, 70000);
+      if (data.error) throw new Error(data.error);
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+    });
+
+  server.tool('share_tunnel_stop',
+    'Stop the tunnel this computer started. A tunnel the owner started themselves is left alone. Use it when the owner no longer needs the invitation to be reachable.',
+    {}, { readOnlyHint: false, destructiveHint: true, openWorldHint: false }, async () => {
+      const data = await apiCall('POST', '/api/local/shares/tunnel/stop', {});
       if (data.error) throw new Error(data.error);
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
     });
@@ -235,7 +261,7 @@ if (LOCAL_MODE) {
     });
 
   server.tool('share_create',
-    'Use when the owner asks to share or give an existing saved credential to a colleague, including "share my GitHub token". Reply in the language the user is using, and translate forward_message before showing it if needed; keep the link unchanged. First list matching connections and select the exact connection_id. Call share_options. Ask the owner which option they prefer before creating a link and explain choices in plain everyday words. For direct transfer, inspect whether a successful port check is already saved. If not, offer the normal ZeroCreds port check (no credential is sent) or skip it if the owner prefers and supplies a known public IPv4 address and port. On skip, state clearly that reachability is unverified and the link may fail. The tool retries a rate-limited check of the same port with bounded exponential backoff for up to 10 seconds; never probe a series of different ports. For tunnel transfer, call share_tunnel_setup first if no tunnel is configured yet, and only create the link once the tunnel check succeeded. If the check succeeds, create a short-lived link that the owner sends through any trusted chat. The recipient pastes the link into their local ZeroCreds agent, which saves the credential directly in Keychain. The ZeroCreds website does not carry the credential or the invitation link. If the port cannot be reached, explain that the router or network may block incoming connections and let the owner decide whether to adjust it, use a tunnel, or use the configured relay. Neither agent sees the secret. The sender computer stays online until claimed. Explain that a copied personal GitHub PAT lets the recipient act as its owner. The full link grants access once. setup_prompt must contain no secret value.',
+    'Use when the owner asks to share or give an existing saved credential to a colleague, including "share my GitHub token". Reply in the language the user is using, and translate forward_message before showing it if needed; keep the link unchanged. First list matching connections and select the exact connection_id. Call share_options. Ask the owner which option they prefer before creating a link and explain choices in plain everyday words. For direct transfer, inspect whether a successful port check is already saved. If not, offer the normal ZeroCreds port check (no credential is sent) or skip it if the owner prefers and supplies a known public IPv4 address and port. On skip, state clearly that reachability is unverified and the link may fail. The tool retries a rate-limited check of the same port with bounded exponential backoff for up to 10 seconds; never probe a series of different ports. For tunnel transfer, call share_tunnel_providers and share_tunnel_start first (or share_tunnel_setup when the owner already runs a tunnel and gives you its address), and only create the link once the tunnel check succeeded. Explain in the user\'s language which operator the tunnel uses. If the check succeeds, create a short-lived link that the owner sends through any trusted chat. The recipient pastes the link into their local ZeroCreds agent, which saves the credential directly in Keychain. The ZeroCreds website does not carry the credential or the invitation link. If the port cannot be reached, explain that the router or network may block incoming connections and let the owner decide whether to adjust it, use a tunnel, or use the configured relay. Neither agent sees the secret. The sender computer stays online until claimed. Explain that a copied personal GitHub PAT lets the recipient act as its owner. The full link grants access once. setup_prompt must contain no secret value.',
     {
       connection_id: z.string().regex(/^[a-f0-9]{32}$/),
       setup_prompt: z.string().max(2000).describe('Free-form setup instructions for the recipient agent; must contain no credential value.'),

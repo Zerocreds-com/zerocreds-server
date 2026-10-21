@@ -105,6 +105,16 @@ The agent asks the owner to choose the configured relay, direct transfer, or the
 
 Direct transfer needs a public inbound port, which carrier-grade NAT does not provide. The tunnel route solves that: the sender's own relay is published by a tunnel the owner runs, so the ZeroCreds website is not in the path at all.
 
+All three routes keep the credential unreadable for everyone on the way. They differ in who else is on the way, and `share_options` says so for each of them:
+
+| route | who is in the path | what that party can see | what the recipient confirms |
+|---|---|---|---|
+| `relay` | the ZeroCreds website, and nothing else | the sealed invitation, the timing, the addresses | nothing, it is the known ZeroCreds route |
+| `tunnel` | the tunnel operator only, the website is not involved | the sealed invitation, the timing, the addresses, the size | the operator host, once |
+| `direct` | nobody | the sealed invitation, the timing, the addresses | nothing |
+
+For a credential the relay is the route where the only party on the way is ZeroCreds itself, whose code is open and whose policy is published. The tunnel route moves that trust to a third-party operator of the owner's choosing, and the direct route needs an inbound port that most routers do not have.
+
 The owner starts a tunnel client that forwards to `http://127.0.0.1:3458` and hands the resulting `https` address to the agent:
 
 ```
@@ -113,6 +123,18 @@ ssh -R 80:localhost:3458 nokey@localhost.run
 ```
 
 Any other tunnel works the same way, including `frp`, `ngrok` and a reverse SSH tunnel to the owner's own VPS. `share_tunnel_setup` starts the loopback listener, then asks the tunnel itself whether it reaches this computer; that check carries a random token and no credential. If the tunnel does not answer, nothing is saved and no link is created.
+
+The agent does not have to remember any of this. `share_tunnel_providers` returns the ready-made configurations with the exact command of each one and what the owner has to set up first:
+
+| provider | account | installs | published address |
+|---|---|---|---|
+| `localhost-run` | none | nothing, `ssh` is enough | `https://<random>.lhr.life`, changes on every start |
+| `cloudflared` | none | the `cloudflared` client | `https://<random>.trycloudflare.com`, dies with the process |
+| `ngrok` | an ngrok account and authtoken | the `ngrok` client | `https://<random>.ngrok-free.app` |
+
+`share_tunnel_start` with one of those ids raises the tunnel client itself, waits for the published address and runs the same reachability check. The tunnel keeps running after the call ends, so the invitation stays reachable even when the chat window is closed, and `share_tunnel_stop` stops the tunnel this computer started. A tunnel the owner started themselves is never touched.
+
+The command always comes from the built-in catalog, never from the request, so nothing that arrives over the network is ever handed to a shell.
 
 `share_create` with `transport: "tunnel"` returns a link whose host is the tunnel address. The envelope, the one-time claim proof, the expiry and the cancellation are identical to the other routes — only the host changes. The tunnel operator sees the encrypted blob, the timing and the addresses, cannot read the credential, and can still refuse or delay the delivery. The tunnel and the sender's Mac must stay online until the claim.
 

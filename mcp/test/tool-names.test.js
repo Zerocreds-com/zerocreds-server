@@ -21,6 +21,9 @@ const EXPECTED_LOCAL_TOOLS = [
   'share_options',
   'share_direct_setup',
   'share_tunnel_setup',
+  'share_tunnel_providers',
+  'share_tunnel_start',
+  'share_tunnel_stop',
   'share_status',
   'share_cancel',
   'share_claim',
@@ -67,6 +70,20 @@ test('local MCP tools do not repeat the provider name', async () => {
     const tunnelSetup = (await client.listTools()).tools.find(tool => tool.name === 'share_tunnel_setup');
     assert.match(tunnelSetup.description, /cloudflared/);
     assert.match(tunnelSetup.description, /ZeroCreds website is not used/);
+    const tunnelProviders = (await client.listTools()).tools.find(tool => tool.name === 'share_tunnel_providers');
+    assert.match(tunnelProviders.description, /ready-made tunnel configurations/);
+    assert.match(tunnelProviders.description, /never make up a tunnel address/);
+    assert.equal(tunnelProviders.annotations.readOnlyHint, true);
+    const tunnelStart = (await client.listTools()).tools.find(tool => tool.name === 'share_tunnel_start');
+    assert.deepEqual(tunnelStart.inputSchema.properties.provider.enum, ['localhost-run', 'cloudflared', 'ngrok']);
+    assert.ok(tunnelStart.inputSchema.properties.replace);
+    assert.match(tunnelStart.description, /cannot read the credential/);
+    assert.match(tunnelStart.description, /ask before replacing it/);
+    assert.equal(tunnelStart.annotations.destructiveHint, true);
+    const tunnelStop = (await client.listTools()).tools.find(tool => tool.name === 'share_tunnel_stop');
+    assert.match(tunnelStop.description, /owner started themselves is left alone/);
+    const options = (await client.listTools()).tools.find(tool => tool.name === 'share_options');
+    assert.match(options.description, /who is in the path/);
     const claim = (await client.listTools()).tools.find(tool => tool.name === 'share_claim');
     assert.match(claim.description, /origin_confirmation_required/);
     assert.match(claim.description, /Never set confirm_origin=true on your own initiative/);
