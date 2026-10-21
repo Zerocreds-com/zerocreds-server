@@ -1428,7 +1428,7 @@ function createApp(config = {}) {
       const response = await fetch(`${baseUrl}/api/share-relay/probe/${probeToken}`, { method: 'GET',
         redirect: 'error', signal: AbortSignal.timeout(10000) });
       await response.body?.cancel().catch(() => {});
-      if (response.status !== 204) throw new Error('the tunnel did not answer a reachability check; check that it points at this computer');
+      if (response.status !== 204) throw new Error('the tunnel did not answer a reachability check; check that it still points at this computer and restart it if it has gone stale');
     } catch (error) {
       tunnelEndpoint?.setProbeToken(null);
       return { error: `tunnel setup failed: ${error.message}` };

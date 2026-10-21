@@ -116,7 +116,7 @@ Any other tunnel works the same way, including `frp`, `ngrok` and a reverse SSH 
 
 The recipient's agent shows the invitation host and its trust class before claiming. A host the recipient has not confirmed before is refused with `origin_confirmation_required`, and nothing is written to the Keychain until the recipient approves it. After the recipient confirms, that host is remembered for that machine.
 
-The local listener stays bound while the tunnel is configured, because a tunnel that loses its local target usually refuses new connections instead of reconnecting. The tunnel client and ZeroCreds therefore both have to stay running for as long as invitations may be created.
+The local listener stays bound while the tunnel is configured, because a tunnel that loses its local target usually refuses new connections instead of reconnecting. The tunnel client and ZeroCreds therefore both have to stay running for as long as invitations may be created. A tunnel can also go stale on its own after a while; the reachability check then fails and the owner restarts the tunnel client and repeats the setup.
 
 The link opens an instruction page, not the secret. The recipient copies the full address, including `#`, into an agent with local ZeroCreds. No page script reads the fragment. Send the link through any trusted channel; the channel does not need to be Telegram or a shared local network.
 
