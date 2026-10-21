@@ -60,6 +60,10 @@ jobs:
             sudo -n -l 2>&1 || true
             echo "--- installed configs ---"
             ls -la /etc/nginx/sites-available/ 2>&1 || true
+            ls -ld /etc/nginx/sites-available /etc/nginx/sites-enabled 2>&1 || true
+            for target in /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/nginx/conf.d; do
+              if [ -w "$target" ]; then echo "writable: $target"; else echo "not writable: $target"; fi
+            done
             for domain in zerocreds.ru zerocreds.com; do
               echo "--- diff $domain (installed vs repository) ---"
               diff -u "/etc/nginx/sites-available/$domain" "ops/nginx/$domain.conf" 2>&1 || true
