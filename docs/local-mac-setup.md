@@ -138,9 +138,11 @@ The command always comes from the built-in catalog, never from the request, so n
 
 `share_create` with `transport: "tunnel"` returns a link whose host is the tunnel address. The envelope, the one-time claim proof, the expiry and the cancellation are identical to the other routes — only the host changes. The tunnel operator sees the encrypted blob, the timing and the addresses, cannot read the credential, and can still refuse or delay the delivery. The tunnel and the sender's Mac must stay online until the claim.
 
+The tunnel is checked again at the moment the link is created, because it can go stale between the setup and the invitation. A tunnel that no longer answers is refused with `tunnel_unreachable` and no link is handed out: the owner starts the tunnel client again, the agent repeats the check, and only then does the link exist.
+
 The recipient's agent shows the invitation host and its trust class before claiming. A host the recipient has not confirmed before is refused with `origin_confirmation_required`, and nothing is written to the Keychain until the recipient approves it. After the recipient confirms, that host is remembered for that machine.
 
-The local listener stays bound while the tunnel is configured, because a tunnel that loses its local target usually refuses new connections instead of reconnecting. The tunnel client and ZeroCreds therefore both have to stay running for as long as invitations may be created. A tunnel can also go stale on its own after a while; the reachability check then fails and the owner restarts the tunnel client and repeats the setup.
+The local listener stays bound while the tunnel is configured, because a tunnel that loses its local target usually refuses new connections instead of reconnecting. The tunnel client and ZeroCreds therefore both have to stay running for as long as invitations may be created. A tunnel can also go stale on its own after a while; the reachability check then fails, both when the tunnel is configured and when a link is created, and the owner restarts the tunnel client and repeats the step.
 
 The link opens an instruction page, not the secret. The recipient copies the full address, including `#`, into an agent with local ZeroCreds. No page script reads the fragment. Send the link through any trusted channel; the channel does not need to be Telegram or a shared local network.
 
