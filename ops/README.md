@@ -11,6 +11,15 @@ on failure, installs a root-owned no-argument helper and narrowly scoped sudo pe
 Normal deployments run only the helper, not repository scripts as root. Nginx changes
 require this separate administrative install. Never install the agent's GCP relay on RU.
 
+The same administrative install can be run from GitHub Actions with the `RU host
+operations` workflow (`workflow_dispatch`, action `install-nginx`). It runs on the
+`production` environment, so it waits for the same approval as a deployment, and it
+calls the same script with the same backup and rollback. The `report` action shows
+which nginx configuration the host actually runs and which one the repository holds,
+without changing anything. A host that keeps an older configuration than the
+repository fails the deployment check with a 404 from nginx, and this workflow is how
+that gap is closed.
+
 The production deploy gates on tests, nginx validation, the running commit and external
 HTTPS checks for both domains. The public monitor runs twice hourly in GitHub Actions
 and fails for TLS errors, expiry within 14 days, wrong landing language or unhealthy API.
