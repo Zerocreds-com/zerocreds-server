@@ -370,26 +370,27 @@ async function saveMacosKeychain(destination, fields, opts = {}) {
 //   (New-Object Windows.Security.Credentials.PasswordVault).Retrieve("zerocreds","github").Password
 async function saveWindowsCredentialManager(destination, fields) {
   if (process.platform !== 'win32') throw new Error('windows_credential_manager: only supported on Windows');
-  const { execFile } = require('child_process');
+  const { spawn } = require('child_process');
   const { service = 'zerocreds', account = 'default' } = destination;
   if (!/^[a-zA-Z0-9_@.-]{1,128}$/.test(account)) throw new Error('windows_credential_manager: invalid account');
   if (!/^[a-zA-Z0-9_@.-]{1,128}$/.test(service)) throw new Error('windows_credential_manager: invalid service');
-
-  const value = JSON.stringify(fields).replace(/'/g, "''"); // escape PS single-quotes
-  const ps = [
-    `Add-Type -AssemblyName Windows.Security`,
-    `$v = New-Object Windows.Security.Credentials.PasswordVault`,
-    `try { $v.Remove($v.Retrieve('${service}','${account}')) } catch {}`,
-    `$v.Add((New-Object Windows.Security.Credentials.PasswordCredential('${service}','${account}','${value}')))`,
-  ].join('; ');
-
+  const helper = process.env.ZEROCREDS_WINDOWS_CREDENTIAL_HELPER
+    || path.join(__dirname, '../scripts/windows-credential-manager.ps1');
+  const payload = JSON.stringify(fields);
   await new Promise((resolve, reject) => {
-    execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps],
-      { timeout: 8000 },
-      (err, _stdout, stderr) => err
-        ? reject(new Error(`windows_credential_manager: ${stderr || err.message}`))
-        : resolve(undefined),
-    );
+    const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-File', helper,
+      service, account, destination.create_only ? '1' : '0'], { stdio: ['pipe', 'ignore', 'pipe'] });
+    let stderr = '';
+    const timer = setTimeout(() => child.kill(), 8000);
+    child.stderr.on('data', chunk => { stderr = `${stderr}${chunk}`.slice(0, 1024); });
+    child.once('error', () => { clearTimeout(timer); reject(new Error('windows_credential_manager: native helper unavailable')); });
+    child.once('close', code => {
+      clearTimeout(timer);
+      if (code === 0) return resolve(undefined);
+      if (code === 3) return reject(new Error('windows_credential_manager: credential already exists'));
+      reject(new Error(`windows_credential_manager: ${stderr.trim() || 'Credential Manager write failed'}`));
+    });
+    child.stdin.end(payload);
   });
   return { secret_id: `wincred:${service}/${account}` };
 }
