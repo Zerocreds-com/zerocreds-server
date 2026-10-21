@@ -1,0 +1,2 @@
+t=2026-10-21T10:30:38+0000 lvl=info msg="starting web service" obj=web addr=127.0.0.1:4040
+t=2026-10-21T10:30:38+0000 lvl=info msg="open url" obj=web url=https://synthetic0000.ngrok-free.app

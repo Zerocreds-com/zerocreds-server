@@ -15,6 +15,9 @@ const { discoverCredentialSources, searchCredentialMetadata, CATEGORIES } = requ
 const { createShareRelay } = require('./share-relay');
 const { createPeerShare, claimPeerShare, parseInvite } = require('./local-share');
 const { createDirectShareEndpoints, directOrigin, tunnelOrigin } = require('./direct-share');
+const { findTunnelProvider, tunnelProviderCatalog, usableTunnelProviders,
+  TUNNEL_PROVIDERS: defaultTunnelProviders } = require('./tunnel-providers');
+const { startTunnelProcess, stopTunnelProcess, isProcessAlive, processStartTime } = require('./tunnel-runner');
 const { shareInvitePage } = require('./share-invite-page');
 const { sendFavicon } = require('./favicon');
 
@@ -1299,6 +1302,24 @@ function readAdminTokenFile(file) {
   }
 }
 
+// The tunnel config names a process this computer started, and that process
+// is stopped on request. It is therefore read like the admin token: a private
+// regular file owned by the service user, never a symlink.
+function readTunnelConfigFile(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || (stat.mode & 0o077) || (process.getuid && stat.uid !== process.getuid())) {
+      throw new Error('tunnel share config must be a private regular file owned by the service user');
+    }
+    if (stat.size > 64 * 1024) throw new Error('tunnel share config is too large');
+    return JSON.parse(fs.readFileSync(fd, 'utf8'));
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
 function createApp(config = {}) {
   const LOCAL_MODE = config.localMode ?? envFlag('ZEROCREDS_LOCAL_MODE');
   const RUNTIME_PLATFORM = config.platform ?? process.platform;
@@ -1416,11 +1437,19 @@ function createApp(config = {}) {
   // by a tunnel the user controls. The tunnel operator sees metadata only — the
   // envelope stays sealed to the recipient's key.
   const SHARE_TUNNEL_CONFIG_FILE = config.shareTunnelConfigFile ?? path.join(path.dirname(LOCAL_CATALOG_FILE), 'share-tunnel.json');
+  const SHARE_TUNNEL_LOG_FILE = config.shareTunnelLogFile ?? path.join(path.dirname(SHARE_TUNNEL_CONFIG_FILE), 'share-tunnel.log');
   const SHARE_TUNNEL_PORT = Number.isInteger(config.shareTunnelPort) ? config.shareTunnelPort : 3458;
+  // The ready-made provider configurations. The built-in catalog is the only
+  // source of tunnel commands in a normal run. `config.shareTunnelProviders`
+  // replaces it for an embedder that builds its own app, and it is an
+  // in-process value on purpose: an entry carries the command that runs, so it
+  // must never be read from a file or an environment variable, where a name
+  // would turn into a remote shell.
+  const tunnelProviders = usableTunnelProviders(config.shareTunnelProviders) || defaultTunnelProviders;
   let tunnelConfig = { base_url: config.shareTunnelUrl ?? process.env.ZEROCREDS_SHARE_TUNNEL_URL ?? '' };
   if (LOCAL_MODE && fs.existsSync(SHARE_TUNNEL_CONFIG_FILE)) {
     try {
-      const saved = JSON.parse(fs.readFileSync(SHARE_TUNNEL_CONFIG_FILE, 'utf8'));
+      const saved = readTunnelConfigFile(SHARE_TUNNEL_CONFIG_FILE);
       if (saved && typeof saved.base_url === 'string' && saved.base_url) {
         tunnelOrigin(saved.base_url, { allowLoopback: config.allowLoopbackShares === true });
         tunnelConfig = saved;
@@ -1496,7 +1525,7 @@ function createApp(config = {}) {
   }
   // Verify a tunnel URL by asking the tunnel whether it reaches the loopback
   // listener. The probe carries a random non-secret token and no credential.
-  async function configureTunnelShare(rawBaseUrl, localPort = SHARE_TUNNEL_PORT) {
+  async function configureTunnelShare(rawBaseUrl, localPort = SHARE_TUNNEL_PORT, extra = {}) {
     let baseUrl;
     try { baseUrl = tunnelOrigin(rawBaseUrl, { allowLoopback: config.allowLoopbackShares === true }); }
     catch (error) { return { error: `invalid tunnel share URL: ${error.message}` }; }
@@ -1513,13 +1542,82 @@ function createApp(config = {}) {
       return { error: `tunnel setup failed: ${error.message}` };
     }
     tunnelEndpoint.setProbeToken(null);
-    const candidate = { base_url: baseUrl, local_port: localPort, verified_at: new Date().toISOString() };
+    const candidate = { base_url: baseUrl, local_port: localPort, verified_at: new Date().toISOString(), ...extra };
     fs.mkdirSync(path.dirname(SHARE_TUNNEL_CONFIG_FILE), { recursive: true, mode: 0o700 });
     const temp = `${SHARE_TUNNEL_CONFIG_FILE}.${crypto.randomBytes(6).toString('hex')}.tmp`;
     fs.writeFileSync(temp, JSON.stringify(candidate), { mode: 0o600 });
     fs.renameSync(temp, SHARE_TUNNEL_CONFIG_FILE);
     tunnelConfig = candidate;
     return { candidate };
+  }
+  // A tunnel this computer started is tracked by pid, so it can be stopped and
+  // so the agent can tell the owner whether the tunnel is still up. A tunnel
+  // the owner started themselves is never touched.
+  let tunnelProcess = null;
+  if (Number.isInteger(tunnelConfig.pid) && isProcessAlive(tunnelConfig.pid)) {
+    // A pid can be reused after the tunnel died, so the start time of the
+    // process has to match the one recorded when it was started.
+    const startedAt = processStartTime(tunnelConfig.pid);
+    const sameProcess = !tunnelConfig.pid_started_at || !startedAt || tunnelConfig.pid_started_at === startedAt;
+    if (sameProcess) {
+      tunnelProcess = { pid: tunnelConfig.pid, provider: tunnelConfig.provider || null,
+        log_file: tunnelConfig.log_file || null, started_at: startedAt };
+    }
+  }
+  function stopOwnedTunnel() {
+    if (!tunnelProcess) return false;
+    const stopped = stopTunnelProcess(tunnelProcess.pid);
+    tunnelProcess = null;
+    return stopped;
+  }
+  // The company behind the tunnel provider, so the agent can name the party
+  // that is on the way instead of only its role.
+  function tunnelOperatorName() {
+    if (!tunnelConfig.provider) return null;
+    const provider = tunnelProviders.find(item => item.id === tunnelConfig.provider);
+    return provider ? provider.operator : null;
+  }
+  // Raise one of the ready-made provider tunnels, wait for the published
+  // address and verify that it reaches this computer. The command comes from
+  // the catalog, so nothing from the request reaches a shell.
+  async function startProviderTunnel(providerId, localPort = SHARE_TUNNEL_PORT, { replace = false } = {}) {
+    const provider = findTunnelProvider(providerId, tunnelProviders);
+    if (!provider) return { error: 'unknown tunnel provider' };
+    const catalogEntry = tunnelProviderCatalog(localPort, tunnelProviders).find(item => item.id === provider.id);
+    if (catalogEntry && catalogEntry.missing.includes(`binary:${provider.binary}`)) {
+      return { error: `${provider.label} is not installed on this computer. Install ${provider.binary} and try again.` };
+    }
+    if (catalogEntry && catalogEntry.missing.includes(`account:${provider.account}`)) {
+      return { error: `${provider.label} needs an ${provider.account} account and an authtoken in its configuration before it can publish an address.` };
+    }
+    // A tunnel the owner started themselves keeps running. Replacing it is the
+    // owner's decision, so it needs an explicit confirmation.
+    if (!replace && tunnelConfig.base_url && !tunnelProcess) {
+      return { error: `a tunnel is already configured at ${tunnelConfig.base_url}. Ask the owner whether to replace it, and repeat the request with replace set.` };
+    }
+    // The tunnel this computer started is stopped only after the new one
+    // works, so a failed start leaves a working tunnel alone.
+    const previous = tunnelProcess;
+    const command = provider.command(localPort);
+    let started;
+    try {
+      started = await startTunnelProcess({ command, urlPattern: provider.url_pattern,
+        logFile: SHARE_TUNNEL_LOG_FILE, label: provider.label });
+    } catch (error) {
+      tunnelProcess = previous;
+      return { error: error.message };
+    }
+    const configured = await configureTunnelShare(started.url, localPort,
+      { provider: provider.id, pid: started.pid, log_file: started.logFile, pid_started_at: started.started_at });
+    if (configured.error) {
+      stopTunnelProcess(started.pid);
+      tunnelProcess = previous;
+      return { error: configured.error };
+    }
+    if (previous && previous.pid !== started.pid) stopTunnelProcess(previous.pid);
+    tunnelProcess = { pid: started.pid, provider: provider.id, log_file: started.logFile, started_at: started.started_at };
+    return { provider: provider.id, tunnel_url: configured.candidate.base_url, pid: started.pid,
+      log_file: started.logFile, verified_at: configured.candidate.verified_at };
   }
   const tunnelSweep = setInterval(() => {
     for (const id of tunnelShareIds) {
@@ -2514,21 +2612,43 @@ function createApp(config = {}) {
           tunnel_url: tunnelConfig.base_url || null,
           tunnel_configured: !!tunnelConfig.base_url,
           tunnel_verified_at: tunnelConfig.verified_at || null,
+          tunnel_provider: tunnelConfig.provider || null,
+          tunnel_running: !!tunnelProcess,
           choice_required: true,
           relay_description: 'Choose a ZeroCreds website to pass the invitation. The credential is sealed before it leaves this computer, and the website cannot open and read it.',
           direct_description: 'Send straight from this computer without using the ZeroCreds website. The owner can ask ZeroCreds to test whether the port is reachable, or skip the test by supplying a known public IPv4 address and port. Without the test, the link may not work.',
           tunnel_description: 'Publish this computer’s ZeroCreds through a tunnel the owner runs (for example cloudflared or an SSH reverse tunnel). The ZeroCreds website is not used at all. The tunnel operator sees the encrypted blob and the timing, cannot read the credential, and can refuse or delay the delivery.',
           transports: [
             { kind: 'relay', label: 'ZeroCreds website', base_url: SHARE_RELAY_URLS, operator: 'zerocreds',
-              trust: 'website', can_read_credential: false, requires: [], available: true,
+              operator_name: 'the ZeroCreds website', trust: 'website', can_read_credential: false,
+              requires: [], available: true,
+              parties_in_path: ['zerocreds-website'],
+              credential_protection: 'sealed-before-egress',
+              who_is_in_the_path: 'The ZeroCreds website, and nothing else.',
+              what_they_can_see: 'The sealed invitation, the timing and the addresses. The website cannot open the credential.',
+              what_the_recipient_confirms: 'Nothing. This is the known ZeroCreds route.',
               description: 'The invitation passes through the ZeroCreds website. The credential is sealed before it leaves this computer, and the website cannot open and read it. The website can refuse or delay the delivery.' },
             { kind: 'direct', label: 'This computer directly', base_url: directConfig.public_url || null,
-              operator: 'none', trust: 'none', can_read_credential: false, requires: ['router-port-forward'],
-              available: !!directConfig.public_url,
+              operator: 'none', operator_name: null, trust: 'none', can_read_credential: false,
+              requires: ['router-port-forward'], available: !!directConfig.public_url,
+              parties_in_path: [],
+              credential_protection: 'sealed-before-egress',
+              who_is_in_the_path: 'Nobody. No website and no operator.',
+              what_they_can_see: 'The sealed invitation, the timing and the addresses.',
+              what_the_recipient_confirms: 'Nothing.',
               description: 'The invitation goes straight from this computer to the colleague without the ZeroCreds website. Their computer must be able to reach this one over the internet, so the router may need a port-forwarding change.' },
             { kind: 'tunnel', label: 'Through your own tunnel', base_url: tunnelConfig.base_url || null,
-              operator: 'user-provided', trust: 'network-provider', can_read_credential: false,
+              operator: 'network-provider', operator_name: tunnelOperatorName(),
+              trust: 'network-provider', can_read_credential: false,
               requires: ['tunnel-client'], available: !!tunnelConfig.base_url,
+              parties_in_path: ['tunnel-operator'],
+              credential_protection: 'sealed-before-egress',
+              who_is_in_the_path: 'The tunnel operator only. The ZeroCreds website is not involved.',
+              what_they_can_see: 'The sealed invitation, the timing, the addresses and the size. It cannot read the credential, but it can refuse or delay the delivery.',
+              what_the_recipient_confirms: 'The operator host, once. The recipient approves the host they are shown before the claim runs.',
+              providers: tunnelProviderCatalog(SHARE_TUNNEL_PORT, tunnelProviders),
+              provider: tunnelConfig.provider || null,
+              running: !!tunnelProcess,
               description: 'The invitation goes from this computer through a tunnel you run, so the ZeroCreds website is not involved. The tunnel operator sees the encrypted blob and the timing and cannot read the credential, but it can refuse or delay the delivery.' },
           ] });
       }
@@ -2616,6 +2736,39 @@ function createApp(config = {}) {
           next_step: externalReachabilityVerified
             ? 'ZeroCreds tested that this port can be reached from the internet. The direct invitation link will point to this computer; keep it online until the colleague claims it.'
             : 'The local listener is ready. External reachability was not tested; the invitation may not work if this address or port is unreachable.' });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/local/shares/tunnel/providers') {
+        const providers = tunnelProviderCatalog(SHARE_TUNNEL_PORT, tunnelProviders);
+        return json(res, 200, { providers, local_port: SHARE_TUNNEL_PORT,
+          local_url: `http://127.0.0.1:${SHARE_TUNNEL_PORT}`,
+          running: !!tunnelProcess,
+          configured: !!tunnelConfig.base_url,
+          configured_url: tunnelConfig.base_url || null,
+          configured_provider: tunnelConfig.provider || null,
+          configured_by: tunnelProcess ? 'zerocreds' : (tunnelConfig.base_url ? 'owner' : null),
+          next_step: 'Pick a provider, start it with share_tunnel_start and then create the invitation with the tunnel transport. The ready-made command of each provider is in the list.' });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/local/shares/tunnel/start') {
+        const body = await readJson(req);
+        if (!body || typeof body.provider !== 'string' || body.provider.length > 64
+            || (body.replace !== undefined && typeof body.replace !== 'boolean')) {
+          return json(res, 400, { error: 'invalid tunnel share configuration' });
+        }
+        const started = await startProviderTunnel(body.provider, SHARE_TUNNEL_PORT, { replace: body.replace === true });
+        if (started.error) return json(res, 503, { error: started.error,
+          local_url: `http://127.0.0.1:${SHARE_TUNNEL_PORT}`,
+          configured_url: tunnelConfig.base_url || null,
+          next_step: 'Pick one of the ready-made providers and start it again. The command for each provider is in the providers list.' });
+        return json(res, 200, { tunnel_url: started.tunnel_url, provider: started.provider,
+          local_url: `http://127.0.0.1:${SHARE_TUNNEL_PORT}`, verified_at: started.verified_at,
+          probe: 'ok', trust_class: 'network-provider', log_file: started.log_file,
+          next_step: 'The tunnel reaches this computer. The invitation link will point to the tunnel address. Keep the tunnel and this computer online until the colleague claims it. The tunnel operator sees the encrypted blob and the timing and cannot read the credential.' });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/local/shares/tunnel/stop') {
+        const stopped = stopOwnedTunnel();
+        return json(res, 200, { stopped,
+          next_step: stopped ? 'The tunnel this computer started is stopped. A link that pointed at it no longer works.'
+            : 'No tunnel started by this computer was running.' });
       }
       if (req.method === 'POST' && url.pathname === '/api/local/shares/tunnel/setup') {
         const body = await readJson(req);
