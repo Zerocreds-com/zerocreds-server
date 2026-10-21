@@ -335,6 +335,48 @@ test('a tunnel URL that does not reach this computer never becomes an invitation
   }
 });
 
+test('a tunnel that went stale never becomes an invitation link', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zc-tunnel-stale-'));
+  const adminToken = 'tunnel-stale-admin-' + 'x'.repeat(32);
+  const sourcePort = await freePort();
+  const tunnelLocalPort = await freePort();
+  const sourceId = 'a'.repeat(32);
+  const sourceCatalog = path.join(root, 'source-catalog.json');
+  fs.writeFileSync(sourceCatalog, JSON.stringify([{ connection_id: sourceId, provider: 'example',
+    account_alias: 'work', storage: 'keychain:zerocreds/example-work', state: 'active',
+    credential_version: 'v1', credential_expires_at: null }]));
+  const source = createApp({ adminToken, localMode: true, allowLoopbackShares: true,
+    baseUrl: `http://127.0.0.1:${sourcePort}`, shareRelayUrl: 'https://zerocreds.ru',
+    localCatalogFile: sourceCatalog, pendingDir: path.join(root, 'pending'),
+    tokensDir: path.join(root, 'tokens'), destinationsFile: path.join(root, 'destinations.json'),
+    integratorsFile: path.join(root, 'integrators.json'), signingKeyFile: path.join(root, 'signing.pem'),
+    shareTunnelConfigFile: path.join(root, 'tunnel.json'),
+    localCredentialExists: async () => 'present',
+    localCredentialReader: async () => ({ token: 'synthetic-stale-value' }) });
+  const sourceUrl = await listen(source, sourcePort);
+  let tunnel;
+  try {
+    tunnel = await startFakeTunnel(tunnelLocalPort);
+    const setup = await request(sourceUrl, 'POST', '/api/local/shares/tunnel/setup', adminToken,
+      { base_url: tunnel.url, local_port: tunnelLocalPort });
+    assert.equal(setup.status, 200, JSON.stringify(setup.body));
+
+    // The tunnel client dies: the local listener stays bound, but the public
+    // address no longer reaches this computer.
+    await tunnel.stop();
+    const created = await request(sourceUrl, 'POST', '/api/local/shares', adminToken,
+      { connection_id: sourceId, setup_prompt: 'Configure the example service.', ttl_minutes: 1, transport: 'tunnel' });
+    assert.equal(created.status, 503);
+    assert.match(created.body.error, /^tunnel_unreachable/);
+    assert.ok(created.body.next_step.includes('share_tunnel_start'));
+    assert.equal(created.body.share_url, undefined);
+  } finally {
+    await tunnel?.stop();
+    await new Promise(resolve => source.close(resolve));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('a share request still refuses to guess the transport', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zc-tunnel-choice-'));
   const adminToken = 'tunnel-choice-admin-' + 'x'.repeat(32);
