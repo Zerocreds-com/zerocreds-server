@@ -178,7 +178,12 @@ test('wrong invitation code cannot read or consume a share', async () => {
       ttlMinutes: 1, metadata: { provider: 'example', account_alias: 'work', setup_prompt: '' },
       readCredential: async () => { reads++; return { token: 'synthetic-secret' }; } });
     try {
-      const wrong = share.url.replace(/.$/, c => c === '0' ? '1' : '0');
+      // The first character of the secret carries real bits. The last one may
+      // not: base64url leaves spare bits at the end of an unpadded value.
+      const [base, secret] = share.url.split('#');
+      const wrong = `${base}#${secret[0] === 'A' ? 'B' : 'A'}${secret.slice(1)}`;
+      assert.notEqual(Buffer.from(wrong.split('#')[1], 'base64url').toString('hex'),
+        Buffer.from(secret, 'base64url').toString('hex'));
       await assert.rejects(() => claimPeerShare(wrong, async () => {},
         { relayUrl, allowLoopback: true, pollIntervalMs: 10 }), /denied/);
       assert.equal(reads, 0);
