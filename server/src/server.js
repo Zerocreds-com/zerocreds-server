@@ -1596,6 +1596,13 @@ function createApp(config = {}) {
     const provider = tunnelProviders.find(item => item.id === tunnelConfig.provider);
     return provider ? provider.operator : null;
   }
+  // Who put the configured tunnel there: this computer started it, or the
+  // owner did. A tunnel this computer started stays ours to replace, even
+  // after it was stopped.
+  function tunnelConfiguredBy() {
+    if (!tunnelConfig.base_url) return null;
+    return tunnelConfig.provider ? 'zerocreds' : 'owner';
+  }
   // Raise one of the ready-made provider tunnels, wait for the published
   // address and verify that it reaches this computer. The command comes from
   // the catalog, so nothing from the request reaches a shell.
@@ -1610,8 +1617,9 @@ function createApp(config = {}) {
       return { error: `${provider.label} needs an ${provider.account} account and an authtoken in its configuration before it can publish an address.` };
     }
     // A tunnel the owner started themselves keeps running. Replacing it is the
-    // owner's decision, so it needs an explicit confirmation.
-    if (!replace && tunnelConfig.base_url && !tunnelProcess) {
+    // owner's decision, so it needs an explicit confirmation. A tunnel this
+    // computer started is ours to replace, running or stopped.
+    if (!replace && tunnelConfig.base_url && !tunnelConfig.provider) {
       return { error: `a tunnel is already configured at ${tunnelConfig.base_url}. Ask the owner whether to replace it, and repeat the request with replace set.` };
     }
     // The tunnel this computer started is stopped only after the new one
@@ -2764,7 +2772,7 @@ function createApp(config = {}) {
           configured: !!tunnelConfig.base_url,
           configured_url: tunnelConfig.base_url || null,
           configured_provider: tunnelConfig.provider || null,
-          configured_by: tunnelProcess ? 'zerocreds' : (tunnelConfig.base_url ? 'owner' : null),
+          configured_by: tunnelConfiguredBy(),
           next_step: 'Pick a provider, start it with share_tunnel_start and then create the invitation with the tunnel transport. The ready-made command of each provider is in the list.' });
       }
       if (req.method === 'POST' && url.pathname === '/api/local/shares/tunnel/start') {

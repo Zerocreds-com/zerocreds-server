@@ -262,6 +262,33 @@ test('a second start replaces the tunnel this computer started', async () => {
   }
 });
 
+test('a tunnel this computer started can be started again after it was stopped', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zerocreds-tunnel-restart-'));
+  const tunnelPort = await freePort();
+  const serverPort = await freePort();
+  const app = createApp(localConfig(root, { baseUrl: `http://127.0.0.1:${serverPort}`,
+    shareTunnelPort: tunnelPort, shareTunnelProviders: [syntheticProvider(tunnelPort)] }));
+  await new Promise(resolve => app.listen(serverPort, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${serverPort}`;
+  try {
+    const first = await request(origin, 'POST', '/api/local/shares/tunnel/start', { provider: 'synthetic' });
+    assert.equal(first.status, 200, JSON.stringify(first.body));
+    const stopped = await request(origin, 'POST', '/api/local/shares/tunnel/stop', {});
+    assert.equal(stopped.body.stopped, true);
+    const state = await request(origin, 'GET', '/api/local/shares/tunnel/providers');
+    assert.equal(state.body.running, false);
+    // The tunnel was ours, so it is still ours to replace. It is not the
+    // owner's tunnel and needs no confirmation.
+    assert.equal(state.body.configured_by, 'zerocreds');
+    const again = await request(origin, 'POST', '/api/local/shares/tunnel/start', { provider: 'synthetic' });
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    assert.notEqual(again.body.tunnel_url, first.body.tunnel_url);
+  } finally {
+    await new Promise(resolve => app.close(resolve));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('a tunnel the owner configured is only replaced on an explicit confirmation', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zerocreds-tunnel-owner-'));
   const tunnelPort = await freePort();
