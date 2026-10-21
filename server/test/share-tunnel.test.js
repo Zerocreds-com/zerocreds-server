@@ -84,6 +84,10 @@ test('a tunnel invitation is accepted only from a confirmed origin', () => {
     'https://zerocreds.ru');
   assert.equal(relay.trust_class, 'relay');
   assert.equal(relay.trusted, true);
+  const short = parseInvite(`https://zerocreds.ru/api/i/${'a'.repeat(14)}#${'b'.repeat(22)}`, 'https://zerocreds.ru');
+  assert.equal(short.id, 'a'.repeat(14));
+  assert.equal(short.secret.length, 16);
+  assert.equal(short.trust_class, 'relay');
 });
 
 test('a claim from an unconfirmed tunnel origin is refused before anything is written', async () => {
@@ -233,7 +237,7 @@ test('the local API publishes a share through a tunnel without touching the Zero
     assert.equal(created.status, 200, JSON.stringify(created.body));
     assert.equal(created.body.transport, 'tunnel');
     assert.equal(created.body.trust_class, 'network-provider');
-    assert.ok(created.body.share_url.startsWith(`${tunnelUrl}/api/share-relay/invite/`));
+    assert.ok(created.body.share_url.startsWith(`${tunnelUrl}/api/i/`));
 
     // The recipient must confirm the unfamiliar host before anything is saved.
     const refused = await request(recipientUrl, 'POST', '/api/local/shares/claim', adminToken,

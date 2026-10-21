@@ -26,7 +26,7 @@ test('direct IP invitation uses only the sender endpoint and never exposes the l
       pollIntervalMs: 10, ttlMinutes: 1,
       metadata: { provider: 'example', account_alias: 'work', setup_prompt: 'Set up the example project.' },
       readCredential: async () => ({ token: 'synthetic-direct-value' }) });
-    assert.ok(share.url.startsWith(`${publicUrl}/api/share-relay/invite/`));
+    assert.ok(share.url.startsWith(`${publicUrl}/api/i/`));
     const page = await fetch(share.url);
     const html = await page.text();
     assert.equal(page.status, 200);
@@ -65,6 +65,30 @@ test('direct invitations accept only numeric public IPs, with loopback limited t
     'http://8.8.8.8:3457/?x=1']) assert.throws(() => directOrigin(value));
   const link = `http://192.168.1.7:3457/api/share-relay/invite/${'a'.repeat(32)}#${'b'.repeat(64)}`;
   assert.throws(() => parseInvite(link, 'https://zerocreds.ru'), /invalid share link/);
+});
+
+test('an invitation link stays short and keeps the older link readable', async () => {
+  await withRelay(async (relayUrl, relay) => {
+    const share = await createPeerShare({ relayUrl, allowLoopback: true, pollIntervalMs: 10,
+      ttlMinutes: 1, metadata: { provider: 'example', account_alias: 'work', setup_prompt: '' },
+      readCredential: async () => ({ token: 'synthetic-secret' }) });
+    try {
+      assert.match(share.url, /^https?:\/\/[^/]+\/api\/i\/[A-Za-z0-9_-]{14}#[A-Za-z0-9_-]{22}$/);
+      // The whole link has to survive a chat message without being rewritten.
+      assert.ok(share.url.length < 100, `${share.url.length} characters`);
+      // A link that was already in flight keeps working after the update.
+      const legacy = `https://zerocreds.ru/api/share-relay/invite/${'a'.repeat(32)}#${'b'.repeat(64)}`;
+      const parsed = parseInvite(legacy, 'https://zerocreds.ru');
+      assert.equal(parsed.id, 'a'.repeat(32));
+      assert.equal(parsed.secret.length, 32);
+      // The relay keeps accepting a session that was created with the old id.
+      const created = await fetch(`${relayUrl}/api/share-relay/sessions`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: 'a'.repeat(32), owner_token: 'c'.repeat(64), ttl_minutes: 1 }) });
+      assert.equal(created.status, 201);
+      assert.ok(relay.sessions.has('a'.repeat(32)));
+    } finally { share.close(); }
+  });
 });
 
 async function withRelay(run, options) {

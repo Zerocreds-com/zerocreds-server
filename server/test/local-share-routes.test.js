@@ -175,7 +175,7 @@ test('local API shares by direct IP after explicit choice, with no hosted relay 
     const created = await creating;
     assert.equal(created.status, 200);
     assert.equal(created.body.transport, 'direct');
-    assert.match(created.body.share_url, new RegExp(`^http://127\\.0\\.0\\.1:${directPort}/api/share-relay/invite/`));
+    assert.match(created.body.share_url, new RegExp(`^http://127\\.0\\.0\\.1:${directPort}/api/i/`));
     const page = await fetch(created.body.share_url);
     assert.equal(page.status, 200);
     assert.match(await page.text(), /Your colleague shared access with you/);

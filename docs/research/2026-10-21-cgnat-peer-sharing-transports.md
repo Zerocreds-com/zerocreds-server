@@ -29,7 +29,7 @@ Scope: which transport can carry a one-time credential invitation when **neither
 | Claim proof | `server/src/local-share.js:37-44`, `171-173` | `HMAC-SHA256(secret, "<session id>:<recipient X25519 public key>")`, compared with `timingSafeEqual` |
 | Recipient key | `server/src/local-share.js:165-167` | Ephemeral X25519 pair per link, private key never leaves the process |
 | Relay state machine | `server/src/share-relay.js` | In-memory sessions, `MAX_SESSIONS = 100`, `MAX_PER_IP = 5`, TTL 1–120 min, one live claim, ≤ 5 claim attempts, envelope deleted on ack |
-| Link format | `server/src/local-share.js:147` | `<origin>/api/share-relay/invite/<32 hex>#<64 hex secret>` |
+| Link format | `server/src/share-link.js` | `<origin>/api/i/<14 base64url id>#<22 base64url secret>`; the older `<origin>/api/share-relay/invite/<32 hex>#<64 hex>` still parses |
 | Recipient origin pinning | `server/src/local-share.js:21-35` | `parseInvite` accepts the configured relay origin **or** a public-IPv4 origin; anything else is `invalid share link` |
 | Reachability probe | `server/src/share-relay.js:56-100`, `server/src/direct-share.js:44-48`, `server/src/server.js:2338-2372` | The ZeroCreds server asks the sender's machine to expose `GET /api/share-relay/probe/<token>` → `204`, then probes `public_ip:port` itself and returns `{ public_ip, port, reachable }`; one probe per IP per 10 s |
 
@@ -341,11 +341,13 @@ Reachability check for a tunnel: `GET <base_url>/api/share-relay/probe/<random 3
 
 ### 9.4 Link format and recipient-side pinning
 
-The link format does not change:
+The link format was written for the tunnel research as:
 
 ```
 <base_url>/api/share-relay/invite/<session id 32 hex>#<secret 64 hex>
 ```
+
+It has since become shorter — `<base_url>/api/i/<session id 14 base64url>#<secret 22 base64url>` — and the older form still parses, so a link that is already in flight keeps working.
 
 Only the host changes. The recipient's claim code is unchanged — with one deliberate change: `parseInvite` currently accepts only the configured relay origin or a public-IPv4 origin (`server/src/local-share.js:21-35`). It must additionally accept origins from the **user's configured transports**, and the agent must show the origin and its trust class before claiming (invariant T8). An origin that is in neither list is rejected exactly as today.
 
@@ -363,7 +365,7 @@ The transport must forward these unchanged (the relay is already implemented; th
 | `POST /api/share-relay/sessions/:id/claim` | recipient | claim with the proof | forwards the body unchanged |
 | `GET /api/share-relay/sessions/:id/envelope` | recipient | fetch the envelope | forwards the body unchanged; must not cache |
 | `POST /api/share-relay/sessions/:id/ack` | recipient | confirm receipt | forwards the body unchanged |
-| `GET /api/share-relay/invite/:id` | anyone | the invite page | no credential material, no secret |
+| `GET /api/i/:id` (and the older `GET /api/share-relay/invite/:id`) | anyone | the invite page | no credential material, no secret |
 
 Transport obligations, restated as a checklist for a future transport implementer:
 

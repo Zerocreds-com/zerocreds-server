@@ -6,6 +6,10 @@ const https = require('node:https');
 const net = require('node:net');
 const { createShareRelay } = require('./share-relay');
 const { shareInvitePage } = require('./share-invite-page');
+const { matchInvitePath, SESSION_ID_SOURCE } = require('./share-link');
+
+const PUBLIC_CLAIM = new RegExp(`^/api/share-relay/sessions/(${SESSION_ID_SOURCE})/(claim|ack)$`);
+const PUBLIC_ENVELOPE = new RegExp(`^/api/share-relay/sessions/(${SESSION_ID_SOURCE})/envelope$`);
 
 function isPublicIPv4(host) {
   if (net.isIP(host) !== 4) return false;
@@ -60,7 +64,7 @@ function createDirectShareEndpoints({ publicUrl, certFile, keyFile, probeToken, 
       res.writeHead(204, { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }).end();
       return;
     }
-    if (req.method === 'GET' && /^\/api\/share-relay\/invite\/[a-f0-9]{32}$/.test(route.pathname)) {
+    if (req.method === 'GET' && matchInvitePath(route.pathname)) {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
         'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
         'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'" });
@@ -70,8 +74,8 @@ function createDirectShareEndpoints({ publicUrl, certFile, keyFile, probeToken, 
     // The public listener only serves recipient operations. Session creation,
     // owner polling, envelope writes and cancellation stay on loopback.
     if (!internal && !(
-      req.method === 'POST' && /^\/api\/share-relay\/sessions\/[a-f0-9]{32}\/(claim|ack)$/.test(route.pathname)
-      || req.method === 'GET' && /^\/api\/share-relay\/sessions\/[a-f0-9]{32}\/envelope$/.test(route.pathname)
+      req.method === 'POST' && PUBLIC_CLAIM.test(route.pathname)
+      || req.method === 'GET' && PUBLIC_ENVELOPE.test(route.pathname)
     )) {
       res.writeHead(404, { 'Cache-Control': 'no-store' }).end();
       return;
