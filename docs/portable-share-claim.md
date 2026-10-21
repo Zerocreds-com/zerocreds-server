@@ -29,8 +29,8 @@ different alias without changing the credential value, add
 `--account-alias NAME` to either command. The write is create-only: a matching
 existing entry fails instead of being overwritten.
 
-The command trusts `https://zerocreds.ru` as the relay by default. For a
-self-hosted compatible relay, pass its HTTPS origin explicitly with
+The command trusts `https://zerocreds.ru` and `https://zerocreds.com` as relays
+by default. For a self-hosted compatible relay, pass its HTTPS origin explicitly with
 `--relay-url https://relay.example`. This tells the receiver where to retrieve
 the encrypted envelope; it does not give that endpoint decryption material.
 

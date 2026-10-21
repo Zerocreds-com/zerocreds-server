@@ -50,6 +50,7 @@ test('local API sends an existing connection through remote relay and stores it 
   const recipientPort = await freePort();
   function localOptions(name, catalogFile, port) {
     return { adminToken: token, localMode: true, shareRelayUrl: relayUrl, allowLoopbackShares: true,
+      shareRelayUrls: [relayUrl, 'https://zerocreds.com'],
       baseUrl: `http://127.0.0.1:${port}`,
       localCatalogFile: catalogFile, pendingDir: path.join(root, `${name}-pending`),
       tokensDir: path.join(root, `${name}-tokens`), destinationsFile: path.join(root, `${name}-destinations.json`),
@@ -71,15 +72,22 @@ test('local API sends an existing connection through remote relay and stores it 
     assert.equal(denied.status, 401);
     const options = await request(sourceUrl, 'GET', '/api/local/shares/options', token);
     assert.equal(options.body.relay_url, relayUrl);
+    assert.deepEqual(options.body.relay_urls, [relayUrl, 'https://zerocreds.com']);
     assert.equal(options.body.choice_required, true);
     const withoutChoice = await request(sourceUrl, 'POST', '/api/local/shares', token,
       { connection_id: sourceId, setup_prompt: 'Configure the example service.' });
     assert.equal(withoutChoice.status, 409);
     assert.equal(withoutChoice.body.error, 'transport_selection_required');
-    const created = await request(sourceUrl, 'POST', '/api/local/shares', token,
+    const missingRelay = await request(sourceUrl, 'POST', '/api/local/shares', token,
       { connection_id: sourceId, setup_prompt: 'Configure the example service.', ttl_minutes: 1, transport: 'relay' });
+    assert.equal(missingRelay.status, 409);
+    assert.equal(missingRelay.body.error, 'relay_selection_required');
+    const created = await request(sourceUrl, 'POST', '/api/local/shares', token,
+      { connection_id: sourceId, setup_prompt: 'Configure the example service.', ttl_minutes: 1,
+        transport: 'relay', relay_url: relayUrl });
     assert.equal(created.status, 200);
     assert.equal(created.body.provider, 'example');
+    assert.equal(created.body.relay_url, relayUrl);
     assert.ok(!JSON.stringify(created.body).includes(credential));
     const claimed = await request(recipientUrl, 'POST', '/api/local/shares/claim', token,
       { share_url: created.body.share_url });

@@ -16,6 +16,7 @@ const { createShareRelay } = require('./share-relay');
 const { createPeerShare, claimPeerShare } = require('./local-share');
 const { createDirectShareEndpoints, directOrigin } = require('./direct-share');
 const { shareInvitePage } = require('./share-invite-page');
+const { sendFavicon } = require('./favicon');
 
 // ── Module-level pure helpers ──────────────────────────────────────────────────
 
@@ -1276,6 +1277,13 @@ function createApp(config = {}) {
   const LOCAL_PEER_SHARES = new Map();
   const LOCAL_SHARE_IMPORTS = new Set();
   const SHARE_RELAY_URL = config.shareRelayUrl ?? process.env.ZEROCREDS_SHARE_RELAY_URL ?? 'https://zerocreds.ru';
+  const configuredRelayUrls = config.shareRelayUrls ?? process.env.ZEROCREDS_SHARE_RELAY_URLS;
+  const SHARE_RELAY_URLS = (() => {
+    const values = configuredRelayUrls
+      ? (Array.isArray(configuredRelayUrls) ? configuredRelayUrls : String(configuredRelayUrls).split(','))
+      : SHARE_RELAY_URL === 'https://zerocreds.ru' ? ['https://zerocreds.ru', 'https://zerocreds.com'] : [SHARE_RELAY_URL];
+    return [...new Set(values.map(value => String(value).trim().replace(/\/+$/, '')).filter(Boolean))];
+  })();
   const SHARE_RELAY = (config.shareRelayEnabled ?? !LOCAL_MODE) ? createShareRelay({ clientIp }) : null;
   const SHARE_DIRECT_CONFIG_FILE = config.shareDirectConfigFile ?? path.join(path.dirname(LOCAL_CATALOG_FILE), 'share-direct.json');
   let directConfig = { public_url: config.shareDirectUrl ?? process.env.ZEROCREDS_SHARE_DIRECT_URL ?? '',
@@ -2289,6 +2297,9 @@ function createApp(config = {}) {
     }
 
     if (SHARE_RELAY && await SHARE_RELAY.handle(req, res, url)) return;
+    if (req.method === 'GET' && (url.pathname === '/favicon.ico' || url.pathname === '/favicon.svg')) {
+      return sendFavicon(res);
+    }
     if (SHARE_RELAY && req.method === 'GET' && /^\/api\/share-relay\/invite\/[a-f0-9]{32}$/.test(url.pathname)) {
       res.setHeader('Cache-Control', 'no-store');
       res.setHeader('Referrer-Policy', 'no-referrer');
@@ -2299,11 +2310,11 @@ function createApp(config = {}) {
       const { isAdmin } = resolveAuth(req.headers['authorization']);
       if (!isAdmin) return json(res, 401, { error: 'admin token required' });
       if (req.method === 'GET' && url.pathname === '/api/local/shares/options') {
-        return json(res, 200, { relay_url: SHARE_RELAY_URL, direct_url: directConfig.public_url || null,
+        return json(res, 200, { relay_url: SHARE_RELAY_URL, relay_urls: SHARE_RELAY_URLS, direct_url: directConfig.public_url || null,
           direct_configured: !!directConfig.public_url,
           direct_reachability_verified_at: directConfig.reachability_verified_at || null,
           choice_required: true,
-          relay_description: 'Use the ZeroCreds website at this address to pass the invitation. The credential is sealed before it leaves this computer, and the website cannot open and read it.',
+          relay_description: 'Choose a ZeroCreds website to pass the invitation. The credential is sealed before it leaves this computer, and the website cannot open and read it.',
           direct_description: 'Send straight from this computer without using the ZeroCreds website. The owner can ask ZeroCreds to test whether the port is reachable, or skip the test by supplying a known public IPv4 address and port. Without the test, the link may not work.' });
       }
       if (req.method === 'POST' && url.pathname === '/api/local/shares/direct/setup') {
@@ -2394,11 +2405,12 @@ function createApp(config = {}) {
       if (req.method === 'POST' && url.pathname === '/api/local/shares') {
         const body = await readJson(req);
         if (body && body.transport === undefined) return json(res, 409, { error: 'transport_selection_required',
-          relay_url: SHARE_RELAY_URL, direct_configured: !!directConfig.public_url,
-          next_step: 'Ask the owner whether to use the configured ZeroCreds relay or set up a direct public-IP connection before creating a link.' });
+          relay_url: SHARE_RELAY_URL, relay_urls: SHARE_RELAY_URLS, direct_configured: !!directConfig.public_url,
+          next_step: 'Ask the owner whether to use a configured ZeroCreds relay or set up a direct public-IP connection before creating a link.' });
         if (!body || !/^[a-f0-9]{32}$/.test(body.connection_id || '')
             || typeof body.setup_prompt !== 'string' || body.setup_prompt.length > 2000
             || !['direct', 'relay'].includes(body.transport)
+            || (body.relay_url !== undefined && (typeof body.relay_url !== 'string' || !SHARE_RELAY_URLS.includes(body.relay_url)))
             || (body.ttl_minutes !== undefined && (!Number.isInteger(body.ttl_minutes)
               || body.ttl_minutes < 1 || body.ttl_minutes > 120))) {
           return json(res, 400, { error: 'invalid share request' });
@@ -2419,7 +2431,12 @@ function createApp(config = {}) {
         const exists = await (config.localCredentialExists || checkLocalKeychainEntry)(entry.storage);
         if (exists !== 'present') return json(res, 409, { error: `credential ${exists}` });
         const transport = body.transport;
-        const create = direct => (config.peerShareCreator || createPeerShare)({ relayUrl: direct?.localUrl || SHARE_RELAY_URL,
+        if (transport === 'relay' && SHARE_RELAY_URLS.length > 1 && !body.relay_url) {
+          return json(res, 409, { error: 'relay_selection_required', relay_urls: SHARE_RELAY_URLS,
+            next_step: 'Ask the owner which configured ZeroCreds website should carry the encrypted invitation.' });
+        }
+        const selectedRelayUrl = body.relay_url || SHARE_RELAY_URL;
+        const create = direct => (config.peerShareCreator || createPeerShare)({ relayUrl: direct?.localUrl || selectedRelayUrl,
           publicUrl: direct?.publicUrl, ttlMinutes: body.ttl_minutes || 15,
           allowLoopback: !!direct || config.allowLoopbackShares === true,
           metadata: { provider: entry.provider, account_alias: entry.account_alias,
@@ -2442,7 +2459,8 @@ function createApp(config = {}) {
         if (transport === 'relay') LOCAL_PEER_SHARES.set(share.id, share);
         return json(res, 200, { share_id: share.id, share_url: share.url,
           expires_at: share.expires_at, provider: entry.provider, account_alias: entry.account_alias,
-          transport, ...(transport === 'direct' ? { external_reachability_verified: !!directConfig.reachability_verified_at } : {}),
+          transport, ...(transport === 'relay' ? { relay_url: selectedRelayUrl } : {}),
+          ...(transport === 'direct' ? { external_reachability_verified: !!directConfig.reachability_verified_at } : {}),
           warning: 'The link is a one-time bearer invitation. Send it only to the intended recipient.' });
       }
       const shareMatch = url.pathname.match(/^\/api\/local\/shares\/([a-f0-9]{32})$/);
@@ -2518,7 +2536,7 @@ function createApp(config = {}) {
               writeLocalCatalog(entries);
               return { connection_id: connectionId, provider: meta.provider, account_alias: alias };
             } finally { LOCAL_SHARE_IMPORTS.delete(key); }
-          }, { relayUrl: SHARE_RELAY_URL, allowLoopback: config.allowLoopbackShares === true });
+          }, { relayUrl: SHARE_RELAY_URLS, allowLoopback: config.allowLoopbackShares === true });
           return json(res, result.status === 'saved' ? 200 : 202, result);
         } catch (error) { return json(res, 409, { error: error.message }); }
       }

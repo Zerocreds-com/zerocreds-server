@@ -31,12 +31,15 @@ test('direct IP invitation uses only the sender endpoint and never exposes the l
     const html = await page.text();
     assert.equal(page.status, 200);
     assert.match(html, /Your colleague shared access with you/);
+    assert.match(html, /Receive the credential using the one-time ZeroCreds invite/);
+    assert.match(html, /Portable receiver commands and protocol/);
     assert.doesNotMatch(html, /<script|synthetic-direct-value/i);
     assert.ok(!html.includes(share.url.split('#')[1]));
     const russianPage = await fetch(share.url, { headers: { 'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8' } });
     const russianHtml = await russianPage.text();
     assert.match(russianHtml, /<html lang="ru">/);
     assert.match(russianHtml, /Коллега поделился с вами доступом/);
+    assert.match(russianHtml, /Получи credential по одноразовому ZeroCreds invite/);
     assert.doesNotMatch(russianHtml, /<script|synthetic-direct-value/i);
     const englishPreferred = await fetch(share.url, { headers: { 'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8' } });
     assert.match(await englishPreferred.text(), /<html lang="en">/);

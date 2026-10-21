@@ -37,6 +37,13 @@ test('nalog 2FA endpoint — non-string code → 400, no crash', async () => {
   await assertAlive();
 });
 
+test('favicon is served as a small SVG on the public backend route', async () => {
+  const response = await fetch(`http://127.0.0.1:${ctx.port}/favicon.ico`);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'image/svg+xml');
+  assert.match(await response.text(), /^<svg /);
+});
+
 test('oversized body → rejected, no crash', async () => {
   const big = JSON.stringify({ title: 'x'.repeat(1_200_000) });
   for (const [p, h] of [['/connect/nalog/code', {}], ['/api/register', {}], ['/api/session/create', auth()]]) {
