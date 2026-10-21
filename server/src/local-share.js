@@ -2,11 +2,10 @@
 
 const crypto = require('node:crypto');
 const { directOrigin, tunnelOrigin } = require('./direct-share');
+const { newSessionId, newSecret, decodeSecret, inviteUrl, matchInvitePath } = require('./share-link');
 
 const INFO = Buffer.from('zerocreds-share-v1');
 const pendingClaims = new Map();
-const ID = /^[a-f0-9]{32}$/;
-const SECRET = /^#[a-f0-9]{64}$/;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function relayOrigin(value, { allowLoopback = false } = {}) {
@@ -47,11 +46,12 @@ function parseInvite(link, relayUrl, options = {}) {
       catch { throw new Error('invalid share link'); }
     }
   }
-  const match = url.pathname.match(/^\/api\/share-relay\/invite\/([a-f0-9]{32})$/);
-  if (url.origin !== origin || !match || !SECRET.test(url.hash) || url.username || url.password || url.search) {
+  const id = matchInvitePath(url.pathname);
+  const secret = decodeSecret(url.hash);
+  if (url.origin !== origin || !id || !secret || url.username || url.password || url.search) {
     throw new Error('invalid share link');
   }
-  return { origin, id: match[1], secret: Buffer.from(url.hash.slice(1), 'hex'), trust_class: trustClass, trusted };
+  return { origin, id, secret, trust_class: trustClass, trusted };
 }
 
 function mac(secret, value) {
@@ -115,8 +115,8 @@ async function createPeerShare({ relayUrl, metadata, readCredential, ttlMinutes 
   const inviteOrigin = publicUrl ? inviteOriginValue(publicUrl, { allowLoopback }) : origin;
   if (!Number.isInteger(ttlMinutes) || ttlMinutes < 1 || ttlMinutes > 120) throw new Error('invalid share lifetime');
   if (typeof readCredential !== 'function') throw new Error('credential reader required');
-  const id = crypto.randomBytes(16).toString('hex');
-  const secret = crypto.randomBytes(32);
+  const id = newSessionId();
+  const secret = newSecret();
   const ownerToken = crypto.randomBytes(32).toString('hex');
   const created = await call(origin, 'POST', '/api/share-relay/sessions', {
     id, owner_token: ownerToken, ttl_minutes: ttlMinutes,
@@ -164,7 +164,7 @@ async function createPeerShare({ relayUrl, metadata, readCredential, ttlMinutes 
     if (!stopped && state !== 'complete') state = 'expired';
   };
   void pump();
-  return { id, url: `${inviteOrigin}/api/share-relay/invite/${id}#${secret.toString('hex')}`,
+  return { id, url: inviteUrl(inviteOrigin, id, secret),
     expires_at: created.expires_at, status: () => state,
     close: () => {
       stopped = true;

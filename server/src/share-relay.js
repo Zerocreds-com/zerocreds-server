@@ -3,10 +3,12 @@
 const crypto = require('node:crypto');
 const net = require('node:net');
 const http = require('node:http');
+const { validSessionId, matchInvitePath, SESSION_ID_SOURCE } = require('./share-link');
 
-const ID = /^[a-f0-9]{32}$/;
 const TOKEN = /^[a-f0-9]{64}$/;
 const KEY = /^[A-Za-z0-9+/]{55,256}={0,2}$/;
+const DELETE_SESSION = new RegExp(`^/api/share-relay/sessions/(${SESSION_ID_SOURCE})$`);
+const SESSION_ACTION = new RegExp(`^/api/share-relay/sessions/(${SESSION_ID_SOURCE})/(poll|claim|reject|envelope|ack)$`);
 const MAX_SESSIONS = 100;
 const MAX_PER_IP = 5;
 const MAX_BODY = 96 * 1024;
@@ -98,12 +100,12 @@ function createShareRelay({ clientIp, probePort } = {}) {
       answer(res, 200, { public_ip: ip, port, reachable });
       return true;
     }
-    if (req.method === 'GET' && /^\/api\/share-relay\/invite\/[a-f0-9]{32}$/.test(url.pathname)) return false;
+    if (req.method === 'GET' && matchInvitePath(url.pathname)) return false;
     if (!url.pathname.startsWith('/api/share-relay/') && url.pathname !== '/share') return false;
     if (url.pathname === '/api/share-relay/sessions' && req.method === 'POST') {
       let body;
       try { body = await readBody(req); } catch { answer(res, 400, { error: 'bad request' }); return true; }
-      if (!ID.test(body.id || '') || !TOKEN.test(body.owner_token || '')
+      if (!validSessionId(body.id || '') || !TOKEN.test(body.owner_token || '')
           || !Number.isInteger(body.ttl_minutes) || body.ttl_minutes < 1 || body.ttl_minutes > 120) {
         answer(res, 400, { error: 'invalid session' }); return true;
       }
@@ -120,7 +122,7 @@ function createShareRelay({ clientIp, probePort } = {}) {
       answer(res, 201, { share_id: body.id, expires_at: new Date(expires).toISOString() });
       return true;
     }
-    const deleteMatch = url.pathname.match(/^\/api\/share-relay\/sessions\/([a-f0-9]{32})$/);
+    const deleteMatch = DELETE_SESSION.exec(url.pathname);
     if (deleteMatch && req.method === 'DELETE') {
       const item = sessions.get(deleteMatch[1]);
       if (!item || item.expires <= now()) { answer(res, 410, { error: 'share unavailable' }); return true; }
@@ -130,7 +132,7 @@ function createShareRelay({ clientIp, probePort } = {}) {
       answer(res, 200, { status: 'cancelled' });
       return true;
     }
-    const match = url.pathname.match(/^\/api\/share-relay\/sessions\/([a-f0-9]{32})\/(poll|claim|reject|envelope|ack)$/);
+    const match = SESSION_ACTION.exec(url.pathname);
     if (!match) { answer(res, 404, { error: 'not found' }); return true; }
     const item = sessions.get(match[1]);
     if (!item || item.expires <= now()) { answer(res, 410, { error: 'share unavailable' }); return true; }

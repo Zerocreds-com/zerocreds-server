@@ -19,6 +19,7 @@ const { findTunnelProvider, tunnelProviderCatalog, usableTunnelProviders,
   TUNNEL_PROVIDERS: defaultTunnelProviders } = require('./tunnel-providers');
 const { startTunnelProcess, stopTunnelProcess, isProcessAlive, processStartTime } = require('./tunnel-runner');
 const { shareInvitePage } = require('./share-invite-page');
+const { matchInvitePath, SESSION_ID_SOURCE } = require('./share-link');
 const { sendFavicon } = require('./favicon');
 
 // ── Module-level pure helpers ──────────────────────────────────────────────────
@@ -147,6 +148,7 @@ function jsValue(v) {
 }
 
 const TOKEN_RE = /^[a-f0-9]{32}$/;
+const LOCAL_SHARE_RE = new RegExp(`^/api/local/shares/(${SESSION_ID_SOURCE})$`);
 const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 // Names used as object keys (field names, destination names) — no prototype keys.
 function isSafeKey(k, max = 64) {
@@ -2613,7 +2615,7 @@ function createApp(config = {}) {
     if (req.method === 'GET' && (url.pathname === '/favicon.ico' || url.pathname === '/favicon.svg')) {
       return sendFavicon(res);
     }
-    if (SHARE_RELAY && req.method === 'GET' && /^\/api\/share-relay\/invite\/[a-f0-9]{32}$/.test(url.pathname)) {
+    if (SHARE_RELAY && req.method === 'GET' && matchInvitePath(url.pathname)) {
       res.setHeader('Cache-Control', 'no-store');
       res.setHeader('Referrer-Policy', 'no-referrer');
       return sendHtml(res, 200, shareInvitePage(req.headers['accept-language'] || ''));
@@ -2890,7 +2892,7 @@ function createApp(config = {}) {
           ...(transport === 'tunnel' ? { tunnel_url: tunnelConfig.base_url, trust_class: 'network-provider' } : {}),
           warning: 'The link is a one-time bearer invitation. Send it only to the intended recipient.' });
       }
-      const shareMatch = url.pathname.match(/^\/api\/local\/shares\/([a-f0-9]{32})$/);
+      const shareMatch = LOCAL_SHARE_RE.exec(url.pathname);
       if (shareMatch && req.method === 'GET') {
         const share = LOCAL_PEER_SHARES.get(shareMatch[1]);
         return share ? json(res, 200, { share_id: share.id, status: share.status(), expires_at: share.expires_at })

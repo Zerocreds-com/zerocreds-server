@@ -279,7 +279,7 @@ if (LOCAL_MODE) {
     });
 
   server.tool('share_status', 'Check whether a one-time share is pending, claimed, complete, expired or cancelled.',
-    { share_id: z.string().regex(/^[a-f0-9]{32}$/) },
+    { share_id: z.string().regex(/^(?:[a-f0-9]{32}|[A-Za-z0-9_-]{14})$/) },
     { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async ({ share_id }) => {
       const data = await apiCall('GET', `/api/local/shares/${share_id}`);
@@ -288,7 +288,7 @@ if (LOCAL_MODE) {
     });
 
   server.tool('share_cancel', 'Cancel a pending share before it is claimed.',
-    { share_id: z.string().regex(/^[a-f0-9]{32}$/) }, async ({ share_id }) => {
+    { share_id: z.string().regex(/^(?:[a-f0-9]{32}|[A-Za-z0-9_-]{14})$/) }, async ({ share_id }) => {
       const data = await apiCall('DELETE', `/api/local/shares/${share_id}`);
       if (data.error) throw new Error(data.error);
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
