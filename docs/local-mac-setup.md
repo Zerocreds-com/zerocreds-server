@@ -22,6 +22,8 @@ sudo ./scripts/install-local-proxy.sh
 
 Restart Codex, OpenCode and Claude Code (if its CLI is installed) after setup. The installer backs up existing Codex and OpenCode configuration before adding the local MCP server, and registers it in Claude Code's user scope via `claude mcp add` when available ([Claude Code MCP setup](https://code.claude.com/docs/en/mcp)). It adds a managed ZeroCreds block to `~/.codex/AGENTS.md` so a fresh Codex session routes requests to share saved credentials through `share_create` instead of issuing a generic warning. It also approves metadata-only ZeroCreds reads such as `connections_list` and `doctor` in Codex configuration; creating a share link still follows the user's tool-approval policy. Other instructions are preserved. It also registers a local OpenCode plugin: after `form_create`, it listens for the form completion event and resumes that same session. The event contains status only; OpenCode then checks the form status through MCP. Codex and hosted agents continue using their existing status/event flow.
 
+Local credential forms use English by default. Pass `language: "ru"` when the user asks for Russian, and keep caller-written form text in that language.
+
 If you registered the MCP manually instead of running the installer, paste this block into `~/.codex/AGENTS.md`. A project-level `AGENTS.md` only applies inside that project, so use the global file when you want sharing to work from any directory. The installer already adds this block and keeps it up to date; do not paste a second copy after running it.
 
 ```md

@@ -5,7 +5,7 @@ Thanks for your interest in contributing. ZeroCreds is a small, focused project 
 ## What we're looking for
 
 - **New destinations** — Yandex Lockbox, Azure Key Vault, 1Password, etc.
-- **New built-in services** — other Russian services that need browser-based auth (Сбер, Госуслуги direct, etc.)
+- **New built-in services** — services that need browser-based authentication, including Sber and Gosuslugi
 - **Security improvements** — rate limiting, better validation, audit logging
 - **Bug fixes** — especially around token expiry, edge cases in destinations
 - **Documentation** — clearer setup guides, integration examples

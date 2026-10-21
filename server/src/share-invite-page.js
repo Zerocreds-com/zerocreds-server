@@ -35,6 +35,7 @@ function shareInvitePage(acceptLanguage = '') {
   };
   return `<!doctype html>
 <html lang="${copy.lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <meta name="referrer" content="no-referrer"><title>${copy.title}</title>
 <style>
   :root{color-scheme:light dark;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}

@@ -10,10 +10,11 @@ after(async () => { await ctx.stop(); });
 const localDest = { type: 'local_file', uid: '99004', filename: 'html-test' };
 const auth = () => ({ Authorization: `Bearer ${ctx.adminToken}` });
 
-async function getFormHtml(sessionFields, sessionTitle, sessionDesc) {
+async function getFormHtml(sessionFields, sessionTitle, sessionDesc, language) {
   const r = await request(ctx.port, 'POST', '/api/session/create', {
     title: sessionTitle || 'Test Form',
     description: sessionDesc,
+    language,
     fields: sessionFields || [{ name: 'tok', label: 'Token' }],
     destination: localDest,
   }, auth());
@@ -22,6 +23,22 @@ async function getFormHtml(sessionFields, sessionTitle, sessionDesc) {
   assert.equal(formResp.status, 200);
   return formResp.raw;
 }
+
+test('form defaults to English and explicitly supports Russian', async () => {
+  const english = await getFormHtml();
+  assert.match(english, /<html lang="en">/);
+  assert.match(english, />Submit<\/button>/);
+  const russian = await getFormHtml(undefined, 'Connect', undefined, 'ru');
+  assert.match(russian, /<html lang="ru">/);
+  assert.match(russian, />Отправить<\/button>/);
+  assert.match(russian, /Заполните все обязательные поля/);
+  assert.match(russian, /<h1>Connect<\/h1>/);
+});
+
+test('local form pages explicitly use the ZeroCreds favicon', async () => {
+  const html = await getFormHtml();
+  assert.match(html, /<link rel="icon" href="\/favicon\.svg" type="image\/svg\+xml">/);
+});
 
 test('XSS in title — <script>alert(1)</script> is escaped in <title> and <h1>', async () => {
   const html = await getFormHtml(undefined, '<script>alert(1)</script>');

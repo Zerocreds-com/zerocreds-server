@@ -45,7 +45,7 @@ async function startNalogLogin(userId, login, password, opts = {}) {
       ],
     });
   } catch (e) {
-    return { error: `Не удалось запустить браузер: ${e.message}` };
+    return { error: `Could not launch the browser: ${e.message}` };
   }
 
   try {
@@ -97,7 +97,7 @@ async function startNalogLogin(userId, login, password, opts = {}) {
         await page.waitForTimeout(600);
       } catch {
         await browser.close();
-        return { error: 'Не нашли вкладку "Госуслуги" на странице входа' };
+        return { error: 'Could not find the Gosuslugi tab on the sign-in page' };
       }
 
       // Step 2: click "ВОЙТИ" to start the ESIA OAuth redirect
@@ -115,20 +115,20 @@ async function startNalogLogin(userId, login, password, opts = {}) {
         console.log('[nalog-login] clicked ВОЙТИ, awaiting ESIA redirect');
       } catch {
         await browser.close();
-        return { error: 'Не нашли кнопку "ВОЙТИ" после выбора вкладки Госуслуги' };
+        return { error: 'Could not find the sign-in button after selecting Gosuslugi' };
       }
 
       try {
         await page.waitForURL(/gosuslugi\.ru|esia\./, { timeout: 20000 });
       } catch {
         await browser.close();
-        return { error: 'Не перешло на Госуслуги — сайт заблокировал переход или изменил структуру страницы' };
+        return { error: 'Could not navigate to Gosuslugi; the site may have blocked the redirect or changed its layout' };
       }
     }
 
     if (!onEsia()) {
       await browser.close();
-      return { error: 'Не удалось найти кнопку "Войти через Госуслуги"' };
+      return { error: 'Could not find the Gosuslugi sign-in button' };
     }
 
     console.log('[nalog-login] on ESIA, filling credentials, url=%s', page.url().split('?')[0]);
@@ -166,7 +166,7 @@ async function startNalogLogin(userId, login, password, opts = {}) {
         await pwInput.waitFor({ state: 'visible', timeout: 15000 });
       } catch {
         await browser.close();
-        return { error: 'Не нашли поле для пароля — Госуслуги заблокировали вход или изменили форму' };
+        return { error: 'Could not find the password field; Gosuslugi may have blocked sign-in or changed its form' };
       }
     }
 
@@ -217,12 +217,12 @@ async function startNalogLogin(userId, login, password, opts = {}) {
     const errEl = await page.$('.form__error, .error-text, [class*="error"], .esia-input__error-text');
     const errText = errEl ? (await errEl.textContent() || '').trim().slice(0, 200) : '';
     await browser.close();
-    return { error: errText || 'Тайм-аут при ожидании ответа Госуслуг — проверьте логин и пароль' };
+    return { error: errText || 'Timed out waiting for Gosuslugi; check your login and password' };
 
   } catch (e) {
     browser.close().catch(() => {});
     console.error('[nalog-login] startNalogLogin error:', e.message);
-    return { error: `Ошибка при входе: ${e.message.slice(0, 200)}` };
+    return { error: `Sign-in error: ${e.message.slice(0, 200)}` };
   }
 }
 
@@ -232,11 +232,11 @@ async function startNalogLogin(userId, login, password, opts = {}) {
  */
 async function confirmNalogCode(sessionId, code) {
   const sess = pendingSessions.get(sessionId);
-  if (!sess) return { error: 'Сессия не найдена или истекла — начните заново' };
+  if (!sess) return { error: 'Session not found or expired; please start again' };
   if (sess.expires < Date.now()) {
     pendingSessions.delete(sessionId);
     sess.browser.close().catch(() => {});
-    return { error: 'Сессия истекла — начните заново' };
+    return { error: 'Session expired; please start again' };
   }
 
   const { browser, page, userId, tgBotToken } = sess;
@@ -251,7 +251,7 @@ async function confirmNalogCode(sessionId, code) {
     return extractAndSave(page, browser, userId);
   } catch (e) {
     browser.close().catch(() => {});
-    return { error: `Ошибка при вводе кода: ${e.message.slice(0, 200)}` };
+    return { error: `Could not submit the code: ${e.message.slice(0, 200)}` };
   }
 }
 
@@ -268,7 +268,7 @@ async function extractAndSave(page, browser, userId) {
 
     await browser.close();
 
-    if (!tokens.auth_token) return { error: 'Вошли, но auth.token не появился в sessionStorage' };
+    if (!tokens.auth_token) return { error: 'Signed in, but auth.token was not found in sessionStorage' };
 
     const dir = path.join(os.homedir(), 'agent-tokens', String(userId));
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -278,7 +278,7 @@ async function extractAndSave(page, browser, userId) {
     return { status: 'ok', expires: tokens.expires, userId, tgBotToken };
   } catch (e) {
     browser.close().catch(() => {});
-    return { error: `Не удалось извлечь токен: ${e.message}` };
+    return { error: `Could not extract the token: ${e.message}` };
   }
 }
 

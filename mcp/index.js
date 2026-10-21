@@ -74,10 +74,11 @@ const server = new McpServer({
 
 server.tool(
   'form_create',
-  'Create a ZeroCreds credential-collection session. Each submitted field is stored as a key in a JSON object; the exact names and field metadata are returned as credential_contract on creation and status. Use that contract when calling the provider; never infer field names from the Keychain storage reference. The user fills in credentials directly — the agent never sees values. Show user_message verbatim. If the host supports event subscriptions, subscribe to this form’s credential-ready event and continue the originating task when notified. Otherwise, check form_status when the user returns. If status is done, continue using provider/account_alias and credential_contract; do not create another form because a later provider request failed. Never read the secret from Keychain or ask the user to paste it into chat.',
+  'Create a ZeroCreds credential-collection session. English is the default form language; set language to ru only when the user asks for Russian, and write custom text in that same language. Each submitted field is stored as a key in a JSON object; the exact names and field metadata are returned as credential_contract on creation and status. Use that contract when calling the provider; never infer field names from the Keychain storage reference. The user fills in credentials directly — the agent never sees values. Show user_message verbatim. If the host supports event subscriptions, subscribe to this form’s credential-ready event and continue the originating task when notified. Otherwise, check form_status when the user returns. If status is done, continue using provider/account_alias and credential_contract; do not create another form because a later provider request failed. Never read the secret from Keychain or ask the user to paste it into chat.',
   {
     title: z.string().describe('Heading shown on the form (e.g. "Connect GitHub")'),
     description: z.string().optional().describe('Subtext explaining what credentials are needed and why'),
+    language: z.enum(['en', 'ru']).optional().describe('Form interface language. Defaults to English; write custom text in the same language.'),
     fields: z.array(z.object({
       name: z.string().describe('Exact key in the saved JSON object (alphanumeric + underscore); this name is preserved in credential_contract.'),
       label: z.string().describe('Label shown on the form'),
@@ -103,7 +104,7 @@ server.tool(
       tg_chat_id: z.string(),
     }).optional().describe('Send the form link via Telegram automatically'),
   },
-  async ({ title, description, fields, destination, uid, service, credential_expires_at, ttl_minutes, notify }) => {
+  async ({ title, description, language, fields, destination, uid, service, credential_expires_at, ttl_minutes, notify }) => {
     const selectedDestination = LOCAL_MODE ? DEFAULT_DESTINATION : destination;
     if (!selectedDestination) throw new Error('ZeroCreds destination is not configured');
     if (LOCAL_MODE && (!uid || !service)) throw new Error('Local credential setup requires a provider slug and a distinct account alias');
@@ -113,6 +114,7 @@ server.tool(
     const data = await apiCall('POST', '/api/session/create', {
       title,
       description,
+      language,
       fields,
       destination: selectedDestination,
       uid,
@@ -122,7 +124,8 @@ server.tool(
       notify,
     });
     if (data.error) throw new Error(data.error);
-    const userMessage = LOCAL_MODE
+    const russian = language === 'ru';
+    const userMessage = russian
       ? `Запрос создан. Попросите пользователя открыть форму и ввести данные напрямую в ZeroCreds: [Открыть защищённую форму ZeroCreds](${data.url})`
       : `Credential request created. Ask the user to enter their credentials directly in ZeroCreds: [Open secure ZeroCreds form](${data.url})`;
     return {
