@@ -50,6 +50,7 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST_RU }}
           username: ${{ secrets.DEPLOY_USER_RU }}
           key: ${{ secrets.DEPLOY_KEY }}
+          envs: REASON
           script: |
             set -eu
             printf 'reason: %s\n' "$REASON"
@@ -75,6 +76,7 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST_RU }}
           username: ${{ secrets.DEPLOY_USER_RU }}
           key: ${{ secrets.DEPLOY_KEY }}
+          envs: REASON
           script: |
             set -eu
             printf 'reason: %s\n' "$REASON"
