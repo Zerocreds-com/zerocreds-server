@@ -20,6 +20,7 @@ const EXPECTED_LOCAL_TOOLS = [
   'share_create',
   'share_options',
   'share_direct_setup',
+  'share_tunnel_setup',
   'share_status',
   'share_cancel',
   'share_claim',
@@ -61,8 +62,15 @@ test('local MCP tools do not repeat the provider name', async () => {
     assert.match(share.description, /Ask the owner which option they prefer before creating a link/);
     assert.match(share.description, /Reply in the language the user is using/);
     assert.match(share.description, /plain everyday words/);
-    assert.deepEqual(share.inputSchema.properties.transport.enum, ['direct', 'relay']);
+    assert.deepEqual(share.inputSchema.properties.transport.enum, ['direct', 'relay', 'tunnel']);
     assert.ok(share.inputSchema.required.includes('transport'));
+    const tunnelSetup = (await client.listTools()).tools.find(tool => tool.name === 'share_tunnel_setup');
+    assert.match(tunnelSetup.description, /cloudflared/);
+    assert.match(tunnelSetup.description, /ZeroCreds website is not used/);
+    const claim = (await client.listTools()).tools.find(tool => tool.name === 'share_claim');
+    assert.match(claim.description, /origin_confirmation_required/);
+    assert.match(claim.description, /Never set confirm_origin=true on your own initiative/);
+    assert.ok(claim.inputSchema.properties.confirm_origin);
     const connections = (await client.listTools()).tools.find(tool => tool.name === 'connections_list');
     assert.match(connections.description, /If several connections match, ask which one too/);
     assert.match(connections.description, /which saves the credential in Keychain/);

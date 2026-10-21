@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { directOrigin } = require('./direct-share');
+const { directOrigin, tunnelOrigin } = require('./direct-share');
 
 const INFO = Buffer.from('zerocreds-share-v1');
 const pendingClaims = new Map();
@@ -24,20 +24,34 @@ function relayOrigins(value, options = {}) {
   return new Set(values.map(item => relayOrigin(item, options)));
 }
 
+// The invitation origin is the host the recipient will talk to. It is either a
+// direct share endpoint (public IPv4 plus an explicit port) or a tunnel URL
+// (an https hostname published by a tunnel the sender controls).
+function inviteOriginValue(value, options = {}) {
+  try { return directOrigin(value, options); }
+  catch { return tunnelOrigin(value, options); }
+}
+
 function parseInvite(link, relayUrl, options = {}) {
   let url;
   try { url = new URL(link); } catch { throw new Error('invalid share link'); }
+  const allowedOrigins = options.allowedOrigins || [];
   const configuredRelays = relayOrigins(relayUrl, options);
   let origin = url.origin;
+  let trustClass = 'relay';
+  let trusted = true;
   if (!configuredRelays.has(url.origin)) {
-    try { origin = directOrigin(url.origin, options); }
-    catch { throw new Error('invalid share link'); }
+    try { origin = directOrigin(url.origin, options); trustClass = 'direct'; }
+    catch {
+      try { origin = tunnelOrigin(url.origin, options); trustClass = 'tunnel'; trusted = allowedOrigins.includes(origin); }
+      catch { throw new Error('invalid share link'); }
+    }
   }
   const match = url.pathname.match(/^\/api\/share-relay\/invite\/([a-f0-9]{32})$/);
   if (url.origin !== origin || !match || !SECRET.test(url.hash) || url.username || url.password || url.search) {
     throw new Error('invalid share link');
   }
-  return { origin, id: match[1], secret: Buffer.from(url.hash.slice(1), 'hex') };
+  return { origin, id: match[1], secret: Buffer.from(url.hash.slice(1), 'hex'), trust_class: trustClass, trusted };
 }
 
 function mac(secret, value) {
@@ -98,7 +112,7 @@ function decrypt(secret, id, privateKey, envelope) {
 async function createPeerShare({ relayUrl, metadata, readCredential, ttlMinutes = 15,
   publicUrl, allowLoopback = false, pollIntervalMs = 1000 }) {
   const origin = relayOrigin(relayUrl, { allowLoopback });
-  const inviteOrigin = publicUrl ? directOrigin(publicUrl, { allowLoopback }) : origin;
+  const inviteOrigin = publicUrl ? inviteOriginValue(publicUrl, { allowLoopback }) : origin;
   if (!Number.isInteger(ttlMinutes) || ttlMinutes < 1 || ttlMinutes > 120) throw new Error('invalid share lifetime');
   if (typeof readCredential !== 'function') throw new Error('credential reader required');
   const id = crypto.randomBytes(16).toString('hex');
@@ -161,9 +175,17 @@ async function createPeerShare({ relayUrl, metadata, readCredential, ttlMinutes 
     } };
 }
 
-async function claimPeerShare(link, saveCredential, { relayUrl, allowLoopback = false, pollIntervalMs = 1000 } = {}) {
+async function claimPeerShare(link, saveCredential, { relayUrl, allowLoopback = false, pollIntervalMs = 1000,
+  allowedOrigins = [], confirmOrigin = false } = {}) {
   if (typeof saveCredential !== 'function') throw new Error('credential writer required');
-  const invite = parseInvite(link, relayUrl, { allowLoopback });
+  const invite = parseInvite(link, relayUrl, { allowLoopback, allowedOrigins });
+  if (!invite.trusted && !confirmOrigin) {
+    const error = new Error('invitation origin needs confirmation');
+    error.code = 'origin_confirmation_required';
+    error.origin = invite.origin;
+    error.trust_class = invite.trust_class;
+    throw error;
+  }
   const claimKey = crypto.createHash('sha256').update(link).digest('hex');
   let pending = pendingClaims.get(claimKey);
   if (pending?.busy) throw new Error('share claim already in progress');
