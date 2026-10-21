@@ -25,7 +25,7 @@ function storageAccount(provider, alias) {
 }
 
 async function claimPortableShare(shareUrl, saveCredential, { accountAlias,
-  relayUrl = process.env.ZEROCREDS_SHARE_RELAY_URL || 'https://zerocreds.ru', allowLoopback = false } = {}) {
+  relayUrl = process.env.ZEROCREDS_SHARE_RELAY_URL || ['https://zerocreds.ru', 'https://zerocreds.com'], allowLoopback = false } = {}) {
   if (typeof saveCredential !== 'function') throw new Error('credential writer required');
   return claimPeerShare(shareUrl, async (meta, fields) => {
     validateContents(meta, fields);

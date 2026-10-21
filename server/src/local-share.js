@@ -18,12 +18,18 @@ function relayOrigin(value, { allowLoopback = false } = {}) {
   return url.origin;
 }
 
+function relayOrigins(value, options = {}) {
+  const values = Array.isArray(value) ? value : [value];
+  if (!values.length) throw new Error('invalid share relay URL');
+  return new Set(values.map(item => relayOrigin(item, options)));
+}
+
 function parseInvite(link, relayUrl, options = {}) {
   let url;
   try { url = new URL(link); } catch { throw new Error('invalid share link'); }
-  const configuredRelay = relayOrigin(relayUrl, options);
-  let origin = configuredRelay;
-  if (url.origin !== configuredRelay) {
+  const configuredRelays = relayOrigins(relayUrl, options);
+  let origin = url.origin;
+  if (!configuredRelays.has(url.origin)) {
     try { origin = directOrigin(url.origin, options); }
     catch { throw new Error('invalid share link'); }
   }
@@ -196,4 +202,4 @@ async function claimPeerShare(link, saveCredential, { relayUrl, allowLoopback = 
   } finally { pending.busy = false; }
 }
 
-module.exports = { createPeerShare, claimPeerShare, parseInvite, relayOrigin, encrypt, decrypt };
+module.exports = { createPeerShare, claimPeerShare, parseInvite, relayOrigin, relayOrigins, encrypt, decrypt };

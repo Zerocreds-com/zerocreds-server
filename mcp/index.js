@@ -202,7 +202,7 @@ if (LOCAL_MODE) server.tool(
 
 if (LOCAL_MODE) {
   server.tool('share_options',
-    'Call before creating a share. Then explain the options in the language the user is using, with everyday words: relay means the transfer passes through the configured ZeroCreds website, which cannot read the encrypted credential; direct sends it from this computer to the colleague without using the ZeroCreds website, but their computer must be reachable over the internet and the router may need a change. If direct sounds difficult or is unavailable, recommend the relay. Ask which they prefer. Avoid networking jargon unless asked. Never silently choose.',
+    'Call before creating a share. Then explain the options in the language the user is using, with everyday words: relay means the transfer passes through one of the configured ZeroCreds websites, which cannot read the encrypted credential; direct sends it from this computer to the colleague without using a ZeroCreds website, but their computer must be reachable over the internet and the router may need a change. When relay_urls contains more than one address, ask the owner which site to use. If direct sounds difficult or is unavailable, recommend a relay. Ask which they prefer. Avoid networking jargon unless asked. Never silently choose.',
     {}, { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, async () => {
       const data = await apiCall('GET', '/api/local/shares/options');
       if (data.error) throw new Error(data.error);
@@ -228,6 +228,7 @@ if (LOCAL_MODE) {
       setup_prompt: z.string().max(2000).describe('Free-form setup instructions for the recipient agent; must contain no credential value.'),
       ttl_minutes: z.number().int().min(1).max(120).optional(),
       transport: z.enum(['direct', 'relay']).describe('Required explicit owner choice. Ask in the user’s language and explain both choices in everyday words.'),
+      relay_url: z.string().url().optional().describe('Required for relay sharing when share_options reports more than one configured relay URL. Select only one of relay_urls.'),
     }, async input => {
       const data = await apiCall('POST', '/api/local/shares', input);
       if (data.error) throw new Error(data.error);
