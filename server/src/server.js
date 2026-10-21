@@ -13,8 +13,8 @@ const { saveToDestination, testDestination, validateDestination, resolveTemplate
 const { canonicalJson, sha256Hex, loadSigningKey, signPayload } = require('./receipts');
 const { discoverCredentialSources, searchCredentialMetadata, CATEGORIES } = require('./credential-discovery');
 const { createShareRelay } = require('./share-relay');
-const { createPeerShare, claimPeerShare } = require('./local-share');
-const { createDirectShareEndpoints, directOrigin } = require('./direct-share');
+const { createPeerShare, claimPeerShare, parseInvite } = require('./local-share');
+const { createDirectShareEndpoints, directOrigin, tunnelOrigin } = require('./direct-share');
 const { shareInvitePage } = require('./share-invite-page');
 const { sendFavicon } = require('./favicon');
 
@@ -1333,6 +1333,125 @@ function createApp(config = {}) {
   }, config.directShareSweepIntervalMs ?? 5000);
   directSweep.unref();
 
+  // Tunnel transport: the sender's own relay stays on loopback and is published
+  // by a tunnel the user controls. The tunnel operator sees metadata only — the
+  // envelope stays sealed to the recipient's key.
+  const SHARE_TUNNEL_CONFIG_FILE = config.shareTunnelConfigFile ?? path.join(path.dirname(LOCAL_CATALOG_FILE), 'share-tunnel.json');
+  const SHARE_TUNNEL_PORT = Number.isInteger(config.shareTunnelPort) ? config.shareTunnelPort : 3458;
+  let tunnelConfig = { base_url: config.shareTunnelUrl ?? process.env.ZEROCREDS_SHARE_TUNNEL_URL ?? '' };
+  if (LOCAL_MODE && fs.existsSync(SHARE_TUNNEL_CONFIG_FILE)) {
+    try {
+      const saved = JSON.parse(fs.readFileSync(SHARE_TUNNEL_CONFIG_FILE, 'utf8'));
+      if (saved && typeof saved.base_url === 'string' && saved.base_url) {
+        tunnelOrigin(saved.base_url, { allowLoopback: config.allowLoopbackShares === true });
+        tunnelConfig = saved;
+      }
+    } catch (error) { console.warn('[config] tunnel share config error:', error.message); }
+  }
+  if (tunnelConfig.base_url && !LOCAL_MODE) throw new Error('tunnel sharing requires local mode');
+  let tunnelEndpoint = null;
+  let tunnelEndpointUrl = null;
+  let tunnelEndpointPort = null;
+  let tunnelStopping = null;
+  let tunnelShareCreates = 0;
+  const tunnelShareIds = new Set();
+  // Origins the recipient has confirmed for this machine. A tunnel invitation
+  // points at a host the recipient has never seen, so the agent shows it and
+  // the user approves it once; afterwards the host is trusted for this machine.
+  const SHARE_TRUSTED_ORIGINS_FILE = config.shareTrustedOriginsFile
+    ?? path.join(path.dirname(LOCAL_CATALOG_FILE), 'share-trusted-origins.json');
+  let trustedOrigins = new Set();
+  if (LOCAL_MODE && fs.existsSync(SHARE_TRUSTED_ORIGINS_FILE)) {
+    try {
+      const saved = JSON.parse(fs.readFileSync(SHARE_TRUSTED_ORIGINS_FILE, 'utf8'));
+      if (Array.isArray(saved)) trustedOrigins = new Set(saved.filter(item => typeof item === 'string'));
+    } catch (error) { console.warn('[config] trusted share origins error:', error.message); }
+  }
+  function saveTrustedOrigins() {
+    fs.mkdirSync(path.dirname(SHARE_TRUSTED_ORIGINS_FILE), { recursive: true, mode: 0o700 });
+    const temp = `${SHARE_TRUSTED_ORIGINS_FILE}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+    fs.writeFileSync(temp, JSON.stringify([...trustedOrigins]), { mode: 0o600 });
+    fs.renameSync(temp, SHARE_TRUSTED_ORIGINS_FILE);
+  }
+  function allowedShareOrigins() {
+    const origins = new Set(trustedOrigins);
+    if (tunnelConfig.base_url) origins.add(tunnelConfig.base_url);
+    return [...origins];
+  }
+  // The tunnel listener must stay bound for as long as the tunnel points at it:
+  // an SSH or cloudflared tunnel that loses its local target usually refuses
+  // new connections instead of reconnecting. So the endpoint is started once
+  // and kept alive, and the sweep never closes it.
+  async function startTunnelEndpoint(baseUrl = tunnelConfig.base_url, localPort = tunnelConfig.local_port) {
+    if (!baseUrl) throw new Error('tunnel sharing is not configured; call share_tunnel_setup first');
+    if (tunnelStopping) await tunnelStopping;
+    // A different tunnel address means a different public endpoint, so the
+    // listener is recreated. The user restarts their tunnel client at the same
+    // time, so the short gap does not break anything that is still in use.
+    if (tunnelEndpoint && (tunnelEndpointUrl !== baseUrl || tunnelEndpointPort !== (localPort || SHARE_TUNNEL_PORT))) {
+      const previous = tunnelEndpoint;
+      tunnelEndpoint = null;
+      tunnelEndpointUrl = null;
+      await previous.stop().catch(() => {});
+    }
+    if (!tunnelEndpoint) {
+      tunnelEndpoint = createDirectShareEndpoints({ publicUrl: baseUrl,
+        tunnelPort: localPort || SHARE_TUNNEL_PORT, allowLoopback: config.allowLoopbackShares === true });
+      tunnelEndpointUrl = baseUrl;
+      tunnelEndpointPort = localPort || SHARE_TUNNEL_PORT;
+    }
+    try { return await tunnelEndpoint.start(); }
+    catch (error) { tunnelEndpoint = null; tunnelEndpointUrl = null; throw error; }
+  }
+  async function withTunnelShareEndpoint(create) {
+    tunnelShareCreates++;
+    try {
+      const tunnel = await startTunnelEndpoint();
+      const share = await create(tunnel);
+      LOCAL_PEER_SHARES.set(share.id, share);
+      tunnelShareIds.add(share.id);
+      return share;
+    } finally {
+      tunnelShareCreates--;
+    }
+  }
+  // Verify a tunnel URL by asking the tunnel whether it reaches the loopback
+  // listener. The probe carries a random non-secret token and no credential.
+  async function configureTunnelShare(rawBaseUrl, localPort = SHARE_TUNNEL_PORT) {
+    let baseUrl;
+    try { baseUrl = tunnelOrigin(rawBaseUrl, { allowLoopback: config.allowLoopbackShares === true }); }
+    catch (error) { return { error: `invalid tunnel share URL: ${error.message}` }; }
+    const probeToken = crypto.randomBytes(32).toString('hex');
+    try {
+      await startTunnelEndpoint(baseUrl, localPort);
+      tunnelEndpoint.setProbeToken(probeToken);
+      const response = await fetch(`${baseUrl}/api/share-relay/probe/${probeToken}`, { method: 'GET',
+        redirect: 'error', signal: AbortSignal.timeout(10000) });
+      await response.body?.cancel().catch(() => {});
+      if (response.status !== 204) throw new Error('the tunnel did not answer a reachability check; check that it points at this computer');
+    } catch (error) {
+      tunnelEndpoint?.setProbeToken(null);
+      return { error: `tunnel setup failed: ${error.message}` };
+    }
+    tunnelEndpoint.setProbeToken(null);
+    const candidate = { base_url: baseUrl, local_port: localPort, verified_at: new Date().toISOString() };
+    fs.mkdirSync(path.dirname(SHARE_TUNNEL_CONFIG_FILE), { recursive: true, mode: 0o700 });
+    const temp = `${SHARE_TUNNEL_CONFIG_FILE}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+    fs.writeFileSync(temp, JSON.stringify(candidate), { mode: 0o600 });
+    fs.renameSync(temp, SHARE_TUNNEL_CONFIG_FILE);
+    tunnelConfig = candidate;
+    return { candidate };
+  }
+  const tunnelSweep = setInterval(() => {
+    for (const id of tunnelShareIds) {
+      const status = LOCAL_PEER_SHARES.get(id)?.status();
+      if (!status || ['complete', 'expired', 'cancelled'].includes(status)) tunnelShareIds.delete(id);
+    }
+    // The tunnel listener deliberately stays bound: a tunnel that loses its
+    // local target usually refuses new connections instead of reconnecting.
+  }, config.directShareSweepIntervalMs ?? 5000);
+  tunnelSweep.unref();
+
   function publishLocalFormEvent(token, event) {
     const streams = LOCAL_FORM_EVENT_STREAMS.get(token);
     if (!streams) return;
@@ -2313,9 +2432,26 @@ function createApp(config = {}) {
         return json(res, 200, { relay_url: SHARE_RELAY_URL, relay_urls: SHARE_RELAY_URLS, direct_url: directConfig.public_url || null,
           direct_configured: !!directConfig.public_url,
           direct_reachability_verified_at: directConfig.reachability_verified_at || null,
+          tunnel_url: tunnelConfig.base_url || null,
+          tunnel_configured: !!tunnelConfig.base_url,
+          tunnel_verified_at: tunnelConfig.verified_at || null,
           choice_required: true,
           relay_description: 'Choose a ZeroCreds website to pass the invitation. The credential is sealed before it leaves this computer, and the website cannot open and read it.',
-          direct_description: 'Send straight from this computer without using the ZeroCreds website. The owner can ask ZeroCreds to test whether the port is reachable, or skip the test by supplying a known public IPv4 address and port. Without the test, the link may not work.' });
+          direct_description: 'Send straight from this computer without using the ZeroCreds website. The owner can ask ZeroCreds to test whether the port is reachable, or skip the test by supplying a known public IPv4 address and port. Without the test, the link may not work.',
+          tunnel_description: 'Publish this computer’s ZeroCreds through a tunnel the owner runs (for example cloudflared or an SSH reverse tunnel). The ZeroCreds website is not used at all. The tunnel operator sees the encrypted blob and the timing, cannot read the credential, and can refuse or delay the delivery.',
+          transports: [
+            { kind: 'relay', label: 'ZeroCreds website', base_url: SHARE_RELAY_URLS, operator: 'zerocreds',
+              trust: 'website', can_read_credential: false, requires: [], available: true,
+              description: 'The invitation passes through the ZeroCreds website. The credential is sealed before it leaves this computer, and the website cannot open and read it. The website can refuse or delay the delivery.' },
+            { kind: 'direct', label: 'This computer directly', base_url: directConfig.public_url || null,
+              operator: 'none', trust: 'none', can_read_credential: false, requires: ['router-port-forward'],
+              available: !!directConfig.public_url,
+              description: 'The invitation goes straight from this computer to the colleague without the ZeroCreds website. Their computer must be able to reach this one over the internet, so the router may need a port-forwarding change.' },
+            { kind: 'tunnel', label: 'Through your own tunnel', base_url: tunnelConfig.base_url || null,
+              operator: 'user-provided', trust: 'network-provider', can_read_credential: false,
+              requires: ['tunnel-client'], available: !!tunnelConfig.base_url,
+              description: 'The invitation goes from this computer through a tunnel you run, so the ZeroCreds website is not involved. The tunnel operator sees the encrypted blob and the timing and cannot read the credential, but it can refuse or delay the delivery.' },
+          ] });
       }
       if (req.method === 'POST' && url.pathname === '/api/local/shares/direct/setup') {
         const body = await readJson(req);
@@ -2402,14 +2538,40 @@ function createApp(config = {}) {
             ? 'ZeroCreds tested that this port can be reached from the internet. The direct invitation link will point to this computer; keep it online until the colleague claims it.'
             : 'The local listener is ready. External reachability was not tested; the invitation may not work if this address or port is unreachable.' });
       }
+      if (req.method === 'POST' && url.pathname === '/api/local/shares/tunnel/setup') {
+        const body = await readJson(req);
+        if (!body || (body.base_url !== undefined && (typeof body.base_url !== 'string' || body.base_url.length > 256))
+            || (body.local_port !== undefined && (!Number.isInteger(body.local_port) || body.local_port < 1024 || body.local_port > 65535))) {
+          return json(res, 400, { error: 'invalid tunnel share configuration' });
+        }
+        if (!body.base_url) return json(res, 400, { error: 'a tunnel share URL is required' });
+        const localPort = body.local_port || SHARE_TUNNEL_PORT;
+        const configured = await configureTunnelShare(body.base_url, localPort);
+        if (configured.error) return json(res, 503, { error: configured.error,
+          local_url: `http://127.0.0.1:${localPort}`,
+          next_step: `Start a tunnel that forwards to http://127.0.0.1:${localPort}, then call this endpoint again with its https address.` });
+        const candidate = configured.candidate;
+        return json(res, 200, { tunnel_url: candidate.base_url, local_url: `http://127.0.0.1:${localPort}`,
+          verified_at: candidate.verified_at, probe: 'ok', trust_class: 'network-provider',
+          next_step: 'The tunnel reaches this computer. The invitation link will point to the tunnel address. Keep the tunnel and this computer online until the colleague claims it. The tunnel operator sees the encrypted blob and the timing and cannot read the credential.' });
+      }
       if (req.method === 'POST' && url.pathname === '/api/local/shares') {
         const body = await readJson(req);
         if (body && body.transport === undefined) return json(res, 409, { error: 'transport_selection_required',
           relay_url: SHARE_RELAY_URL, relay_urls: SHARE_RELAY_URLS, direct_configured: !!directConfig.public_url,
-          next_step: 'Ask the owner whether to use a configured ZeroCreds relay or set up a direct public-IP connection before creating a link.' });
+          tunnel_configured: !!tunnelConfig.base_url,
+          next_step: 'Ask the owner whether to use a configured ZeroCreds relay, a direct public-IP connection, or their own tunnel before creating a link.' });
+        // The transport may be a plain string (backward compatible) or a
+        // descriptor object. Only the host changes between transports: the
+        // envelope, the claim proof and the link format stay identical.
+        const requested = typeof body?.transport === 'string'
+          ? { kind: body.transport } : (body?.transport || null);
+        if (!requested || typeof requested !== 'object' || !['direct', 'relay', 'tunnel'].includes(requested.kind)
+            || (requested.base_url !== undefined && (typeof requested.base_url !== 'string' || requested.base_url.length > 256))) {
+          return json(res, 400, { error: 'invalid share request' });
+        }
         if (!body || !/^[a-f0-9]{32}$/.test(body.connection_id || '')
             || typeof body.setup_prompt !== 'string' || body.setup_prompt.length > 2000
-            || !['direct', 'relay'].includes(body.transport)
             || (body.relay_url !== undefined && (typeof body.relay_url !== 'string' || !SHARE_RELAY_URLS.includes(body.relay_url)))
             || (body.ttl_minutes !== undefined && (!Number.isInteger(body.ttl_minutes)
               || body.ttl_minutes < 1 || body.ttl_minutes > 120))) {
@@ -2430,7 +2592,14 @@ function createApp(config = {}) {
         }
         const exists = await (config.localCredentialExists || checkLocalKeychainEntry)(entry.storage);
         if (exists !== 'present') return json(res, 409, { error: `credential ${exists}` });
-        const transport = body.transport;
+        const transport = requested.kind;
+        // A tunnel may be named inline in the request. It still has to pass the
+        // same reachability check as a configured tunnel, so an unreachable or
+        // wrong address never turns into an invitation link.
+        if (transport === 'tunnel' && requested.base_url && requested.base_url !== tunnelConfig.base_url) {
+          const configured = await configureTunnelShare(requested.base_url);
+          if (configured.error) return json(res, 503, configured);
+        }
         if (transport === 'relay' && SHARE_RELAY_URLS.length > 1 && !body.relay_url) {
           return json(res, 409, { error: 'relay_selection_required', relay_urls: SHARE_RELAY_URLS,
             next_step: 'Ask the owner which configured ZeroCreds website should carry the encrypted invitation.' });
@@ -2452,15 +2621,19 @@ function createApp(config = {}) {
           } });
         let share;
         try {
-          share = transport === 'direct' ? await withDirectShareEndpoint(create) : await create();
+          share = transport === 'direct' ? await withDirectShareEndpoint(create)
+            : transport === 'tunnel' ? await withTunnelShareEndpoint(create)
+            : await create();
         } catch {
-          return json(res, 503, { error: transport === 'direct' ? 'direct share unavailable' : 'share relay unavailable' });
+          return json(res, 503, { error: transport === 'direct' ? 'direct share unavailable'
+            : transport === 'tunnel' ? 'tunnel share unavailable' : 'share relay unavailable' });
         }
         if (transport === 'relay') LOCAL_PEER_SHARES.set(share.id, share);
         return json(res, 200, { share_id: share.id, share_url: share.url,
           expires_at: share.expires_at, provider: entry.provider, account_alias: entry.account_alias,
           transport, ...(transport === 'relay' ? { relay_url: selectedRelayUrl } : {}),
           ...(transport === 'direct' ? { external_reachability_verified: !!directConfig.reachability_verified_at } : {}),
+          ...(transport === 'tunnel' ? { tunnel_url: tunnelConfig.base_url, trust_class: 'network-provider' } : {}),
           warning: 'The link is a one-time bearer invitation. Send it only to the intended recipient.' });
       }
       const shareMatch = url.pathname.match(/^\/api\/local\/shares\/([a-f0-9]{32})$/);
@@ -2478,7 +2651,8 @@ function createApp(config = {}) {
       if (req.method === 'POST' && url.pathname === '/api/local/shares/claim') {
         const body = await readJson(req);
         if (!body || typeof body.share_url !== 'string' || body.share_url.length > 512
-            || (body.account_alias !== undefined && !/^[a-zA-Z0-9_-]{1,64}$/.test(body.account_alias))) {
+            || (body.account_alias !== undefined && !/^[a-zA-Z0-9_-]{1,64}$/.test(body.account_alias))
+            || (body.confirm_origin !== undefined && typeof body.confirm_origin !== 'boolean')) {
           return json(res, 400, { error: 'invalid claim request' });
         }
         if (RUNTIME_PLATFORM !== 'darwin' && !config.localCredentialWriter) {
@@ -2487,6 +2661,20 @@ function createApp(config = {}) {
         const preflight = await (config.localCredentialExists || checkLocalKeychainEntry)(
           `keychain:zerocreds/share-probe-${crypto.randomBytes(8).toString('hex')}`);
         if (preflight !== 'missing') return json(res, 503, { error: `Keychain ${preflight}` });
+        // The recipient confirmed this host once, so it stays trusted for this
+        // machine and later invitations from it do not ask again.
+        if (body.confirm_origin === true) {
+          let confirmed;
+          try {
+            confirmed = parseInvite(body.share_url, SHARE_RELAY_URLS,
+              { allowLoopback: config.allowLoopbackShares === true, allowedOrigins: allowedShareOrigins() });
+          } catch { confirmed = null; }
+          if (confirmed && confirmed.trust_class === 'tunnel' && !trustedOrigins.has(confirmed.origin)) {
+            trustedOrigins.add(confirmed.origin);
+            try { saveTrustedOrigins(); }
+            catch (error) { trustedOrigins.delete(confirmed.origin); return json(res, 503, { error: `cannot remember the confirmed host: ${error.message}` }); }
+          }
+        }
         try {
           const result = await claimPeerShare(body.share_url, async (meta, fields) => {
             if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(meta.provider || '')
@@ -2536,9 +2724,20 @@ function createApp(config = {}) {
               writeLocalCatalog(entries);
               return { connection_id: connectionId, provider: meta.provider, account_alias: alias };
             } finally { LOCAL_SHARE_IMPORTS.delete(key); }
-          }, { relayUrl: SHARE_RELAY_URLS, allowLoopback: config.allowLoopbackShares === true });
+          }, { relayUrl: SHARE_RELAY_URLS, allowLoopback: config.allowLoopbackShares === true,
+            allowedOrigins: allowedShareOrigins(), confirmOrigin: body.confirm_origin === true });
           return json(res, result.status === 'saved' ? 200 : 202, result);
-        } catch (error) { return json(res, 409, { error: error.message }); }
+        } catch (error) {
+          // An invitation from a host this machine has never seen needs a
+          // one-time confirmation: the agent shows the host and its trust class
+          // to the recipient before anything is written to the Keychain.
+          if (error.code === 'origin_confirmation_required') {
+            return json(res, 409, { error: 'origin_confirmation_required', origin: error.origin,
+              trust_class: error.trust_class,
+              next_step: 'Show this host to the recipient and ask whether they trust it. Only then repeat the claim with confirm_origin=true.' });
+          }
+          return json(res, 409, { error: error.message });
+        }
       }
       return json(res, 404, { error: 'not found' });
     }
@@ -3887,8 +4086,10 @@ function createApp(config = {}) {
   server.on('close', () => {
     clearInterval(sweepTimer);
     clearInterval(directSweep);
+    clearInterval(tunnelSweep);
     SHARE_RELAY?.stop();
     if (directEndpoint) void directEndpoint.stop();
+    if (tunnelEndpoint) void tunnelEndpoint.stop();
     for (const share of LOCAL_PEER_SHARES.values()) share.close();
   });
   server.sweepPending = sweepPending;

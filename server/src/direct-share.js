@@ -31,18 +31,32 @@ function directOrigin(value, { allowLoopback = false } = {}) {
   return url.origin;
 }
 
-function createDirectShareEndpoints({ publicUrl, certFile, keyFile, probeToken, allowLoopback = false } = {}) {
-  const origin = directOrigin(publicUrl, { allowLoopback });
+function tunnelOrigin(value, { allowLoopback = false } = {}) {
+  let url;
+  try { url = new URL(value); } catch { throw new Error('invalid tunnel share URL'); }
+  const loopback = allowLoopback && url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname);
+  if (!loopback && url.protocol !== 'https:') throw new Error('tunnel share URL must use https');
+  if (url.username || url.password || url.search || url.hash || url.pathname !== '/' || !url.hostname) {
+    throw new Error('tunnel share URL must be a plain https origin (no path, query, fragment or credentials)');
+  }
+  return url.origin;
+}
+
+function createDirectShareEndpoints({ publicUrl, certFile, keyFile, probeToken, allowLoopback = false, tunnelPort = null } = {}) {
+  const isTunnel = !!tunnelPort;
+  const origin = isTunnel ? tunnelOrigin(publicUrl, { allowLoopback }) : directOrigin(publicUrl, { allowLoopback });
   const url = new URL(origin);
-  if (url.protocol === 'https:' && (!certFile || !keyFile)) throw new Error('direct HTTPS share requires a certificate and private key');
-  if (url.protocol === 'http:' && (certFile || keyFile)) throw new Error('direct HTTP share must not specify TLS files');
+  if (!isTunnel && url.protocol === 'https:' && (!certFile || !keyFile)) throw new Error('direct HTTPS share requires a certificate and private key');
+  if (!isTunnel && url.protocol === 'http:' && (certFile || keyFile)) throw new Error('direct HTTP share must not specify TLS files');
+  if (isTunnel && (certFile || keyFile)) throw new Error('tunnel share must not specify TLS files');
   const relay = createShareRelay();
+  let activeProbeToken = probeToken || null;
   const handle = (req, res, internal = false) => {
     let route;
     try { route = new URL(req.url, 'http://localhost'); }
     catch { res.writeHead(400).end(); return; }
-    if (!internal && probeToken && req.method === 'GET'
-        && route.pathname === `/api/share-relay/probe/${probeToken}`) {
+    if (!internal && activeProbeToken && req.method === 'GET'
+        && route.pathname === `/api/share-relay/probe/${activeProbeToken}`) {
       res.writeHead(204, { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }).end();
       return;
     }
@@ -82,7 +96,10 @@ function createDirectShareEndpoints({ publicUrl, certFile, keyFile, probeToken, 
   const start = () => {
     if (starting) return starting;
     starting = (async () => {
-      external = url.protocol === 'https:'
+      // A tunnel transport terminates TLS at the tunnel provider and forwards
+      // plain HTTP to a loopback port, so the recipient-facing listener stays
+      // on 127.0.0.1 and never binds a public interface.
+      external = !isTunnel && url.protocol === 'https:'
         ? https.createServer({ cert: fs.readFileSync(certFile), key: fs.readFileSync(keyFile) }, (req, res) => handle(req, res))
         : http.createServer((req, res) => handle(req, res));
       internal = http.createServer((req, res) => handle(req, res, true));
@@ -91,9 +108,10 @@ function createDirectShareEndpoints({ publicUrl, certFile, keyFile, probeToken, 
         server.headersTimeout = 10000;
       }
       try {
-        await listen(external, Number(url.port), '0.0.0.0');
+        await listen(external, isTunnel ? tunnelPort : Number(url.port), isTunnel ? '127.0.0.1' : '0.0.0.0');
         await listen(internal, 0, '127.0.0.1');
-        return { publicUrl: origin, localUrl: `http://127.0.0.1:${internal.address().port}` };
+        return { publicUrl: origin, localUrl: `http://127.0.0.1:${internal.address().port}`,
+          tunnelLocalUrl: isTunnel ? `http://127.0.0.1:${external.address().port}` : null };
       } catch (error) {
         await stop();
         starting = null;
@@ -102,7 +120,7 @@ function createDirectShareEndpoints({ publicUrl, certFile, keyFile, probeToken, 
     })();
     return starting;
   };
-  return { start, stop };
+  return { start, stop, setProbeToken: token => { activeProbeToken = token || null; } };
 }
 
-module.exports = { directOrigin, isPublicIPv4, createDirectShareEndpoints };
+module.exports = { directOrigin, tunnelOrigin, isPublicIPv4, createDirectShareEndpoints };
