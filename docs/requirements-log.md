@@ -47,6 +47,8 @@
 - [реализовано] #119 setup-local-mac.sh ставит прокси, если `sudo` доступен без пароля, иначе печатает три команды для ручного запуска и остаётся на прямом адресе; `ZEROCREDS_PROXY_MODE=off` отключает прокси полностью
 - [реализовано] #123 экран подтверждения после сохранения называет, куда именно сохранено: «Saved to macOS Keychain on this Mac — `zerocreds/<provider>-<account-alias>`». Раньше блок «Where this goes» жил внутри формы и исчезал ровно в тот момент, когда человек спрашивал «куда оно легло». Локальное хранилище теперь называется конкретно («macOS Keychain on this Mac»), а не обезличенно «OS keychain on the ZeroCreds server»
 
+- [реализовано] #158 исследование транспортов для peer-шаринга за CGNAT: `docs/research/2026-10-21-cgnat-peer-sharing-transports.md` — сетевое ограничение (RFC 4787/6598/5780), модель угроз и контракт транспорта (8 инвариантов), сравнение Cloudflare Tunnel / WebRTC+TURN / Tor / Tailscale-Headscale / mailbox / Magic Wormhole, граница API для `share_create` и план тестов только на синтетических значениях
+
 ## Планируется
 
 - [планируется] Landing page zerocreds.ru — на русском, с объяснением концепции
@@ -54,6 +56,9 @@
 - [планируется] SSL сертификат (Let's Encrypt через certbot)
 - [планируется] Заменить формы в trained-assist-agent на ссылки на zerocreds-server
 - [планируется] Chrome extension сниппет для Tilda HTML-блоков
+- [планируется] #158 первый шаг по CGNAT: транспорт `tunnel` — релей отправителя за исходящим туннелем пользователя (`ssh -R`, `cloudflared`, `frp`, `ngrok`); формат конверта, claim proof и формат ссылки не меняются, меняется только хост в ссылке. Нужен transport-реестр в `/api/local/shares/options`, политика origin для `https`-хоста и подтверждение origin получателем перед claim
+- [планируется] #158 без кода: `ZEROCREDS_SHARE_RELAY_URL` может указывать на собственный инстанс ZeroCreds — сайт zerocreds.ru полностью уходит из пути; показать это в `share_options` как отдельный вариант
+- [планируется] #158 отложено (с обоснованием в исследовании): WebRTC+STUN/TURN, Tor onion service, Tailscale/Headscale как транспорт шаринга, mailbox-поллинг, интероп с Magic Wormhole
 
 ## Отклонено
 
