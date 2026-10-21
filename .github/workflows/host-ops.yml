@@ -60,9 +60,17 @@ jobs:
             sudo -n -l 2>&1 || true
             echo "--- installed configs ---"
             ls -la /etc/nginx/sites-available/ 2>&1 || true
+            # The repository is on this host as well, so the comparison reads
+            # the file the host fetches. A path that only exists on the runner
+            # would compare the host against nothing.
+            git -C ~/zerocreds-server fetch origin main --quiet || echo "could not fetch the repository"
             for domain in zerocreds.ru zerocreds.com; do
               echo "--- diff $domain (installed vs repository) ---"
-              diff -u "/etc/nginx/sites-available/$domain" "ops/nginx/$domain.conf" 2>&1 || true
+              if git -C ~/zerocreds-server show '${{ github.sha }}':ops/nginx/$domain.conf > "/tmp/$domain.repository.conf" 2>/dev/null; then
+                diff -u "/etc/nginx/sites-available/$domain" "/tmp/$domain.repository.conf" 2>&1 || true
+              else
+                echo "the repository version of $domain is not on this host yet"
+              fi
             done
             echo "--- nginx -t ---"
             sudo -n /usr/sbin/nginx -t 2>&1 || true
@@ -84,6 +92,13 @@ jobs:
             git fetch origin main
             git reset --hard '${{ github.sha }}'
             echo "--- installing ops/nginx from $(git rev-parse --short=12 HEAD) ---"
+            if ! sudo -n -l 2>/dev/null | grep -q 'install-nginx'; then
+              echo "--- this account may not run the install as root ---"
+              sudo -n -l 2>&1 || true
+              echo "an administrator has to run on this host:"
+              echo "  cd ~/zerocreds-server && sudo env DEPLOY_ENV=ru bash ops/install-nginx.sh"
+              exit 1
+            fi
             sudo -n env DEPLOY_ENV=ru bash ops/install-nginx.sh
             echo "--- nginx -t ---"
             sudo -n /usr/sbin/nginx -t
