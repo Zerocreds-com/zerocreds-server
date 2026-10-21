@@ -1,0 +1,95 @@
+name: RU host operations
+
+# The administrative step that the normal deploy deliberately does not do.
+# `ops/README.md` keeps nginx changes a separate administrative install, and
+# this workflow is that step: it runs only when a human dispatches it, only
+# after the `production` environment has been approved, and it uses the same
+# script the administrator would run by hand.
+#
+# A normal deployment never runs repository code as root and never touches
+# /etc/nginx. This workflow exists because a repository change to
+# `ops/nginx/*.conf` has to reach the host somehow, and a host that keeps an
+# older configuration fails the deployment check.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'What to do on the RU host'
+        type: choice
+        options:
+          - report
+          - install-nginx
+        required: true
+      reason:
+        description: 'Why this run is needed'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://zerocreds.ru
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Report the nginx state on RU
+        if: inputs.action == 'report'
+        env:
+          REASON: ${{ inputs.reason }}
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST_RU }}
+          username: ${{ secrets.DEPLOY_USER_RU }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            set -eu
+            printf 'reason: %s\n' "$REASON"
+            echo "--- who ---"
+            id
+            echo "--- sudo ---"
+            sudo -n -l 2>&1 || true
+            echo "--- installed configs ---"
+            ls -la /etc/nginx/sites-available/ 2>&1 || true
+            for domain in zerocreds.ru zerocreds.com; do
+              echo "--- diff $domain (installed vs repository) ---"
+              diff -u "/etc/nginx/sites-available/$domain" "ops/nginx/$domain.conf" 2>&1 || true
+            done
+            echo "--- nginx -t ---"
+            sudo -n /usr/sbin/nginx -t 2>&1 || true
+
+      - name: Install the repository nginx configs on RU
+        if: inputs.action == 'install-nginx'
+        env:
+          REASON: ${{ inputs.reason }}
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST_RU }}
+          username: ${{ secrets.DEPLOY_USER_RU }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            set -eu
+            printf 'reason: %s\n' "$REASON"
+            cd ~/zerocreds-server
+            git fetch origin main
+            git reset --hard '${{ github.sha }}'
+            echo "--- installing ops/nginx from $(git rev-parse --short=12 HEAD) ---"
+            sudo -n env DEPLOY_ENV=ru bash ops/install-nginx.sh
+            echo "--- nginx -t ---"
+            sudo -n /usr/sbin/nginx -t
+            for domain in zerocreds.ru zerocreds.com; do
+              echo "--- diff $domain (installed vs repository) ---"
+              diff -u "/etc/nginx/sites-available/$domain" "ops/nginx/$domain.conf" && echo "$domain: in sync"
+            done
+            echo "--- public check ---"
+            for url in https://zerocreds.ru/favicon.svg https://zerocreds.com/favicon.svg; do
+              curl -fsS -o /dev/null -w "$url HTTP %{http_code} %{content_type}\n" "$url"
+            done
