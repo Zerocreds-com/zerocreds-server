@@ -26,6 +26,9 @@ copy_runtime() {
   local d
   for d in "${dirs[@]}"; do
     if [[ -d "$ROOT/$d" ]]; then
+      # Ensure the target parent directory exists
+      local target_dir="${RUNTIME_ROOT}/$(dirname "$d")"
+      mkdir -p "$target_dir"
       rm -rf "$RUNTIME_ROOT/$d"
       cp -R "$ROOT/$d" "$RUNTIME_ROOT/$d"
     fi
@@ -34,6 +37,9 @@ copy_runtime() {
   local f
   for f in "${files[@]}"; do
     if [[ -f "$ROOT/$f" ]]; then
+      # Ensure the target parent directory exists
+      local target_dir="${RUNTIME_ROOT}/$(dirname "$f")"
+      mkdir -p "$target_dir"
       cp -p "$ROOT/$f" "$RUNTIME_ROOT/$f"
     fi
   done
@@ -57,15 +63,26 @@ LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
 LABEL="com.zerocreds.local-server"
 UID_NUM="$(id -u)"
 
-# The readable address for the local service. Port 80 is privileged, so it needs a
-# root LaunchDaemon (scripts/local-proxy.js) in front of the server; without it the
-# service is still reachable on the direct loopback port.
+# The readable address for the local service. A loopback-only reverse proxy
+# (scripts/local-proxy.js) serves http://localhost/zerocreds in front of the
+# server. Port 80 is privileged, so by default we use 8080 which needs no
+# root; set ZEROCREDS_PROXY_PORT=80 to use the bare port instead.
 PROXY_LABEL="com.zerocreds.local-proxy"
-PROXY_PLIST_DST="/Library/LaunchDaemons/$PROXY_LABEL.plist"
 PROXY_MODE="${ZEROCREDS_PROXY_MODE:-auto}"
-PROXY_PORT="${ZEROCREDS_PROXY_PORT:-80}"
+PROXY_PORT="${ZEROCREDS_PROXY_PORT:-8080}"
+if [[ "$PROXY_PORT" == "80" ]]; then
+  PROXY_PLIST_DST="/Library/LaunchDaemons/$PROXY_LABEL.plist"
+  PROXY_SCOPE="system"
+else
+  PROXY_PLIST_DST="$HOME/Library/LaunchAgents/$PROXY_LABEL.plist"
+  PROXY_SCOPE="gui/$(id -u)"
+fi
 DIRECT_URL="http://localhost:3456"
-PRETTY_URL="http://localhost/zerocreds"
+if [[ "$PROXY_PORT" == "80" ]]; then
+  PRETTY_URL="http://localhost/zerocreds"
+else
+  PRETTY_URL="http://localhost:${PROXY_PORT}/zerocreds"
+fi
 export ZEROCREDS_PROXY_PORT="$PROXY_PORT" ZEROCREDS_PROXY_TARGET="$DIRECT_URL"
 
 mkdir -p "$CONFIG" "$DATA/pending" "$DATA/tokens" "$LAUNCH_AGENTS"
@@ -124,19 +141,31 @@ fi
 if [[ ! -d "$ROOT/server/node_modules" ]]; then (cd "$ROOT/server" && npm ci --no-audit --no-fund); fi
 if [[ ! -d "$ROOT/mcp/node_modules" ]]; then (cd "$ROOT/mcp" && npm ci --no-audit --no-fund); fi
 
-# The reverse proxy runs as root because port 80 is privileged. Install it when
-# sudo is available without a password, otherwise print the one command to run
-# by hand so the readable address can be enabled later.
+# The reverse proxy serves the readable address. Port 8080 (the default) needs
+# no root; port 80 is privileged and requires sudo. Install the proxy when
+# possible, otherwise print the command to run by hand so the readable address
+# can be enabled later.
 proxy_running() {
-  [[ -f "$PROXY_PLIST_DST" ]] && launchctl print "system/$PROXY_LABEL" >/dev/null 2>&1
+  [[ -f "$PROXY_PLIST_DST" ]] && launchctl print "$PROXY_SCOPE/$PROXY_LABEL" >/dev/null 2>&1
+}
+
+# Check if the proxy is running on the correct port; reinstall if not.
+proxy_port_matches() {
+  local current_port
+  current_port=$(plutil -extract EnvironmentVariables.ZEROCREDS_PROXY_PORT raw "$PROXY_PLIST_DST" 2>/dev/null || echo "")
+  [[ "$current_port" == "$PROXY_PORT" ]]
 }
 
 PROXY_OK=0
 if [[ "$PROXY_MODE" != "off" ]]; then
-  if proxy_running; then
+  if proxy_running && proxy_port_matches; then
     PROXY_OK=1
-  elif sudo -n true 2>/dev/null; then
-    sudo "$SOURCE_ROOT/scripts/install-local-proxy.sh"
+  elif sudo -n true 2>/dev/null && [[ "$PROXY_PORT" == "80" ]]; then
+    sudo "$ROOT/scripts/install-local-proxy.sh"
+    PROXY_OK=1
+  elif [[ "$PROXY_PORT" != "80" ]]; then
+    # Port 8080 is not privileged; install it directly without sudo.
+    "$ROOT/scripts/install-local-proxy.sh"
     PROXY_OK=1
   else
     cat >&2 <<EOF
@@ -144,7 +173,7 @@ if [[ "$PROXY_MODE" != "off" ]]; then
 The readable address $PRETTY_URL needs a reverse proxy on port 80, which requires
 root. Run this command and then re-run this installer to switch over:
 
-  sudo "$SOURCE_ROOT/scripts/install-local-proxy.sh"
+  sudo "$ROOT/scripts/install-local-proxy.sh"
 
 Until then the service stays on $DIRECT_URL.
 
@@ -206,7 +235,7 @@ codex mcp add zerocreds \
   --env ZEROCREDS_DEFAULT_DESTINATION=mac-keychain \
   --env ZEROCREDS_LOCAL_CATALOG_FILE="$CONFIG/connections.json" \
   -- "$(command -v node)" "$ROOT/mcp/index.js"
-node "$ROOT/scripts/install-codex-guidance.js"
+node "$SOURCE_ROOT/scripts/install-codex-guidance.js"
 
 if command -v claude >/dev/null 2>&1; then
   claude mcp remove zerocreds --scope user >/dev/null 2>&1 || true
@@ -272,7 +301,7 @@ launchctl kickstart -k "gui/$UID_NUM/$LABEL"
 echo "ZeroCreds local Mac service installed."
 echo "Server: $BASE_URL (loopback only)"
 if [[ "$PROXY_OK" == "1" ]]; then
-  echo "Readable address: $PRETTY_URL (port 80 reverse proxy, system/$PROXY_LABEL)"
+  echo "Readable address: $PRETTY_URL (reverse proxy on port $PROXY_PORT, $PROXY_SCOPE/$PROXY_LABEL)"
 fi
 echo "Keychain destination: zerocreds/<provider>-<account-alias>"
 if [[ -n "${ZEROCREDS_SHARE_DIRECT_URL:-}" ]]; then

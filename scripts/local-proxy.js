@@ -18,7 +18,7 @@
 
 const http = require('node:http')
 
-const PORT = Number(process.env.ZEROCREDS_PROXY_PORT || 80)
+const PORT = Number(process.env.ZEROCREDS_PROXY_PORT || 8080)
 const TARGET = new URL(process.env.ZEROCREDS_PROXY_TARGET || 'http://127.0.0.1:3456')
 
 // The server compares the Host header with the host of its configured base URL,
