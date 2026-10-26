@@ -19,7 +19,7 @@
 
 set -euo pipefail
 
-BASE_URL="${ZEROCREDS_BASE_URL:-http://localhost:8080/zerocreds}"
+BASE_URL="${ZEROCREDS_BASE_URL:-http://localhost:3456}"
 ADMIN_TOKEN_FILE="${ZEROCREDS_ADMIN_TOKEN_FILE:-$HOME/.config/zerocreds/local/admin-token}"
 KEYCHAIN_HELPER="${ZEROCREDS_KEYCHAIN_HELPER:-$HOME/.config/zerocreds/local/zerocreds-keychain}"
 
