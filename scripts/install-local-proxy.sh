@@ -18,7 +18,15 @@ if [[ "$(id -u)" != "0" ]]; then
   exit 1
 fi
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SOURCE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# The proxy script must live in a stable location too: it is a root LaunchDaemon
+# and a pruned worktree would take it down with the rest of the runtime.
+RUNTIME_ROOT="${ZEROCREDS_INSTALL_ROOT:-$HOME/.zerocreds/runtime}"
+mkdir -p "$RUNTIME_ROOT/scripts"
+if [[ -f "$SOURCE_ROOT/scripts/local-proxy.js" ]]; then
+  cp -p "$SOURCE_ROOT/scripts/local-proxy.js" "$RUNTIME_ROOT/scripts/local-proxy.js"
+fi
+ROOT="$RUNTIME_ROOT"
 LABEL="com.zerocreds.local-proxy"
 PLIST_DST="/Library/LaunchDaemons/$LABEL.plist"
 PORT="${ZEROCREDS_PROXY_PORT:-80}"
@@ -35,7 +43,7 @@ sed -e "s|__NODE__|$NODE_BIN|g" \
     -e "s|__ROOT__|$ROOT|g" \
     -e "s|__PORT__|$PORT|g" \
     -e "s|__TARGET__|$TARGET|g" \
-    "$ROOT/scripts/local-proxy.plist" > "$TMP_PLIST"
+    "$SOURCE_ROOT/scripts/local-proxy.plist" > "$TMP_PLIST"
 
 install -o root -g wheel -m 644 "$TMP_PLIST" "$PLIST_DST"
 launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true

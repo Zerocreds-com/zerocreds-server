@@ -7,6 +7,50 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Preserve the original checkout path: the root proxy daemon is installed once
+# and is infrastructure, not per-worktree runtime.
+SOURCE_ROOT="$ROOT"
+
+# The runtime must live in a stable location, independent of where this checkout
+# happens to be. Git worktrees get pruned and multiple checkouts drift, so we
+# never point launchd or the agent config at the source checkout itself.
+RUNTIME_ROOT="${ZEROCREDS_INSTALL_ROOT:-$HOME/.zerocreds/runtime}"
+mkdir -p "$RUNTIME_ROOT"
+
+# Copy the runtime into the stable location and install deps there, so the
+# running service is self-contained and reproducible regardless of which
+# checkout the operator ran this installer from. Directory structure is
+# preserved so server/src/server.js and mcp/index.js keep their paths.
+copy_runtime() {
+  local -a dirs=(server/src server/scripts server mcp opencode-plugin)
+  local d
+  for d in "${dirs[@]}"; do
+    if [[ -d "$ROOT/$d" ]]; then
+      rm -rf "$RUNTIME_ROOT/$d"
+      cp -R "$ROOT/$d" "$RUNTIME_ROOT/$d"
+    fi
+  done
+  local -a files=(server/package.json server/package-lock.json mcp/package.json mcp/package-lock.json)
+  local f
+  for f in "${files[@]}"; do
+    if [[ -f "$ROOT/$f" ]]; then
+      cp -p "$ROOT/$f" "$RUNTIME_ROOT/$f"
+    fi
+  done
+  if [[ ! -d "$RUNTIME_ROOT/server/node_modules" ]]; then
+    (cd "$RUNTIME_ROOT/server" && npm ci --no-audit --no-fund)
+  fi
+  if [[ ! -d "$RUNTIME_ROOT/mcp/node_modules" ]]; then
+    (cd "$RUNTIME_ROOT/mcp" && npm ci --no-audit --no-fund)
+  fi
+}
+
+copy_runtime
+
+# From here on, ROOT points at the stable runtime directory. launchd and the
+# agent configs reference this path, never the source checkout.
+ROOT="$RUNTIME_ROOT"
+
 CONFIG="$HOME/.config/zerocreds/local"
 DATA="$HOME/Library/Application Support/ZeroCreds"
 LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
@@ -57,8 +101,10 @@ if [[ ! -f "$CONFIG/provider-policies.json" ]]; then
   chmod 600 "$CONFIG/provider-policies.json"
 fi
 
-if [[ ! -d "$ROOT/server/node_modules" ]]; then (cd "$ROOT/server" && npm ci); fi
-if [[ ! -d "$ROOT/mcp/node_modules" ]]; then (cd "$ROOT/mcp" && npm ci); fi
+# Dependencies are installed by copy_runtime(); these guards are kept only as a
+# fallback if the runtime copy was skipped or partially failed.
+if [[ ! -d "$ROOT/server/node_modules" ]]; then (cd "$ROOT/server" && npm ci --no-audit --no-fund); fi
+if [[ ! -d "$ROOT/mcp/node_modules" ]]; then (cd "$ROOT/mcp" && npm ci --no-audit --no-fund); fi
 
 # The reverse proxy runs as root because port 80 is privileged. Install it when
 # sudo is available without a password, otherwise print the one command to run
@@ -72,7 +118,7 @@ if [[ "$PROXY_MODE" != "off" ]]; then
   if proxy_running; then
     PROXY_OK=1
   elif sudo -n true 2>/dev/null; then
-    sudo "$ROOT/scripts/install-local-proxy.sh"
+    sudo "$SOURCE_ROOT/scripts/install-local-proxy.sh"
     PROXY_OK=1
   else
     cat >&2 <<EOF
@@ -80,7 +126,7 @@ if [[ "$PROXY_MODE" != "off" ]]; then
 The readable address $PRETTY_URL needs a reverse proxy on port 80, which requires
 root. Run this command and then re-run this installer to switch over:
 
-  sudo "$ROOT/scripts/install-local-proxy.sh"
+  sudo "$SOURCE_ROOT/scripts/install-local-proxy.sh"
 
 Until then the service stays on $DIRECT_URL.
 
