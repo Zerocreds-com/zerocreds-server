@@ -101,6 +101,9 @@ async function verifyLocalCredential(provider, fields, fetchImpl = fetch, { toke
   }
 
   if (normalizedProvider === 'github') {
+    // Keep only 401 -> invalid for now; format validation is left to the provider's API
+    // (e.g., GitHub returns 401 for short/malformed tokens). This preserves backward compatibility
+    // while still enabling early rejection for obviously broken values in the future.
     if (response.status === 401) return { status: 'invalid' };
     if (!response.ok) return { status: 'unavailable' };
     try {

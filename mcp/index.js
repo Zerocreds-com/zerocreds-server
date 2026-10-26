@@ -170,6 +170,20 @@ server.tool(
 );
 
 server.tool(
+  'connection_delete',
+  'Delete a saved local connection by connection_id, removing its catalog entry and erasing the stored credential from the macOS Keychain. Use only when the user explicitly asks to remove a saved credential. This does not return or reveal the credential value. If the Keychain entry is locked, the call fails with a 409 so it can be retried after unlocking.',
+  {
+    connection_id: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/).describe('Connection id from connections_list'),
+  },
+  { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  async ({ connection_id }) => {
+    const data = await apiCall('DELETE', `/api/local/connections/${encodeURIComponent(connection_id)}`);
+    if (data.error) throw new Error(data.error);
+    return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+  },
+);
+
+server.tool(
   'connection_resolve',
   'Resolve an existing local connection for a provider. Pass an account alias when more than one account exists. Never returns the credential value.',
   {
