@@ -57,16 +57,22 @@ if action == "list" {
   FileHandle.standardOutput.write(data)
   exit(0)
 }
-guard CommandLine.arguments.count == 4 else { fail("usage: zerocreds-keychain set|add|exists|get SERVICE ACCOUNT") }
+guard CommandLine.arguments.count == 4 else { fail("usage: zerocreds-keychain set|add|exists|get|delete SERVICE ACCOUNT") }
 let service = CommandLine.arguments[2]
 let account = CommandLine.arguments[3]
-guard ["set", "add", "exists", "get"].contains(action), !service.isEmpty, !account.isEmpty else { fail("invalid request") }
+guard ["set", "add", "exists", "get", "delete"].contains(action), !service.isEmpty, !account.isEmpty else { fail("invalid request") }
 
 let identity: [String: Any] = [
   kSecClass as String: kSecClassGenericPassword,
   kSecAttrService as String: service,
   kSecAttrAccount as String: account,
 ]
+if action == "delete" {
+  let status = SecItemDelete(identity as CFDictionary)
+  if status == errSecSuccess || status == errSecItemNotFound { exit(0) }
+  if status == errSecInteractionNotAllowed || status == errSecAuthFailed { exit(4) }
+  fail("Keychain delete failed (\(status))")
+}
 if action == "exists" || action == "get" {
   var query = identity
   if action == "get" {

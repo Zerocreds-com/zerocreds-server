@@ -3388,6 +3388,48 @@ function createApp(config = {}) {
         ...(resolution === 'ready' ? { connection: available[0] } : {}) });
     }
 
+    // ── DELETE /api/local/connections/:id — remove a local connection ─────────
+    // Removes the catalog entry and erases the stored credential from the macOS
+    // Keychain. Returns 404 for an unknown id and 409 when the Keychain entry
+    // could not be removed (locked), so the caller can retry.
+    const connectionDeleteMatch = url.pathname.match(/^\/api\/local\/connections\/([a-zA-Z0-9_-]{1,100})$/);
+    if (connectionDeleteMatch && req.method === 'DELETE') {
+      if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
+      const { isAdmin } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin) return json(res, 401, { error: 'admin token required' });
+      const connectionId = connectionDeleteMatch[1];
+      let entries;
+      try { entries = readLocalCatalog(); }
+      catch { return json(res, 503, { error: 'local catalog unavailable' }); }
+      const index = entries.findIndex((entry) => entry.connection_id === connectionId);
+      if (index < 0) return json(res, 404, { error: 'connection not found' });
+      const entry = entries[index];
+      let keychainStatus = 'skipped';
+      if (typeof entry.storage === 'string' && entry.storage.startsWith('keychain:')) {
+        const match = entry.storage.match(/^keychain:([a-zA-Z0-9_@.-]{1,128})\/([a-zA-Z0-9_@.-]{1,128})$/);
+        if (match && process.platform === 'darwin') {
+          const { spawn } = require('child_process');
+          const helper = process.env.ZEROCREDS_KEYCHAIN_HELPER || path.join(__dirname, '../bin/zerocreds-keychain');
+          keychainStatus = await new Promise((resolve) => {
+            let settled = false;
+            const finish = (status) => { if (!settled) { settled = true; clearTimeout(timer); resolve(status); } };
+            const child = spawn(helper, ['delete', match[1], match[2]], { stdio: ['ignore', 'ignore', 'ignore'] });
+            const timer = setTimeout(() => { child.kill('SIGKILL'); finish('unavailable'); }, 5000);
+            child.once('error', () => finish('unavailable'));
+            child.once('close', (code) => finish(code === 0 ? 'deleted' : code === 3 ? 'not_found' : code === 4 ? 'keychain_locked' : 'unavailable'));
+          });
+          if (keychainStatus === 'keychain_locked' || keychainStatus === 'unavailable') {
+            return json(res, 409, { error: 'credential could not be removed', keychain_status: keychainStatus });
+          }
+        }
+      }
+      entries.splice(index, 1);
+      try { writeLocalCatalog(entries); }
+      catch { return json(res, 503, { error: 'local catalog unavailable' }); }
+      console.info('[local-connections] deleted provider=%s alias=%s keychain=%s', entry.provider, entry.account_alias, keychainStatus);
+      return json(res, 200, { deleted: connectionId, provider: entry.provider, account_alias: entry.account_alias, keychain_status: keychainStatus });
+    }
+
     if (url.pathname.startsWith('/api/local/discovery/')) {
       if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
       const { isAdmin } = resolveAuth(req.headers['authorization']);
@@ -4090,7 +4132,7 @@ function createApp(config = {}) {
       const payload = await readJson(req);
       if (!payload) return json(res, 400, { error: 'bad json' });
 
-      const { name, kind = 'token', title, description, language = 'en', destination, ttl_minutes = 30 } = payload;
+      const { name, kind = 'token', title, description, language = 'en', destination, ttl_minutes = 30, uid, service_slug } = payload;
       if (typeof name !== 'string' || !HANDLE_NAME_RE.test(name)) {
         return json(res, 400, { error: 'name must match [a-z0-9][a-z0-9_.-]{0,63} (it becomes the handle cred:<name>)' });
       }
@@ -4104,6 +4146,10 @@ function createApp(config = {}) {
         return json(res, 400, { error: 'description must be a string (max 2000 chars)' });
       }
       if (language !== 'en' && language !== 'ru') return json(res, 400, { error: 'language must be en or ru' });
+      if (service_slug !== undefined && (typeof service_slug !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(service_slug))) {
+        return json(res, 400, { error: 'service_slug must match [a-z0-9][a-z0-9_-]{0,63}' });
+      }
+      const pendingUid = typeof uid === 'string' && uid ? uid : null;
       const defaultFields = language === 'ru'
         ? FORM_KINDS[kind].map(field => ({ ...field, label: WALLET_FIELD_LABELS_RU[field.label] || field.label }))
         : FORM_KINDS[kind];
@@ -4143,7 +4189,8 @@ function createApp(config = {}) {
         notify: null,
         integrator_id: integrator?.id || 'admin',
         requester: integrator ? String(integrator.name || integrator.id).slice(0, 100) : null,
-        uid: null,
+        uid: pendingUid,
+        ...(typeof service_slug === 'string' && service_slug ? { service_slug } : {}),
         form: { name, kind, handle: `cred:${name}`, submit_token_hash: tokenHash(submitToken).toString('hex') },
       };
       const manifest = signedManifest(formId, pending);
