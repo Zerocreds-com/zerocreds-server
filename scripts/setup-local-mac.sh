@@ -7,21 +7,82 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Preserve the original checkout path: the root proxy daemon is installed once
+# and is infrastructure, not per-worktree runtime.
+SOURCE_ROOT="$ROOT"
+
+# The runtime must live in a stable location, independent of where this checkout
+# happens to be. Git worktrees get pruned and multiple checkouts drift, so we
+# never point launchd or the agent config at the source checkout itself.
+RUNTIME_ROOT="${ZEROCREDS_INSTALL_ROOT:-$HOME/.zerocreds/runtime}"
+mkdir -p "$RUNTIME_ROOT"
+
+# Copy the runtime into the stable location and install deps there, so the
+# running service is self-contained and reproducible regardless of which
+# checkout the operator ran this installer from. Directory structure is
+# preserved so server/src/server.js and mcp/index.js keep their paths.
+copy_runtime() {
+  local -a dirs=(server/src server/scripts server mcp opencode-plugin)
+  local d
+  for d in "${dirs[@]}"; do
+    if [[ -d "$ROOT/$d" ]]; then
+      # Ensure the target parent directory exists
+      local target_dir="${RUNTIME_ROOT}/$(dirname "$d")"
+      mkdir -p "$target_dir"
+      rm -rf "$RUNTIME_ROOT/$d"
+      cp -R "$ROOT/$d" "$RUNTIME_ROOT/$d"
+    fi
+  done
+  local -a files=(server/package.json server/package-lock.json mcp/package.json mcp/package-lock.json)
+  local f
+  for f in "${files[@]}"; do
+    if [[ -f "$ROOT/$f" ]]; then
+      # Ensure the target parent directory exists
+      local target_dir="${RUNTIME_ROOT}/$(dirname "$f")"
+      mkdir -p "$target_dir"
+      cp -p "$ROOT/$f" "$RUNTIME_ROOT/$f"
+    fi
+  done
+  if [[ ! -d "$RUNTIME_ROOT/server/node_modules" ]]; then
+    (cd "$RUNTIME_ROOT/server" && npm ci --no-audit --no-fund)
+  fi
+  if [[ ! -d "$RUNTIME_ROOT/mcp/node_modules" ]]; then
+    (cd "$RUNTIME_ROOT/mcp" && npm ci --no-audit --no-fund)
+  fi
+}
+
+copy_runtime
+
+# From here on, ROOT points at the stable runtime directory. launchd and the
+# agent configs reference this path, never the source checkout.
+ROOT="$RUNTIME_ROOT"
+
 CONFIG="$HOME/.config/zerocreds/local"
 DATA="$HOME/Library/Application Support/ZeroCreds"
 LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
 LABEL="com.zerocreds.local-server"
 UID_NUM="$(id -u)"
 
-# The readable address for the local service. Port 80 is privileged, so it needs a
-# root LaunchDaemon (scripts/local-proxy.js) in front of the server; without it the
-# service is still reachable on the direct loopback port.
+# The readable address for the local service. A loopback-only reverse proxy
+# (scripts/local-proxy.js) serves http://localhost/zerocreds in front of the
+# server. Port 80 is privileged, so by default we use 8080 which needs no
+# root; set ZEROCREDS_PROXY_PORT=80 to use the bare port instead.
 PROXY_LABEL="com.zerocreds.local-proxy"
-PROXY_PLIST_DST="/Library/LaunchDaemons/$PROXY_LABEL.plist"
 PROXY_MODE="${ZEROCREDS_PROXY_MODE:-auto}"
-PROXY_PORT="${ZEROCREDS_PROXY_PORT:-80}"
+PROXY_PORT="${ZEROCREDS_PROXY_PORT:-8080}"
+if [[ "$PROXY_PORT" == "80" ]]; then
+  PROXY_PLIST_DST="/Library/LaunchDaemons/$PROXY_LABEL.plist"
+  PROXY_SCOPE="system"
+else
+  PROXY_PLIST_DST="$HOME/Library/LaunchAgents/$PROXY_LABEL.plist"
+  PROXY_SCOPE="gui/$(id -u)"
+fi
 DIRECT_URL="http://localhost:3456"
-PRETTY_URL="http://localhost/zerocreds"
+if [[ "$PROXY_PORT" == "80" ]]; then
+  PRETTY_URL="http://localhost/zerocreds"
+else
+  PRETTY_URL="http://localhost:${PROXY_PORT}/zerocreds"
+fi
 export ZEROCREDS_PROXY_PORT="$PROXY_PORT" ZEROCREDS_PROXY_TARGET="$DIRECT_URL"
 
 mkdir -p "$CONFIG" "$DATA/pending" "$DATA/tokens" "$LAUNCH_AGENTS"
@@ -75,22 +136,36 @@ if [[ ! -f "$CONFIG/provider-policies.json" ]]; then
   chmod 600 "$CONFIG/provider-policies.json"
 fi
 
-if [[ ! -d "$ROOT/server/node_modules" ]]; then (cd "$ROOT/server" && npm ci); fi
-if [[ ! -d "$ROOT/mcp/node_modules" ]]; then (cd "$ROOT/mcp" && npm ci); fi
+# Dependencies are installed by copy_runtime(); these guards are kept only as a
+# fallback if the runtime copy was skipped or partially failed.
+if [[ ! -d "$ROOT/server/node_modules" ]]; then (cd "$ROOT/server" && npm ci --no-audit --no-fund); fi
+if [[ ! -d "$ROOT/mcp/node_modules" ]]; then (cd "$ROOT/mcp" && npm ci --no-audit --no-fund); fi
 
-# The reverse proxy runs as root because port 80 is privileged. Install it when
-# sudo is available without a password, otherwise print the one command to run
-# by hand so the readable address can be enabled later.
+# The reverse proxy serves the readable address. Port 8080 (the default) needs
+# no root; port 80 is privileged and requires sudo. Install the proxy when
+# possible, otherwise print the command to run by hand so the readable address
+# can be enabled later.
 proxy_running() {
-  [[ -f "$PROXY_PLIST_DST" ]] && launchctl print "system/$PROXY_LABEL" >/dev/null 2>&1
+  [[ -f "$PROXY_PLIST_DST" ]] && launchctl print "$PROXY_SCOPE/$PROXY_LABEL" >/dev/null 2>&1
+}
+
+# Check if the proxy is running on the correct port; reinstall if not.
+proxy_port_matches() {
+  local current_port
+  current_port=$(plutil -extract EnvironmentVariables.ZEROCREDS_PROXY_PORT raw "$PROXY_PLIST_DST" 2>/dev/null || echo "")
+  [[ "$current_port" == "$PROXY_PORT" ]]
 }
 
 PROXY_OK=0
 if [[ "$PROXY_MODE" != "off" ]]; then
-  if proxy_running; then
+  if proxy_running && proxy_port_matches; then
     PROXY_OK=1
-  elif sudo -n true 2>/dev/null; then
+  elif sudo -n true 2>/dev/null && [[ "$PROXY_PORT" == "80" ]]; then
     sudo "$ROOT/scripts/install-local-proxy.sh"
+    PROXY_OK=1
+  elif [[ "$PROXY_PORT" != "80" ]]; then
+    # Port 8080 is not privileged; install it directly without sudo.
+    "$ROOT/scripts/install-local-proxy.sh"
     PROXY_OK=1
   else
     cat >&2 <<EOF
@@ -160,7 +235,7 @@ codex mcp add zerocreds \
   --env ZEROCREDS_DEFAULT_DESTINATION=mac-keychain \
   --env ZEROCREDS_LOCAL_CATALOG_FILE="$CONFIG/connections.json" \
   -- "$(command -v node)" "$ROOT/mcp/index.js"
-node "$ROOT/scripts/install-codex-guidance.js"
+node "$SOURCE_ROOT/scripts/install-codex-guidance.js"
 
 if command -v claude >/dev/null 2>&1; then
   claude mcp remove zerocreds --scope user >/dev/null 2>&1 || true
@@ -226,7 +301,7 @@ launchctl kickstart -k "gui/$UID_NUM/$LABEL"
 echo "ZeroCreds local Mac service installed."
 echo "Server: $BASE_URL (loopback only)"
 if [[ "$PROXY_OK" == "1" ]]; then
-  echo "Readable address: $PRETTY_URL (port 80 reverse proxy, system/$PROXY_LABEL)"
+  echo "Readable address: $PRETTY_URL (reverse proxy on port $PROXY_PORT, $PROXY_SCOPE/$PROXY_LABEL)"
 fi
 echo "Keychain destination: zerocreds/<provider>-<account-alias>"
 if [[ -n "${ZEROCREDS_SHARE_DIRECT_URL:-}" ]]; then

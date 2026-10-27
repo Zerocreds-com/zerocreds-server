@@ -41,7 +41,8 @@ if [ -z "$TEST_TOKEN" ]; then
   exit 2
 fi
 
-UID_SUFFIX="hc-$(date +%s)-$$"
+UID_SUFFIX="zerocreds-healthcheck-$(date +%s)-$$"
+FORM_NAME="zerocreds-healthcheck"
 SERVICE_SLUG="github"
 STORAGE_ACCOUNT="${SERVICE_SLUG}-${UID_SUFFIX}"
 CONNECTION_ID=""
@@ -66,12 +67,12 @@ api() { # method path [json_body]
 }
 
 echo "=== ZeroCreds local health check ==="
-echo "server: $BASE_URL   token: ${TEST_TOKEN:0:14}… (read-only)"
+echo "server: $BASE_URL   alias: ${UID_SUFFIX} (zerocreds-healthcheck)   token: ${TEST_TOKEN:0:14}… (read-only)"
 
 # ── 1. store the test token (form create + submit) ────────────────────────────
 echo
 echo "[1/6] Store test token via form"
-FORM="$(api POST /api/forms "{\"name\":\"hc-${UID_SUFFIX}\",\"kind\":\"token\",\"title\":\"healthcheck\",\"destination\":\"mac-keychain\",\"ttl_minutes\":10,\"uid\":\"${UID_SUFFIX}\",\"service_slug\":\"${SERVICE_SLUG}\"}")"
+FORM="$(api POST /api/forms "{\"name\":\"${FORM_NAME}-${UID_SUFFIX}\",\"kind\":\"token\",\"title\":\"healthcheck\",\"destination\":\"mac-keychain\",\"ttl_minutes\":10,\"uid\":\"${UID_SUFFIX}\",\"service_slug\":\"${SERVICE_SLUG}\"}")"
 FORM_ID="$(echo "$FORM" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("form_id",""))' 2>/dev/null || true)"
 MANIFEST_ID="$(echo "$FORM" | python3 -c 'import sys,json; print(json.load(sys.stdin)["manifest"]["manifest_id"])' 2>/dev/null || true)"
 if [ -z "$FORM_ID" ] || [ -z "$MANIFEST_ID" ]; then bad "form creation: $FORM"; else
@@ -116,7 +117,7 @@ fi
 # ── 4. overwrite with an invalid value ────────────────────────────────────────
 echo
 echo "[4/6] Overwrite credential with invalid value \"1234\""
-FORM2="$(api POST /api/forms "{\"name\":\"hc2-${UID_SUFFIX}\",\"kind\":\"token\",\"title\":\"healthcheck\",\"destination\":\"mac-keychain\",\"ttl_minutes\":10,\"uid\":\"${UID_SUFFIX}\",\"service_slug\":\"${SERVICE_SLUG}\"}")"
+FORM2="$(api POST /api/forms "{\"name\":\"${FORM_NAME}-${UID_SUFFIX}\",\"kind\":\"token\",\"title\":\"healthcheck\",\"destination\":\"mac-keychain\",\"ttl_minutes\":10,\"uid\":\"${UID_SUFFIX}\",\"service_slug\":\"${SERVICE_SLUG}\"}")"
 FORM2_ID="$(echo "$FORM2" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("form_id",""))' 2>/dev/null || true)"
 MANIFEST2_ID="$(echo "$FORM2" | python3 -c 'import sys,json; print(json.load(sys.stdin)["manifest"]["manifest_id"])' 2>/dev/null || true)"
 if [ -n "$FORM2_ID" ] && [ -n "$MANIFEST2_ID" ]; then

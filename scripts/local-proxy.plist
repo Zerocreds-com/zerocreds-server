@@ -16,7 +16,7 @@
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/var/log/zerocreds-proxy.log</string>
-  <key>StandardErrorPath</key><string>/var/log/zerocreds-proxy-error.log</string>
+  <key>StandardOutPath</key><string>__LOG_DIR__/zerocreds-proxy.log</string>
+  <key>StandardErrorPath</key><string>__LOG_DIR__/zerocreds-proxy-error.log</string>
 </dict>
 </plist>
