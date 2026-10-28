@@ -22,7 +22,7 @@ mkdir -p "$RUNTIME_ROOT"
 # checkout the operator ran this installer from. Directory structure is
 # preserved so server/src/server.js and mcp/index.js keep their paths.
 copy_runtime() {
-  local -a dirs=(server/src server/scripts server mcp opencode-plugin)
+  local -a dirs=(server/src server/scripts server mcp opencode-plugin scripts)
   local d
   for d in "${dirs[@]}"; do
     if [[ -d "$ROOT/$d" ]]; then
