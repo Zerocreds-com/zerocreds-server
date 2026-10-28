@@ -29,7 +29,13 @@ SOURCE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNTIME_ROOT="${ZEROCREDS_INSTALL_ROOT:-$HOME/.zerocreds/runtime}"
 mkdir -p "$RUNTIME_ROOT/scripts"
 if [[ -f "$SOURCE_ROOT/scripts/local-proxy.js" ]]; then
-  cp -p "$SOURCE_ROOT/scripts/local-proxy.js" "$RUNTIME_ROOT/scripts/local-proxy.js"
+  # Skip the copy when the installer is already running from the runtime (the
+  # source and destination are the same file); BSD cp exits 1 on that no-op.
+  if [[ "$SOURCE_ROOT/scripts/local-proxy.js" -ef "$RUNTIME_ROOT/scripts/local-proxy.js" ]]; then
+    :
+  else
+    cp -p "$SOURCE_ROOT/scripts/local-proxy.js" "$RUNTIME_ROOT/scripts/local-proxy.js"
+  fi
 fi
 ROOT="$RUNTIME_ROOT"
 LABEL="com.zerocreds.local-proxy"
