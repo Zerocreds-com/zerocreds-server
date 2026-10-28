@@ -217,6 +217,27 @@ if (LOCAL_MODE) server.tool(
   },
 );
 
+if (LOCAL_MODE) server.tool(
+  'auth_check',
+  'Detailed read-only token diagnostics: what the local catalog recorded for a connection versus what the provider answers right now. Returns the live identity (user id, login or token id), the live permission set, the Keychain status, and a conflicts array naming any mismatch — identity_mismatch, permissions_changed, status_drift, provider_rejected_token, token_field_missing, credential_expired, revoked_locally, credential_unreadable or verification_inconclusive. Never writes the catalog and never returns credential values; use it to inspect a token without changing stored state. When a conflict appears, report it together with the recorded value it contradicts, then decide with the owner whether the stored credential should be replaced — do not request a new credential just because verification was inconclusive. Prefer connection_verify when the goal is to refresh and persist the recorded verification state.',
+  {
+    provider: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/).describe('Provider slug, for example github, cloudflare or deepgram'),
+    account_alias: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).describe('Account alias of the connection to inspect'),
+    account_id: z.string().regex(/^[a-f0-9]{32}$/).optional().describe('Cloudflare target account ID for account-owned token verification'),
+    token_field: z.string().regex(/^[a-zA-Z0-9_]{1,64}$/).optional().describe('Saved field name to check with when the default token alias does not match; never pass the secret value'),
+  },
+  { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+  async ({ provider, account_alias, account_id, token_field }) => {
+    const data = await apiCall('POST', '/api/local/auth/check', {
+      provider, account_alias,
+      ...(account_id === undefined ? {} : { account_id }),
+      ...(token_field === undefined ? {} : { token_field }),
+    });
+    if (data.error) throw new Error(data.error);
+    return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+  },
+);
+
 if (LOCAL_MODE) {
   server.tool('share_options',
     'Call before creating a share. Then explain the options in the language the user is using, with everyday words. Every option keeps the credential unreadable for everyone on the way. Relay means the invitation passes through one of the configured ZeroCreds websites: the website is the only party on the way and cannot open the encrypted credential. Direct sends it from this computer to the colleague with nobody on the way, but their computer must be reachable over the internet and the router may need a change. Tunnel publishes this computer through a tunnel the owner runs, so the ZeroCreds website is not involved, but the tunnel operator is on the way: it sees the encrypted blob, the timing and the addresses, and it can refuse or delay the delivery. The transports array states for every option who is in the path, what that party can see and what the recipient has to confirm. When relay_urls contains more than one address, ask the owner which site to use. If direct or tunnel sounds difficult or is unavailable, recommend a relay. Ask which they prefer. Avoid networking jargon unless asked. Never silently choose.',
