@@ -10,6 +10,7 @@ const EXPECTED_LOCAL_TOOLS = [
   'connections_list',
   'connection_resolve',
   'connection_verify',
+  'auth_check',
   'doctor',
   'discovery_sources',
   'discovery_preview',
@@ -108,7 +109,7 @@ test('local MCP tools do not repeat the provider name', async () => {
     } })).content[0].text);
     assert.match(created.forward_message, /Direct one-time invitation/);
     assert.ok(created.forward_message.includes(created.share_url));
-    for (const name of ['connections_list', 'connection_resolve', 'doctor', 'share_options', 'share_status', 'form_status']) {
+    for (const name of ['connections_list', 'connection_resolve', 'auth_check', 'doctor', 'share_options', 'share_status', 'form_status']) {
       assert.equal((await client.listTools()).tools.find(tool => tool.name === name).annotations.readOnlyHint, true);
     }
   } finally {
