@@ -73,6 +73,26 @@ function makeCandidate(provider, sourceId, account, label, scopes = [], discrimi
   };
 }
 
+// Friendly display names for well-known GitHub accounts. Surfaced only as a
+// derived `display_label` — never part of the candidate `label` or `ref` — so
+// an already-catalogued entry keeps its identity byte-for-byte.
+const GITHUB_DISPLAY_LABELS = Object.freeze({
+  kobzevvv: 'GitHub Token (Main: kobzevvv)',
+  'gha-compute-cluster': 'GitHub Token (Zen-Rings CI/CD)',
+  flexi_leads_bot: 'GitHub Token (Flexi-Leads Bot)',
+});
+
+function githubDisplayLabel(host, login, service = '') {
+  if (login === 'unknown') return 'GitHub Token (Unknown: flexi-leads-bot)';
+  if (service === 'trained-agent-github-token') {
+    return login === 'kobzevvv' ? GITHUB_DISPLAY_LABELS.kobzevvv : `GitHub Token (${login})`;
+  }
+  if (host === 'github.com' || service === 'github.com') {
+    return login === 'kobzevvv' ? 'GitHub Token (Project: kobzevvv)' : GITHUB_DISPLAY_LABELS[login] || `GitHub Token (${login})`;
+  }
+  return `${login} @ ${host || service}`;
+}
+
 async function scanGithub(runCommand = run) {
   const result = await runCommand('gh', ['auth', 'status', '--json', 'hosts']);
   if (!result.ok) return { source: source('github_cli', 'unavailable', 0, 'not_installed_or_not_authenticated'), candidates: [] };
@@ -87,6 +107,7 @@ async function scanGithub(runCommand = run) {
       const scopes = Array.isArray(entry.scopes) ? entry.scopes
         : typeof entry.scopes === 'string' ? entry.scopes.split(/,\s*/) : [];
       candidates.push(makeCandidate('github', 'github_cli', entry.login, host, scopes));
+      candidates.at(-1).display_label = githubDisplayLabel(host, entry.login);
       candidates.at(-1).active = entry.active === true;
       candidates.at(-1).authentication_status = state === 'success' ? 'authenticated' : 'unknown';
       candidates.at(-1).category = 'credential';
@@ -148,6 +169,7 @@ function discoverCredentialSources(options = {}) {
           entry.account || entry.server || 'unknown', entry.label || entry.service || 'Keychain item',
           [], entry.service || entry.server || '');
         candidate.category = classifyKeychainEntry(entry);
+        candidate.display_label = githubDisplayLabel(entry.server || '', entry.account || '', entry.service || '');
         if (typeof entry.service === 'string' && entry.service) candidate.service = entry.service.slice(0, 128);
         candidates.push(candidate);
       }
@@ -173,7 +195,7 @@ function searchCredentialMetadata(items, query, limit = 50) {
   const terms = String(query || '').toLowerCase().split(/[^a-z0-9@._-]+/).filter(Boolean);
   if (!terms.length) return [];
   return items.map((item) => {
-    const haystack = [item.provider, item.source_id, item.account, item.label, item.service, item.category, ...(item.scopes || [])]
+    const haystack = [item.provider, item.source_id, item.account, item.label, item.display_label, item.service, item.category, ...(item.scopes || [])]
       .filter((part) => typeof part === 'string').join(' ').toLowerCase();
     const score = terms.reduce((sum, term) => sum + (haystack.includes(term) ? (String(item.provider).toLowerCase() === term ? 5 : 1) : 0), 0);
     return { ...item, search_score: score };
