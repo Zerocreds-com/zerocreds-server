@@ -71,7 +71,7 @@ test('github candidates have friendly display labels', async () => {
     listKeychain: async () => ({ available: false, items: [] }),
   });
   const github = result.candidates.find((candidate) => candidate.provider === 'github');
-  assert.equal(github.display_label, 'GitHub Token (Main: kobzevvv)');
+  assert.equal(github.display_label, 'GitHub Token (Project: kobzevvv)');
 });
 
 test('keychain candidates with identical account and label stay distinct by service', async () => {
