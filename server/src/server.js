@@ -3646,6 +3646,168 @@ function createApp(config = {}) {
       });
     }
 
+    // ── POST /api/local/auth/check — detailed token diagnostics ─────────────
+    // Read-only: reports identity, permissions and conflicts between what the
+    // catalog remembers and what the provider answers right now. Unlike
+    // /api/local/connections/verify this never writes the catalog, so an agent
+    // can inspect a token without silently re-baselining its recorded state.
+    // Credential values are never returned.
+    if (req.method === 'POST' && url.pathname === '/api/local/auth/check') {
+      if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
+      const { isAdmin } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin) return json(res, 401, { error: 'unauthorized' });
+      const payload = await readJson(req);
+      if (!payload || typeof payload.provider !== 'string' || typeof payload.account_alias !== 'string') {
+        return json(res, 400, { error: 'provider and account_alias are required' });
+      }
+      if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(payload.provider.toLowerCase())
+          || !/^[a-zA-Z0-9_-]{1,64}$/.test(payload.account_alias)) {
+        return json(res, 400, { error: 'invalid provider or account_alias' });
+      }
+      if (payload.token_field !== undefined && (typeof payload.token_field !== 'string'
+          || !/^[a-zA-Z0-9_]{1,64}$/.test(payload.token_field))) {
+        return json(res, 400, { error: 'invalid token_field: use a saved field name (1–64 letters, digits or underscores)' });
+      }
+      if (payload.account_id !== undefined && (payload.provider.toLowerCase() !== 'cloudflare'
+          || typeof payload.account_id !== 'string' || !/^[a-f0-9]{32}$/.test(payload.account_id))) {
+        return json(res, 400, { error: 'account_id must be a Cloudflare account ID (32 lowercase hex characters)' });
+      }
+      let entries;
+      try { entries = readLocalCatalog(); }
+      catch { return json(res, 503, { error: 'local catalog unavailable' }); }
+      const provider = payload.provider.toLowerCase();
+      const alias = payload.account_alias.toLowerCase();
+      const matches = entries.filter((entry) => String(entry.provider).toLowerCase() === provider
+        && String(entry.account_alias).toLowerCase() === alias);
+      if (matches.length === 0) return json(res, 404, { error: 'connection not found' });
+      if (matches.length > 1) {
+        return json(res, 409, { error: 'connection is ambiguous',
+          connection_ids: matches.map((entry) => entry.connection_id) });
+      }
+      const entry = matches[0];
+
+      const report = {
+        connection_id: entry.connection_id,
+        provider: entry.provider,
+        account_alias: entry.account_alias,
+        storage: entry.storage,
+        state: entry.state,
+        keychain_status: await checkLocalKeychainEntry(entry.storage),
+        recorded: {
+          verification_status: entry.verification_status || 'unknown',
+          identity: entry.verified_identity || null,
+          permissions: Array.isArray(entry.verified_permissions) ? entry.verified_permissions : [],
+          permission_evidence: entry.permission_evidence || 'unknown',
+          diagnostic: entry.verification_diagnostic || null,
+          credential_expires_at: entry.credential_expires_at || null,
+          last_verified_at: entry.last_verified_at || null,
+          token_field: entry.token_field || null,
+        },
+        live: null,
+        conflicts: [],
+        checked_at: new Date().toISOString(),
+        catalog_written: false,
+        credential_values_read: false,
+      };
+
+      // Local account lifecycle problems are reported without contacting the
+      // provider: nothing can be learned from a credential that is already
+      // expired or revoked.
+      if (entry.state !== 'active') {
+        report.conflicts.push({ kind: 'revoked_locally',
+          detail: 'the catalog marks this connection revoked; the stored credential is not consulted' });
+        return json(res, 200, report);
+      }
+      if (entry.credential_expires_at && Date.parse(entry.credential_expires_at) <= Date.now()) {
+        report.conflicts.push({ kind: 'credential_expired',
+          detail: `the recorded credential expired at ${entry.credential_expires_at}` });
+        return json(res, 200, report);
+      }
+
+      let fields;
+      try { fields = await (config.localCredentialReader || readLocalKeychainEntry)(entry.storage); }
+      catch (error) {
+        report.live = { status: error.message === 'keychain_locked' ? 'keychain_locked' : 'unavailable_here' };
+        report.conflicts.push({ kind: 'credential_unreadable',
+          detail: report.live.status === 'keychain_locked'
+            ? 'the Keychain is locked; unlock it and rerun auth_check'
+            : 'the credential is not readable from this machine or context' });
+        return json(res, 200, report);
+      }
+      report.credential_values_read = true;
+
+      const tokenField = payload.token_field ?? entry.token_field;
+      const result = await (config.localCredentialVerifier || verifyLocalCredential)(provider, fields, undefined,
+        { tokenField, account_id: payload.account_id });
+      const safeCredentialHint = credentialHint(provider, fields, { tokenField });
+
+      report.live = {
+        status: result.status,
+        identity: result.identity || null,
+        permissions: Array.isArray(result.permissions) ? result.permissions : [],
+        permission_evidence: result.permission_evidence || 'unknown',
+        diagnostic: result.diagnostic || null,
+        provider_expires_at: result.provider_expires_at || null,
+      };
+      if (safeCredentialHint) report.credential_hint = safeCredentialHint;
+      // The fields object stays local to this handler: no route may echo it.
+      void fields;
+
+      const conflicts = report.conflicts;
+      if (result.status === 'credential_field_missing') {
+        conflicts.push({ kind: 'token_field_missing',
+          detail: 'the stored credential has no field matching the expected token name',
+          next_step: 'rerun auth_check with token_field set to the saved field name; reuse the credential, do not create a new one' });
+      }
+      if (result.status === 'invalid') {
+        conflicts.push({ kind: 'provider_rejected_token',
+          detail: 'the provider rejected the stored credential' });
+      }
+      if (['unavailable', 'unknown'].includes(result.status)) {
+        conflicts.push({ kind: 'verification_inconclusive',
+          detail: 'the provider could not be reached or refused to confirm the token; this is not proof of an invalid credential' });
+      }
+
+      // Identity drift: the stored credential now authenticates as someone else
+      // (or something else) than the account this connection was recorded for.
+      const recordedIdentity = entry.verified_identity || null;
+      const liveIdentity = result.identity || null;
+      const identityComparable = liveIdentity && recordedIdentity
+        && typeof recordedIdentity === 'object' && typeof liveIdentity === 'object';
+      const drifted = identityComparable && ['id', 'login', 'token_id'].some((key) =>
+        Object.hasOwn(liveIdentity, key) && Object.hasOwn(recordedIdentity, key)
+        && String(liveIdentity[key]) !== String(recordedIdentity[key]));
+      if (drifted) {
+        conflicts.push({ kind: 'identity_mismatch',
+          detail: 'the stored credential now resolves to a different identity than the one recorded at the last verification',
+          recorded_identity: recordedIdentity, live_identity: liveIdentity });
+      }
+
+      // Permission drift: scopes the provider reports now differ from the ones
+      // the catalog recorded, so a policy written against the old set may not hold.
+      const recordedPermissions = Array.isArray(entry.verified_permissions) ? entry.verified_permissions : [];
+      const livePermissions = Array.isArray(result.permissions) ? result.permissions : [];
+      const permsDiffer = (arr) => [...arr].map((s) => String(s)).sort();
+      if (result.permission_evidence === 'provider_verified' && entry.permission_evidence === 'provider_verified'
+          && JSON.stringify(permsDiffer(recordedPermissions)) !== JSON.stringify(permsDiffer(livePermissions))) {
+        conflicts.push({ kind: 'permissions_changed',
+          detail: 'the provider now reports a different permission set than the one recorded at the last verification',
+          recorded_permissions: recordedPermissions, live_permissions: livePermissions });
+      }
+
+      // Status drift: what the catalog remembers disagrees with the live answer.
+      if (recordedIdentity && liveIdentity && !drifted
+          && !['unavailable', 'unknown'].includes(result.status)
+          && (entry.verification_status || 'unknown') !== result.status) {
+        conflicts.push({ kind: 'status_drift',
+          detail: `the catalog records verification_status=${entry.verification_status || 'unknown'} but the provider now answers ${result.status}` });
+      }
+
+      console.info('[auth-check] provider=%s alias=%s outcome=%s conflicts=%d',
+        provider, alias, result.status, conflicts.length);
+      return json(res, 200, report);
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/local/broker/grants') {
       if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
       const { isAdmin } = resolveAuth(req.headers['authorization']);

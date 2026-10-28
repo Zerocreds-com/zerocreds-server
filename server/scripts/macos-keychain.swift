@@ -97,22 +97,60 @@ if action == "exists" || action == "get" {
 let input = FileHandle.standardInput.readDataToEndOfFile()
 guard !input.isEmpty, input.count <= 65536 else { fail("invalid credential payload") }
 guard (try? JSONSerialization.jsonObject(with: input)) is [String: Any] else { fail("credential payload must be a JSON object") }
+
+// Keychain access control: allow any application to read this credential while
+// the login keychain is unlocked. Without this, macOS creates an Application
+// ACL that restricts access to only the creating application, breaking
+// standard CLI tools (gh, git-credential-osxkeychain, etc.).
+func applyAccessControl(service: String, account: String) -> Bool {
+  guard let accessControl = SecAccessControlCreateWithFlags(
+    kCFAllocatorDefault,
+    kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+    [],  // empty flags = access allowed from any application when unlocked
+    nil
+  ) else { return false }
+  
+  let query: [String: Any] = [
+    kSecClass as String: kSecClassGenericPassword,
+    kSecAttrService as String: service,
+    kSecAttrAccount as String: account,
+  ]
+  let attributes: [String: Any] = [
+    kSecAttrAccessControl as String: accessControl,
+  ]
+  return SecItemUpdate(query as CFDictionary, attributes as CFDictionary) == errSecSuccess
+}
+
 if action == "add" {
-  var item = identity
-  item[kSecValueData as String] = input
-  item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+  let item: [String: Any] = [
+    kSecClass as String: kSecClassGenericPassword,
+    kSecAttrService as String: service,
+    kSecAttrAccount as String: account,
+    kSecValueData as String: input,
+    kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+  ]
   let status = SecItemAdd(item as CFDictionary, nil)
   if status == errSecDuplicateItem { exit(3) }
   guard status == errSecSuccess else { fail("Keychain add failed (\(status))") }
+  // Apply ACL so other applications can read this credential
+  _ = applyAccessControl(service: service, account: account)
   exit(0)
 }
+
+// For "set" (update or create if missing)
 let update = SecItemUpdate(identity as CFDictionary, [kSecValueData as String: input] as CFDictionary)
 if update == errSecItemNotFound {
-  var item = identity
-  item[kSecValueData as String] = input
-  item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+  let item: [String: Any] = [
+    kSecClass as String: kSecClassGenericPassword,
+    kSecAttrService as String: service,
+    kSecAttrAccount as String: account,
+    kSecValueData as String: input,
+    kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+  ]
   let add = SecItemAdd(item as CFDictionary, nil)
   guard add == errSecSuccess else { fail("Keychain add failed (\(add))") }
+  // Apply ACL so other applications can read this credential
+  _ = applyAccessControl(service: service, account: account)
 } else {
   guard update == errSecSuccess else { fail("Keychain update failed (\(update))") }
 }

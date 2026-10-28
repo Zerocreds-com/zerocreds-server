@@ -4,3 +4,4 @@ mcp/node_modules/
 .env
 .dev.vars*
 .wrangler/
+server/bin/
