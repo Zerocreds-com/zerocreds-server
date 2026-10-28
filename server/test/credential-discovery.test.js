@@ -61,6 +61,19 @@ test('a candidate without a discriminator keeps the reference it already had', a
   assert.equal(github.ref, 'disc_efd277ac77bc32859321ee88');
 });
 
+test('github candidates have friendly display labels', async () => {
+  const result = await discoverCredentialSources({
+    platform: 'darwin', home: '/nonexistent', chromeExists: () => false,
+    runCommand: async (command) => command === 'gh'
+      ? { ok: true, stdout: JSON.stringify({ hosts: { 'github.com': [
+        { login: 'kobzevvv', active: true, state: { name: 'success' }, scopes: ['repo'], token: 'SECRET' }] } }) }
+      : { ok: false, stdout: '' },
+    listKeychain: async () => ({ available: false, items: [] }),
+  });
+  const github = result.candidates.find((candidate) => candidate.provider === 'github');
+  assert.equal(github.display_label, 'GitHub Token (Main: kobzevvv)');
+});
+
 test('keychain candidates with identical account and label stay distinct by service', async () => {
   const result = await discoverCredentialSources({
     platform: 'darwin', home: '/nonexistent', chromeExists: () => false,

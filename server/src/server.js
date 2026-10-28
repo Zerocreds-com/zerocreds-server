@@ -3509,6 +3509,7 @@ function createApp(config = {}) {
             account: item.account, label: item.label, scopes: item.scopes,
             ...(typeof item.service === 'string' ? { service: item.service } : {}),
             ...(typeof item.category === 'string' ? { category: item.category } : {}),
+            ...(typeof item.display_label === 'string' ? { display_label: item.display_label } : {}),
             authentication_status: item.authentication_status || 'unknown', active: item.active ?? null,
             first_seen_at: now, last_seen_at: now });
           added++;
