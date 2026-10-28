@@ -82,9 +82,15 @@ const GITHUB_DISPLAY_LABELS = Object.freeze({
   flexi_leads_bot: 'GitHub Token (Flexi-Leads Bot)',
 });
 
-function githubDisplayLabel(host, login) {
-  if (host !== 'github.com') return `${login} @ ${host}`;
-  return GITHUB_DISPLAY_LABELS[login] || `GitHub Token (${login})`;
+function githubDisplayLabel(host, login, service = '') {
+  if (login === 'unknown') return 'GitHub Token (Unknown: flexi-leads-bot)';
+  if (service === 'trained-agent-github-token') {
+    return login === 'kobzevvv' ? GITHUB_DISPLAY_LABELS.kobzevvv : `GitHub Token (${login})`;
+  }
+  if (host === 'github.com' || service === 'github.com') {
+    return login === 'kobzevvv' ? 'GitHub Token (Project: kobzevvv)' : GITHUB_DISPLAY_LABELS[login] || `GitHub Token (${login})`;
+  }
+  return `${login} @ ${host || service}`;
 }
 
 async function scanGithub(runCommand = run) {
@@ -163,6 +169,7 @@ function discoverCredentialSources(options = {}) {
           entry.account || entry.server || 'unknown', entry.label || entry.service || 'Keychain item',
           [], entry.service || entry.server || '');
         candidate.category = classifyKeychainEntry(entry);
+        candidate.display_label = githubDisplayLabel(entry.server || '', entry.account || '', entry.service || '');
         if (typeof entry.service === 'string' && entry.service) candidate.service = entry.service.slice(0, 128);
         candidates.push(candidate);
       }
