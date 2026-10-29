@@ -3,7 +3,7 @@
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
-const { verifyLocalCredential, credentialHint } = require('./local-verification');
+const { verifyLocalCredential, credentialHint, parseKeychainRecord } = require('./local-verification');
 const { validateRules: validatePlaygroundRules, evaluateRules, simulateScenario, listScenarios } = require('./credential-playground');
 const { diagnoseLocalSetup } = require('./local-doctor');
 const path = require('path');
@@ -1821,11 +1821,8 @@ function createApp(config = {}) {
       child.once('error', () => finish(new Error('unavailable')));
       child.once('close', (code) => {
         if (code !== 0 || !output.length) return finish(new Error(code === 4 ? 'keychain_locked' : 'unavailable'));
-        try {
-          const fields = JSON.parse(output.toString('utf8'));
-          if (!fields || typeof fields !== 'object' || Array.isArray(fields)) throw new Error('bad record');
-          finish(null, fields);
-        } catch { finish(new Error('invalid credential record')); }
+        try { finish(null, parseKeychainRecord(output.toString('utf8'))); }
+        catch { finish(new Error('invalid credential record')); }
       });
     });
   }
