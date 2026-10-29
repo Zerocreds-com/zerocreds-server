@@ -25,6 +25,25 @@ async function boundedJson(response) {
   try { return JSON.parse(text); } catch { throw new Error('invalid verification response'); }
 }
 
+function parseKeychainRecord(output) {
+  const text = String(output);
+  let parsed;
+  let isJson = true;
+  try { parsed = JSON.parse(text); }
+  catch { isJson = false; }
+  if (isJson) {
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid credential record');
+    return parsed;
+  }
+  // A bare credential string must be a single line of printable ASCII; anything
+  // else (multi-line blobs, control characters, empty) is not treated as a token.
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.length > 8192 || !/^[\x20-\x7e]+$/.test(trimmed)) {
+    throw new Error('invalid credential record');
+  }
+  return { token: trimmed };
+}
+
 function selectToken(fields, names) {
   for (const name of names) {
     if (Object.hasOwn(fields || {}, name) && typeof fields[name] === 'string' && fields[name].length > 0 && fields[name].length <= 8192) {
@@ -160,4 +179,4 @@ async function verifyLocalCredential(provider, fields, fetchImpl = fetch, { toke
   }
 }
 
-module.exports = { verifyLocalCredential, credentialHint };
+module.exports = { verifyLocalCredential, credentialHint, parseKeychainRecord };

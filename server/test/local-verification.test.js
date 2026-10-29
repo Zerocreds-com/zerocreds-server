@@ -2,7 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { verifyLocalCredential, credentialHint } = require('../src/local-verification');
+const { verifyLocalCredential, credentialHint, parseKeychainRecord } = require('../src/local-verification');
 
 test('GitHub verification returns provider identity and observed scopes, never the token', async () => {
   const token = 'synthetic-github-secret';
@@ -142,6 +142,25 @@ test('custom token field reuses a saved credential and overrides canonical alias
   }, { tokenField: 'github_pat_admin' });
   assert.equal(result.status, 'valid');
   assert.ok(!JSON.stringify(result).includes(fields.github_pat_admin));
+});
+
+test('parseKeychainRecord keeps JSON object records unchanged', () => {
+  assert.deepEqual(parseKeychainRecord('{"token":"synthetic-secret"}'), { token: 'synthetic-secret' });
+  assert.deepEqual(parseKeychainRecord('{"DEEPGRAM_API_KEY":"synthetic"}'), { DEEPGRAM_API_KEY: 'synthetic' });
+});
+
+test('parseKeychainRecord wraps a bare credential string as { token }', () => {
+  assert.deepEqual(parseKeychainRecord('syntheticRawCloudflareToken123'), { token: 'syntheticRawCloudflareToken123' });
+  assert.deepEqual(parseKeychainRecord('  padded-token  '), { token: 'padded-token' });
+});
+
+test('parseKeychainRecord rejects implausible payloads', () => {
+  for (const bad of ['', '   ', 'line-one\nline-two', 'tab\there', 'x'.repeat(8193)]) {
+    assert.throws(() => parseKeychainRecord(bad), /invalid credential record/);
+  }
+  for (const badJson of ['"just-a-string"', '[1,2,3]', '42', 'null']) {
+    assert.throws(() => parseKeychainRecord(badJson), /invalid credential record/);
+  }
 });
 
 test('missing, empty or inherited explicit fields never fall back or contact provider', async () => {
