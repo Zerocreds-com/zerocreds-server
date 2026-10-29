@@ -12,14 +12,14 @@
 # Every step is cleaned up in a trap so a failed run does not leave artifacts.
 #
 # Usage:
-#   GITHUB_TEST_TOKEN=github_pat_... ./scripts/healthcheck-local.sh
+#   ZEROCREDS_HEALTHCHECK_GITHUB_TOKEN=github_pat_... ./scripts/healthcheck-local.sh
 #
 # The token should be a fine-grained PAT with read-only access to a public
 # repository; it is never printed and never leaves this machine.
 
 set -euo pipefail
 
-BASE_URL="${ZEROCREDS_BASE_URL:-http://localhost:3456}"
+BASE_URL="${ZEROCREDS_BASE_URL:-http://localhost:8080/zerocreds}"
 ADMIN_TOKEN_FILE="${ZEROCREDS_ADMIN_TOKEN_FILE:-$HOME/.config/zerocreds/local/admin-token}"
 KEYCHAIN_HELPER="${ZEROCREDS_KEYCHAIN_HELPER:-$HOME/.config/zerocreds/local/zerocreds-keychain}"
 
@@ -31,11 +31,11 @@ bad()  { echo -e "${RED}✗${NC} $1"; FAIL=$((FAIL+1)); }
 warn() { echo -e "${YELLOW}⚠${NC} $1"; }
 
 ADMIN_TOKEN="$(cat "$ADMIN_TOKEN_FILE" 2>/dev/null || true)"
-TEST_TOKEN="${GITHUB_TEST_TOKEN:-}"
+TEST_TOKEN="${ZEROCREDS_HEALTHCHECK_GITHUB_TOKEN:-${GITHUB_TEST_TOKEN:-}}"
 
 if [ -z "$ADMIN_TOKEN" ]; then echo "missing admin token at $ADMIN_TOKEN_FILE"; exit 2; fi
 if [ -z "$TEST_TOKEN" ]; then
-  echo "GITHUB_TEST_TOKEN is not set."
+  echo "ZEROCREDS_HEALTHCHECK_GITHUB_TOKEN (or GITHUB_TEST_TOKEN) is not set."
   echo "Create a fine-grained PAT with read-only access to a public repo and run:"
   echo "  GITHUB_TEST_TOKEN=github_pat_... ./scripts/healthcheck-local.sh"
   exit 2
@@ -112,6 +112,13 @@ if echo "$VERIFY" | python3 -c 'import sys,json; d=json.load(sys.stdin); exit(0 
   ok "verify through ZeroCreds -> valid"
 else
   bad "verify through ZeroCreds: $VERIFY"
+fi
+
+BROKER="$(api POST "/api/local/connections/$CONNECTION_ID/request" '{"method":"GET","url":"https://api.github.com/user"}')"
+if echo "$BROKER" | python3 -c 'import sys,json; d=json.load(sys.stdin); exit(0 if d.get("status")==200 and d.get("body",{}).get("login") else 1)' 2>/dev/null; then
+  ok "brokered request through ZeroCreds -> valid"
+else
+  bad "brokered request: $BROKER"
 fi
 
 # ── 4. overwrite with an invalid value ────────────────────────────────────────
