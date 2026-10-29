@@ -226,6 +226,36 @@ server.tool(
 );
 
 if (LOCAL_MODE) server.tool(
+  'connection_request',
+  'Use a saved local credential to perform an arbitrary HTTP request without exposing the secret. ZeroCreds reads the credential from Keychain, injects it according to auth, performs the request, and returns a sanitized response. Hosts must be allowed for the connection. Templates/cookbooks can build on this primitive.',
+  {
+    connection_id: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/).describe('Connection id from connections_list'),
+    method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']).optional(),
+    url: z.string().url().describe('Full URL to request'),
+    headers: z.record(z.string()).optional(),
+    body: z.union([z.string(), z.record(z.any())]).optional(),
+    auth: z.object({
+      type: z.enum(['bearer', 'basic', 'header', 'none']).optional(),
+      field: z.string().optional(),
+      name: z.string().optional(),
+      prefix: z.string().optional(),
+      username_field: z.string().optional(),
+      password_field: z.string().optional(),
+    }).optional(),
+    timeout_ms: z.number().int().min(1000).max(30000).optional(),
+    max_bytes: z.number().int().min(1024).max(1048576).optional(),
+  },
+  { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  async ({ connection_id, method, url, headers, body, auth, timeout_ms, max_bytes }) => {
+    const data = await apiCall('POST', `/api/local/connections/${encodeURIComponent(connection_id)}/request`, {
+      method, url, headers, body, auth, timeout_ms, max_bytes,
+    });
+    if (data.error) throw new Error(data.error);
+    return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+  },
+);
+
+if (LOCAL_MODE) server.tool(
   'connection_verify',
   'Verify a saved local credential against its provider. Provider-native verification is implemented for github, cloudflare and deepgram; any other provider slug returns verification "unsupported_provider" without contacting anything. A Cloudflare account token may fail the user-token endpoint yet still work for its account; use account_id or a read-only request to the target resource before calling it invalid. For Deepgram this safely tests whether the key can mint a default 30-second grant, then discards the token; it does not make a billable transcription request. The one-time verify result includes a masked 3-character prefix/4-character suffix and length for alias comparison; this hint is not persisted or logged. The tool never returns the credential or grant value. This verifies the Mac Keychain credential, not whether a separate Cloudflare Worker secret was updated.',
   {

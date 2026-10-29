@@ -3526,6 +3526,145 @@ function createApp(config = {}) {
         ...(typeof entry.superseded_by === 'string' ? { superseded_by: entry.superseded_by } : {}) });
     }
 
+    // ── POST /api/local/connections/:id/request — brokered HTTP request ──────
+    // Generic primitive: use a stored credential for an arbitrary HTTP request
+    // without exposing the secret. The secret is read inside the server, injected
+    // into the configured auth slot, and never returned.
+    const connectionRequestMatch = url.pathname.match(/^\/api\/local\/connections\/([a-zA-Z0-9_-]{1,100})\/request$/);
+    if (connectionRequestMatch && req.method === 'POST') {
+      if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
+      const { isAdmin } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin) return json(res, 401, { error: 'admin token required' });
+      const connectionId = connectionRequestMatch[1];
+      const payload = await readJson(req);
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        return json(res, 400, { error: 'a JSON object is required' });
+      }
+      const method = String(payload.method || 'GET').toUpperCase();
+      if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].includes(method)) {
+        return json(res, 400, { error: 'unsupported method' });
+      }
+      if (typeof payload.url !== 'string' || !payload.url) {
+        return json(res, 400, { error: 'url is required' });
+      }
+      let target;
+      try { target = new URL(payload.url); } catch { return json(res, 400, { error: 'invalid url' }); }
+      const loopback = target.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname);
+      if (target.protocol !== 'https:' && !loopback) {
+        return json(res, 400, { error: 'https required' });
+      }
+      let entries;
+      try { entries = readLocalCatalog(); } catch { return json(res, 503, { error: 'local catalog unavailable' }); }
+      const entry = entries.find((e) => e.connection_id === connectionId);
+      if (!entry) return json(res, 404, { error: 'connection not found' });
+      if (entry.state && entry.state !== 'active') {
+        return json(res, 409, { error: 'connection is not active' });
+      }
+      const providerHosts = { github: ['api.github.com'], cloudflare: ['api.cloudflare.com'], deepgram: ['api.deepgram.com'] };
+      const defaults = providerHosts[String(entry.provider).toLowerCase()] || [];
+      const allowedHosts = Array.isArray(entry.allowed_hosts) && entry.allowed_hosts.length ? entry.allowed_hosts : defaults;
+      const configHosts = Array.isArray(DEST_OPTS.httpPostAllowedHosts) ? DEST_OPTS.httpPostAllowedHosts : [];
+      const effective = new Set([...allowedHosts, ...configHosts]);
+      if (!effective.has(target.hostname)) {
+        return json(res, 403, { error: 'host not allowed for this connection' });
+      }
+      let fields;
+      try { fields = await (config.localCredentialReader || readLocalKeychainEntry)(entry.storage); }
+      catch (e) { return json(res, 409, { error: e.message === 'keychain_locked' ? 'keychain is locked' : 'credential unavailable' }); }
+      const auth = payload.auth && typeof payload.auth === 'object' && !Array.isArray(payload.auth) ? payload.auth : { type: 'bearer' };
+      const authType = auth.type || 'bearer';
+      let tokenField = auth.field || entry.token_field || entry.tokenField;
+      const providerDefaults = { github: ['token', 'github_token', 'personal_access_token'], cloudflare: ['api_token', 'token', 'cloudflare_token'], deepgram: ['DEEPGRAM_API_KEY', 'api_key', 'deepgram_api_key', 'token'] };
+      const defaultFields = providerDefaults[String(entry.provider).toLowerCase()] || ['token'];
+      if (!tokenField && authType !== 'none') {
+        for (const f of defaultFields) {
+          if (fields && typeof fields[f] === 'string' && fields[f]) { tokenField = f; break; }
+        }
+      }
+      const headers = {};
+      if (payload.headers && typeof payload.headers === 'object' && !Array.isArray(payload.headers)) {
+        for (const [k, v] of Object.entries(payload.headers)) {
+          if (typeof v === 'string') headers[k] = v;
+        }
+      }
+      if (authType === 'bearer') {
+        const token = tokenField ? fields?.[tokenField] : null;
+        if (typeof token !== 'string' || !token) return json(res, 409, { error: 'credential field missing' });
+        headers['Authorization'] = `Bearer ${token}`;
+      } else if (authType === 'basic') {
+        const u = auth.username_field ? fields?.[auth.username_field] : null;
+        const p = auth.password_field ? fields?.[auth.password_field] : null;
+        if (typeof u !== 'string' || typeof p !== 'string') return json(res, 409, { error: 'credential fields missing' });
+        headers['Authorization'] = `Basic ${Buffer.from(`${u}:${p}`).toString('base64')}`;
+      } else if (authType === 'header') {
+        const token = auth.field ? fields?.[auth.field] : null;
+        if (typeof token !== 'string' || !token) return json(res, 409, { error: 'credential field missing' });
+        const name = auth.name || 'Authorization';
+        const prefix = auth.prefix || '';
+        headers[name] = `${prefix}${token}`;
+      } else if (authType !== 'none') {
+        return json(res, 400, { error: 'unsupported auth type' });
+      }
+      let body;
+      if (payload.body !== undefined) {
+        if (typeof payload.body === 'string') body = payload.body;
+        else body = JSON.stringify(payload.body);
+        if (!headers['Content-Type'] && typeof payload.body === 'object' && payload.body !== null) {
+          headers['Content-Type'] = 'application/json';
+        }
+      }
+      const timeoutMs = Number.isFinite(payload.timeout_ms) ? Math.min(Math.max(payload.timeout_ms, 1000), 30000) : 15000;
+      const maxBytes = Number.isFinite(payload.max_bytes) ? Math.min(Math.max(payload.max_bytes, 1024), 1048576) : 262144;
+      const started = Date.now();
+      let response;
+      let buf;
+      try {
+        response = await fetch(target.toString(), {
+          method,
+          headers,
+          body: (method === 'GET' || method === 'HEAD') ? undefined : body,
+          redirect: 'error',
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        buf = Buffer.from(await response.arrayBuffer());
+      } catch (e) {
+        return json(res, 502, { error: 'request failed', elapsed_ms: Date.now() - started });
+      }
+      const sliced = buf.byteLength > maxBytes ? buf.subarray(0, maxBytes) : buf;
+      let text = new TextDecoder().decode(sliced);
+      // Redact any stored secret value that may have been echoed by the upstream.
+      const secretValues = Object.values(fields || {}).filter((v) => typeof v === 'string' && v.length >= 4);
+      for (const secret of secretValues) {
+        text = text.split(secret).join('[REDACTED]');
+      }
+      const respHeaders = {};
+      const allowRespHeaders = ['content-type', 'cache-control', 'etag', 'last-modified', 'x-github-request-id', 'x-ratelimit-remaining', 'x-ratelimit-limit', 'location'];
+      for (const h of allowRespHeaders) {
+        let v = response.headers.get(h);
+        if (v) {
+          for (const secret of secretValues) v = v.split(secret).join('[REDACTED]');
+          respHeaders[h] = v;
+        }
+      }
+      let parsed = null;
+      try { parsed = JSON.parse(text); } catch {}
+      const truncated = buf.byteLength > maxBytes;
+      const elapsed = Date.now() - started;
+      console.info('[local-broker] connection=%s method=%s host=%s status=%s', connectionId, method, target.hostname, response.status);
+      entry.last_used_at = new Date().toISOString();
+      entry.last_use = { operation: 'request', run_id: payload.run_id || null, outcome: 'delivered', at: entry.last_used_at, method, host: target.hostname, status: response.status };
+      try { writeLocalCatalog(entries); } catch {}
+      return json(res, 200, {
+        status: response.status,
+        status_text: response.statusText,
+        headers: respHeaders,
+        body: parsed !== null ? parsed : text,
+        truncated,
+        elapsed_ms: elapsed,
+      });
+    }
+
+
     if (url.pathname.startsWith('/api/local/discovery/')) {
       if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
       const { isAdmin } = resolveAuth(req.headers['authorization']);
