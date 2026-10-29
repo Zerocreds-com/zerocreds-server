@@ -3349,10 +3349,19 @@ function createApp(config = {}) {
       const matching = entries.filter((entry) =>
         (!provider || String(entry.provider).toLowerCase() === provider)
         && (!alias || String(entry.account_alias).toLowerCase() === alias));
+      // Human-authored metadata (description/notes/tags/duplicate_of/
+      // superseded_by) is surfaced so agents stop having to hand-edit the JSON
+      // to understand what a connection is or how duplicates relate. These are
+      // optional and omitted when unset to keep responses compact.
       const safe = matching.map((entry) => ({
         connection_id: entry.connection_id,
         provider: entry.provider,
         account_alias: entry.account_alias,
+        ...(typeof entry.description === 'string' ? { description: entry.description } : {}),
+        ...(typeof entry.notes === 'string' ? { notes: entry.notes } : {}),
+        ...(Array.isArray(entry.tags) && entry.tags.length ? { tags: entry.tags.filter((tag) => typeof tag === 'string') } : {}),
+        ...(typeof entry.duplicate_of === 'string' ? { duplicate_of: entry.duplicate_of } : {}),
+        ...(typeof entry.superseded_by === 'string' ? { superseded_by: entry.superseded_by } : {}),
         storage: entry.storage,
         state: entry.state,
         credential_expires_at: entry.credential_expires_at,
@@ -3429,6 +3438,232 @@ function createApp(config = {}) {
       console.info('[local-connections] deleted provider=%s alias=%s keychain=%s', entry.provider, entry.account_alias, keychainStatus);
       return json(res, 200, { deleted: connectionId, provider: entry.provider, account_alias: entry.account_alias, keychain_status: keychainStatus });
     }
+
+    // ── PATCH /api/local/connections/:id — update human-authored metadata ─────
+    // Edits only the descriptive metadata (never the secret, storage or state):
+    // description, notes, tags, duplicate_of, superseded_by. Each field accepts a
+    // value to set or null to clear. Returns 400 on invalid input and 404 for an
+    // unknown id. This is the supported replacement for hand-editing connections.json.
+    const connectionPatchMatch = url.pathname.match(/^\/api\/local\/connections\/([a-zA-Z0-9_-]{1,100})$/);
+    if (connectionPatchMatch && req.method === 'PATCH') {
+      if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
+      const { isAdmin } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin) return json(res, 401, { error: 'admin token required' });
+      const connectionId = connectionPatchMatch[1];
+      const payload = await readJson(req);
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        return json(res, 400, { error: 'a JSON object of metadata fields is required' });
+      }
+      const allowed = ['description', 'notes', 'tags', 'duplicate_of', 'superseded_by'];
+      const unknown = Object.keys(payload).filter((key) => !allowed.includes(key));
+      if (unknown.length) {
+        return json(res, 400, { error: `unsupported field(s): ${unknown.join(', ')}`, allowed });
+      }
+      if (!Object.keys(payload).length) {
+        return json(res, 400, { error: `at least one of ${allowed.join(', ')} is required` });
+      }
+      const cleanText = (value, max, name) => {
+        if (value === null) return null;
+        if (typeof value !== 'string') throw new Error(`${name} must be a string or null`);
+        const trimmed = value.trim();
+        if (trimmed.length > max) throw new Error(`${name} must be at most ${max} characters`);
+        return trimmed;
+      };
+      let patch;
+      try {
+        patch = {};
+        if ('description' in payload) patch.description = cleanText(payload.description, 280, 'description');
+        if ('notes' in payload) patch.notes = cleanText(payload.notes, 2000, 'notes');
+        if ('duplicate_of' in payload) {
+          const value = payload.duplicate_of;
+          patch.duplicate_of = value === null ? null
+            : (typeof value === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(value) ? value
+              : (() => { throw new Error('duplicate_of must be a connection_id or null'); })());
+        }
+        if ('superseded_by' in payload) {
+          const value = payload.superseded_by;
+          patch.superseded_by = value === null ? null
+            : (typeof value === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(value) ? value
+              : (() => { throw new Error('superseded_by must be a connection_id or null'); })());
+        }
+        if ('tags' in payload) {
+          const value = payload.tags;
+          if (value === null) patch.tags = null;
+          else if (Array.isArray(value)) {
+            if (value.length > 20) throw new Error('tags must contain at most 20 entries');
+            patch.tags = value.map((tag, i) => {
+              if (typeof tag !== 'string') throw new Error(`tags[${i}] must be a string`);
+              const trimmed = tag.trim();
+              if (!trimmed) throw new Error(`tags[${i}] must not be empty`);
+              if (trimmed.length > 40) throw new Error(`tags[${i}] must be at most 40 characters`);
+              return trimmed;
+            });
+          } else throw new Error('tags must be an array of strings or null');
+        }
+      } catch (error) {
+        return json(res, 400, { error: error.message });
+      }
+      let entries;
+      try { entries = readLocalCatalog(); }
+      catch { return json(res, 503, { error: 'local catalog unavailable' }); }
+      const index = entries.findIndex((entry) => entry.connection_id === connectionId);
+      if (index < 0) return json(res, 404, { error: 'connection not found' });
+      const entry = entries[index];
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === null || (Array.isArray(value) && !value.length)) delete entry[key];
+        else entry[key] = value;
+      }
+      entry.updated_at = new Date().toISOString();
+      entries[index] = entry;
+      try { writeLocalCatalog(entries); }
+      catch { return json(res, 503, { error: 'local catalog unavailable' }); }
+      console.info('[local-connections] updated metadata connection=%s fields=%s', connectionId, Object.keys(patch).join(','));
+      return json(res, 200, { updated: connectionId, provider: entry.provider, account_alias: entry.account_alias,
+        ...(typeof entry.description === 'string' ? { description: entry.description } : {}),
+        ...(typeof entry.notes === 'string' ? { notes: entry.notes } : {}),
+        ...(Array.isArray(entry.tags) && entry.tags.length ? { tags: entry.tags } : {}),
+        ...(typeof entry.duplicate_of === 'string' ? { duplicate_of: entry.duplicate_of } : {}),
+        ...(typeof entry.superseded_by === 'string' ? { superseded_by: entry.superseded_by } : {}) });
+    }
+
+    // ── POST /api/local/connections/:id/request — brokered HTTP request ──────
+    // Generic primitive: use a stored credential for an arbitrary HTTP request
+    // without exposing the secret. The secret is read inside the server, injected
+    // into the configured auth slot, and never returned.
+    const connectionRequestMatch = url.pathname.match(/^\/api\/local\/connections\/([a-zA-Z0-9_-]{1,100})\/request$/);
+    if (connectionRequestMatch && req.method === 'POST') {
+      if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
+      const { isAdmin } = resolveAuth(req.headers['authorization']);
+      if (!isAdmin) return json(res, 401, { error: 'admin token required' });
+      const connectionId = connectionRequestMatch[1];
+      const payload = await readJson(req);
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        return json(res, 400, { error: 'a JSON object is required' });
+      }
+      const method = String(payload.method || 'GET').toUpperCase();
+      if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].includes(method)) {
+        return json(res, 400, { error: 'unsupported method' });
+      }
+      if (typeof payload.url !== 'string' || !payload.url) {
+        return json(res, 400, { error: 'url is required' });
+      }
+      let target;
+      try { target = new URL(payload.url); } catch { return json(res, 400, { error: 'invalid url' }); }
+      const loopback = target.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname);
+      if (target.protocol !== 'https:' && !loopback) {
+        return json(res, 400, { error: 'https required' });
+      }
+      let entries;
+      try { entries = readLocalCatalog(); } catch { return json(res, 503, { error: 'local catalog unavailable' }); }
+      const entry = entries.find((e) => e.connection_id === connectionId);
+      if (!entry) return json(res, 404, { error: 'connection not found' });
+      if (entry.state && entry.state !== 'active') {
+        return json(res, 409, { error: 'connection is not active' });
+      }
+      const providerHosts = { github: ['api.github.com'], cloudflare: ['api.cloudflare.com'], deepgram: ['api.deepgram.com'] };
+      const defaults = providerHosts[String(entry.provider).toLowerCase()] || [];
+      const allowedHosts = Array.isArray(entry.allowed_hosts) && entry.allowed_hosts.length ? entry.allowed_hosts : defaults;
+      const configHosts = Array.isArray(DEST_OPTS.httpPostAllowedHosts) ? DEST_OPTS.httpPostAllowedHosts : [];
+      const effective = new Set([...allowedHosts, ...configHosts]);
+      if (!effective.has(target.hostname)) {
+        return json(res, 403, { error: 'host not allowed for this connection' });
+      }
+      let fields;
+      try { fields = await (config.localCredentialReader || readLocalKeychainEntry)(entry.storage); }
+      catch (e) { return json(res, 409, { error: e.message === 'keychain_locked' ? 'keychain is locked' : 'credential unavailable' }); }
+      const auth = payload.auth && typeof payload.auth === 'object' && !Array.isArray(payload.auth) ? payload.auth : { type: 'bearer' };
+      const authType = auth.type || 'bearer';
+      let tokenField = auth.field || entry.token_field || entry.tokenField;
+      const providerDefaults = { github: ['token', 'github_token', 'personal_access_token'], cloudflare: ['api_token', 'token', 'cloudflare_token'], deepgram: ['DEEPGRAM_API_KEY', 'api_key', 'deepgram_api_key', 'token'] };
+      const defaultFields = providerDefaults[String(entry.provider).toLowerCase()] || ['token'];
+      if (!tokenField && authType !== 'none') {
+        for (const f of defaultFields) {
+          if (fields && typeof fields[f] === 'string' && fields[f]) { tokenField = f; break; }
+        }
+      }
+      const headers = {};
+      if (payload.headers && typeof payload.headers === 'object' && !Array.isArray(payload.headers)) {
+        for (const [k, v] of Object.entries(payload.headers)) {
+          if (typeof v === 'string') headers[k] = v;
+        }
+      }
+      if (authType === 'bearer') {
+        const token = tokenField ? fields?.[tokenField] : null;
+        if (typeof token !== 'string' || !token) return json(res, 409, { error: 'credential field missing' });
+        headers['Authorization'] = `Bearer ${token}`;
+      } else if (authType === 'basic') {
+        const u = auth.username_field ? fields?.[auth.username_field] : null;
+        const p = auth.password_field ? fields?.[auth.password_field] : null;
+        if (typeof u !== 'string' || typeof p !== 'string') return json(res, 409, { error: 'credential fields missing' });
+        headers['Authorization'] = `Basic ${Buffer.from(`${u}:${p}`).toString('base64')}`;
+      } else if (authType === 'header') {
+        const token = auth.field ? fields?.[auth.field] : null;
+        if (typeof token !== 'string' || !token) return json(res, 409, { error: 'credential field missing' });
+        const name = auth.name || 'Authorization';
+        const prefix = auth.prefix || '';
+        headers[name] = `${prefix}${token}`;
+      } else if (authType !== 'none') {
+        return json(res, 400, { error: 'unsupported auth type' });
+      }
+      let body;
+      if (payload.body !== undefined) {
+        if (typeof payload.body === 'string') body = payload.body;
+        else body = JSON.stringify(payload.body);
+        if (!headers['Content-Type'] && typeof payload.body === 'object' && payload.body !== null) {
+          headers['Content-Type'] = 'application/json';
+        }
+      }
+      const timeoutMs = Number.isFinite(payload.timeout_ms) ? Math.min(Math.max(payload.timeout_ms, 1000), 30000) : 15000;
+      const maxBytes = Number.isFinite(payload.max_bytes) ? Math.min(Math.max(payload.max_bytes, 1024), 1048576) : 262144;
+      const started = Date.now();
+      let response;
+      let buf;
+      try {
+        response = await fetch(target.toString(), {
+          method,
+          headers,
+          body: (method === 'GET' || method === 'HEAD') ? undefined : body,
+          redirect: 'error',
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        buf = Buffer.from(await response.arrayBuffer());
+      } catch (e) {
+        return json(res, 502, { error: 'request failed', elapsed_ms: Date.now() - started });
+      }
+      const sliced = buf.byteLength > maxBytes ? buf.subarray(0, maxBytes) : buf;
+      let text = new TextDecoder().decode(sliced);
+      // Redact any stored secret value that may have been echoed by the upstream.
+      const secretValues = Object.values(fields || {}).filter((v) => typeof v === 'string' && v.length >= 4);
+      for (const secret of secretValues) {
+        text = text.split(secret).join('[REDACTED]');
+      }
+      const respHeaders = {};
+      const allowRespHeaders = ['content-type', 'cache-control', 'etag', 'last-modified', 'x-github-request-id', 'x-ratelimit-remaining', 'x-ratelimit-limit', 'location'];
+      for (const h of allowRespHeaders) {
+        let v = response.headers.get(h);
+        if (v) {
+          for (const secret of secretValues) v = v.split(secret).join('[REDACTED]');
+          respHeaders[h] = v;
+        }
+      }
+      let parsed = null;
+      try { parsed = JSON.parse(text); } catch {}
+      const truncated = buf.byteLength > maxBytes;
+      const elapsed = Date.now() - started;
+      console.info('[local-broker] connection=%s method=%s host=%s status=%s', connectionId, method, target.hostname, response.status);
+      entry.last_used_at = new Date().toISOString();
+      entry.last_use = { operation: 'request', run_id: payload.run_id || null, outcome: 'delivered', at: entry.last_used_at, method, host: target.hostname, status: response.status };
+      try { writeLocalCatalog(entries); } catch {}
+      return json(res, 200, {
+        status: response.status,
+        status_text: response.statusText,
+        headers: respHeaders,
+        body: parsed !== null ? parsed : text,
+        truncated,
+        elapsed_ms: elapsed,
+      });
+    }
+
 
     if (url.pathname.startsWith('/api/local/discovery/')) {
       if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });

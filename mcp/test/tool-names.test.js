@@ -10,6 +10,8 @@ const EXPECTED_LOCAL_TOOLS = [
   'connections_list',
   'connection_resolve',
   'connection_verify',
+  'connection_request',
+  'connection_update',
   'auth_check',
   'doctor',
   'discovery_sources',

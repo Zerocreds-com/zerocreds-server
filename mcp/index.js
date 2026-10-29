@@ -183,6 +183,31 @@ server.tool(
   },
 );
 
+if (LOCAL_MODE) server.tool(
+  'connection_update',
+  'Edit the human-authored metadata of a saved connection by connection_id: description, notes, tags, duplicate_of and superseded_by. Use this to annotate what a credential is for, record cleanup context, or mark a duplicate and what supersedes it — instead of hand-editing connections.json. Pass a value to set it, or null to clear a field. This never touches the secret value, storage location or state. Requires the exact connection_id from connections_list.',
+  {
+    connection_id: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/).describe('Connection id from connections_list'),
+    description: z.string().max(280).nullable().optional().describe('Short human-readable purpose of the credential, e.g. what it is used for. Null clears it.'),
+    notes: z.string().max(2000).nullable().optional().describe('Longer free-form context for the owner or an agent. Null clears it.'),
+    tags: z.array(z.string().min(1).max(40)).max(20).nullable().optional().describe('Labels to group connections, e.g. ["ci","trained-assist"]. Null clears all tags.'),
+    duplicate_of: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/).nullable().optional().describe('connection_id of the canonical credential this one duplicates. Null clears it.'),
+    superseded_by: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/).nullable().optional().describe('connection_id of the credential that replaces this one. Null clears it.'),
+  },
+  { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  async ({ connection_id, description, notes, tags, duplicate_of, superseded_by }) => {
+    const body = {};
+    if (description !== undefined) body.description = description;
+    if (notes !== undefined) body.notes = notes;
+    if (tags !== undefined) body.tags = tags;
+    if (duplicate_of !== undefined) body.duplicate_of = duplicate_of;
+    if (superseded_by !== undefined) body.superseded_by = superseded_by;
+    const data = await apiCall('PATCH', `/api/local/connections/${encodeURIComponent(connection_id)}`, body);
+    if (data.error) throw new Error(data.error);
+    return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+  },
+);
+
 server.tool(
   'connection_resolve',
   'Resolve an existing local connection for a provider. Pass an account alias when more than one account exists. Never returns the credential value.',
@@ -195,6 +220,36 @@ server.tool(
     const query = new URLSearchParams({ provider, resolve: '1' });
     if (account_alias) query.set('account_alias', account_alias);
     const data = await apiCall('GET', `/api/local/connections?${query}`);
+    if (data.error) throw new Error(data.error);
+    return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+  },
+);
+
+if (LOCAL_MODE) server.tool(
+  'connection_request',
+  'Use a saved local credential to perform an arbitrary HTTP request without exposing the secret. ZeroCreds reads the credential from Keychain, injects it according to auth, performs the request, and returns a sanitized response. Hosts must be allowed for the connection. Templates/cookbooks can build on this primitive.',
+  {
+    connection_id: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/).describe('Connection id from connections_list'),
+    method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']).optional(),
+    url: z.string().url().describe('Full URL to request'),
+    headers: z.record(z.string()).optional(),
+    body: z.union([z.string(), z.record(z.any())]).optional(),
+    auth: z.object({
+      type: z.enum(['bearer', 'basic', 'header', 'none']).optional(),
+      field: z.string().optional(),
+      name: z.string().optional(),
+      prefix: z.string().optional(),
+      username_field: z.string().optional(),
+      password_field: z.string().optional(),
+    }).optional(),
+    timeout_ms: z.number().int().min(1000).max(30000).optional(),
+    max_bytes: z.number().int().min(1024).max(1048576).optional(),
+  },
+  { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  async ({ connection_id, method, url, headers, body, auth, timeout_ms, max_bytes }) => {
+    const data = await apiCall('POST', `/api/local/connections/${encodeURIComponent(connection_id)}/request`, {
+      method, url, headers, body, auth, timeout_ms, max_bytes,
+    });
     if (data.error) throw new Error(data.error);
     return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
   },

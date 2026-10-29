@@ -344,3 +344,59 @@ test('a slow verification cannot overwrite a newer saved field alias', async () 
     return { status: 'valid' };
   } });
 });
+
+test('connection_update sets, updates and clears metadata without touching the secret', async () => {
+  await withLocalServer(async ({ port, token, catalogFile }) => {
+    // Unauthenticated is rejected.
+    assert.equal((await call(port, 'PATCH', '/api/local/connections/connection-1', { description: 'x' })).status, 401);
+
+    const set = await call(port, 'PATCH', '/api/local/connections/connection-1', {
+      description: 'Primary admin PAT', notes: 'Used by CI', tags: ['ci', 'admin'],
+      duplicate_of: 'connection-2', superseded_by: 'connection-3',
+    }, token);
+    assert.equal(set.status, 200);
+    assert.equal(set.body.description, 'Primary admin PAT');
+    assert.deepEqual(set.body.tags, ['ci', 'admin']);
+
+    const stored = JSON.parse(fs.readFileSync(catalogFile, 'utf8'))[0];
+    assert.equal(stored.description, 'Primary admin PAT');
+    assert.equal(stored.duplicate_of, 'connection-2');
+    assert.equal(stored.superseded_by, 'connection-3');
+    assert.ok(!fs.readFileSync(catalogFile, 'utf8').includes('must-never-escape-test-secret'), 'secret untouched');
+
+    // connections_list now surfaces the metadata.
+    const list = await call(port, 'GET', '/api/local/connections', undefined, token);
+    assert.equal(list.body.connections[0].description, 'Primary admin PAT');
+    assert.deepEqual(list.body.connections[0].tags, ['ci', 'admin']);
+
+    // Clearing a field with null removes it.
+    const clear = await call(port, 'PATCH', '/api/local/connections/connection-1', { duplicate_of: null, tags: [] }, token);
+    assert.equal(clear.status, 200);
+    const cleared = JSON.parse(fs.readFileSync(catalogFile, 'utf8'))[0];
+    assert.equal('duplicate_of' in cleared, false);
+    assert.equal('tags' in cleared, false);
+    assert.equal(cleared.description, 'Primary admin PAT');
+
+    // Unknown id and unsupported fields are rejected.
+    assert.equal((await call(port, 'PATCH', '/api/local/connections/nope', { description: 'x' }, token)).status, 404);
+    assert.equal((await call(port, 'PATCH', '/api/local/connections/connection-1', { storage: 'keychain:hack' }, token)).status, 400);
+    assert.equal((await call(port, 'PATCH', '/api/local/connections/connection-1', {}, token)).status, 400);
+  });
+});
+
+test('connection_update rejects malformed metadata', async () => {
+  await withLocalServer(async ({ port, token }) => {
+    const bad = [
+      { description: 'x'.repeat(281) },
+      { tags: ['ok', ''] },
+      { tags: ['x'.repeat(41)] },
+      { tags: 'not-an-array' },
+      { duplicate_of: 'not a valid id!' },
+      { notes: 42 },
+    ];
+    for (const payload of bad) {
+      const res = await call(port, 'PATCH', '/api/local/connections/connection-1', payload, token);
+      assert.equal(res.status, 400, `expected 400 for ${JSON.stringify(payload)}`);
+    }
+  });
+});
