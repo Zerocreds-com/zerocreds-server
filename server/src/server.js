@@ -3547,10 +3547,7 @@ function createApp(config = {}) {
         ...(typeof entry.superseded_by === 'string' ? { superseded_by: entry.superseded_by } : {}) });
     }
 
-    // ── POST /api/local/connections/:id/request — brokered HTTP request ──────
-    // Generic primitive: use a stored credential for an arbitrary HTTP request
-    // without exposing the secret. The secret is read inside the server, injected
-    // into the configured auth slot, and never returned.
+    // Brokered HTTP request route.
     const connectionRequestMatch = url.pathname.match(/^\/api\/local\/connections\/([a-zA-Z0-9_-]{1,100})\/request$/);
     if (connectionRequestMatch && req.method === 'POST') {
       if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
@@ -3656,7 +3653,6 @@ function createApp(config = {}) {
       }
       const sliced = buf.byteLength > maxBytes ? buf.subarray(0, maxBytes) : buf;
       let text = new TextDecoder().decode(sliced);
-      // Redact any stored secret value that may have been echoed by the upstream.
       const secretValues = Object.values(fields || {}).filter((v) => typeof v === 'string' && v.length >= 4);
       for (const secret of secretValues) {
         text = text.split(secret).join('[REDACTED]');
