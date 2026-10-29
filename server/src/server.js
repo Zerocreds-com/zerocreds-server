@@ -3579,11 +3579,11 @@ function createApp(config = {}) {
         return json(res, 409, { error: 'connection is not active' });
       }
       const providerHosts = { github: ['api.github.com'], cloudflare: ['api.cloudflare.com'], deepgram: ['api.deepgram.com'] };
-      const defaults = providerHosts[String(entry.provider).toLowerCase()] || [];
-      const allowedHosts = Array.isArray(entry.allowed_hosts) && entry.allowed_hosts.length ? entry.allowed_hosts : defaults;
-      const configHosts = Array.isArray(DEST_OPTS.httpPostAllowedHosts) ? DEST_OPTS.httpPostAllowedHosts : [];
-      const effective = new Set([...allowedHosts, ...configHosts]);
-      if (!effective.has(target.hostname)) {
+      const providerDefaultHosts = providerHosts[String(entry.provider).toLowerCase()] || [];
+      const allowedHosts = Array.isArray(entry.allowed_hosts) && entry.allowed_hosts.length ? entry.allowed_hosts : providerDefaultHosts;
+      const configuredAllowedHosts = Array.isArray(DEST_OPTS.httpPostAllowedHosts) ? DEST_OPTS.httpPostAllowedHosts : [];
+      const allowedHostSet = new Set([...allowedHosts, ...configuredAllowedHosts]);
+      if (!allowedHostSet.has(target.hostname)) {
         return json(res, 403, { error: 'host not allowed for this connection' });
       }
       let fields;
