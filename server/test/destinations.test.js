@@ -538,6 +538,9 @@ test('macOS Keychain hashes long account identities deterministically before inv
 });
 
 test('failed credential save returns safe diagnostics and form includes Copy details action', async () => {
+  const originalHelper = process.env.ZEROCREDS_KEYCHAIN_HELPER;
+  process.env.ZEROCREDS_KEYCHAIN_HELPER = '/nonexistent/zerocreds-keychain-for-test';
+  try {
   const created = await request(ctx.port, 'POST', '/api/session/create', {
     title: 'Keychain diagnostics', fields: [{ name: 'password', label: 'Password', type: 'password' }],
     destination: { type: 'macos_keychain', service: 'zerocreds', account: 'test-account' },
@@ -552,6 +555,10 @@ test('failed credential save returns safe diagnostics and form includes Copy det
   assert.match(submitted.body.diagnostic, /^zc-[a-f0-9]{12}$/);
   assert.ok(submitted.body.message);
   assert.ok(!JSON.stringify(submitted.body).includes('synthetic-secret-must-not-return'));
+  } finally {
+    if (originalHelper === undefined) delete process.env.ZEROCREDS_KEYCHAIN_HELPER;
+    else process.env.ZEROCREDS_KEYCHAIN_HELPER = originalHelper;
+  }
 });
 
 // ── GET /api/destinations ──────────────────────────────────────────────────────
