@@ -3362,6 +3362,9 @@ function createApp(config = {}) {
         ...(Array.isArray(entry.tags) && entry.tags.length ? { tags: entry.tags.filter((tag) => typeof tag === 'string') } : {}),
         ...(typeof entry.duplicate_of === 'string' ? { duplicate_of: entry.duplicate_of } : {}),
         ...(typeof entry.superseded_by === 'string' ? { superseded_by: entry.superseded_by } : {}),
+        ...(Array.isArray(entry.allowed_hosts) && entry.allowed_hosts.length ? { allowed_hosts: entry.allowed_hosts } : {}),
+        ...(Array.isArray(entry.allowed_auth_modes) && entry.allowed_auth_modes.length ? { allowed_auth_modes: entry.allowed_auth_modes } : {}),
+        ...(typeof entry.direct_use === 'boolean' ? { direct_use: entry.direct_use } : {}),
         storage: entry.storage,
         state: entry.state,
         credential_expires_at: entry.credential_expires_at,
@@ -3454,7 +3457,7 @@ function createApp(config = {}) {
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
         return json(res, 400, { error: 'a JSON object of metadata fields is required' });
       }
-      const allowed = ['description', 'notes', 'tags', 'duplicate_of', 'superseded_by'];
+      const allowed = ['description', 'notes', 'tags', 'duplicate_of', 'superseded_by', 'allowed_hosts', 'allowed_auth_modes', 'direct_use'];
       const unknown = Object.keys(payload).filter((key) => !allowed.includes(key));
       if (unknown.length) {
         return json(res, 400, { error: `unsupported field(s): ${unknown.join(', ')}`, allowed });
@@ -3485,6 +3488,24 @@ function createApp(config = {}) {
           patch.superseded_by = value === null ? null
             : (typeof value === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(value) ? value
               : (() => { throw new Error('superseded_by must be a connection_id or null'); })());
+        }
+        if ('allowed_hosts' in payload) {
+          const value = payload.allowed_hosts;
+          patch.allowed_hosts = value === null ? null
+            : (Array.isArray(value) && value.every((h) => typeof h === 'string' && h.length > 0 && h.length <= 253)
+              ? value.map((h) => h.trim().toLowerCase()) : (() => { throw new Error('allowed_hosts must be an array of hostnames or null'); })());
+        }
+        if ('allowed_auth_modes' in payload) {
+          const value = payload.allowed_auth_modes;
+          const modes = ['bearer', 'basic', 'header', 'none'];
+          patch.allowed_auth_modes = value === null ? null
+            : (Array.isArray(value) && value.every((m) => typeof m === 'string' && modes.includes(m))
+              ? value : (() => { throw new Error('allowed_auth_modes must be an array of auth modes or null'); })());
+        }
+        if ('direct_use' in payload) {
+          const value = payload.direct_use;
+          if (value !== null && typeof value !== 'boolean') throw new Error('direct_use must be a boolean or null');
+          patch.direct_use = value;
         }
         if ('tags' in payload) {
           const value = payload.tags;
@@ -3573,6 +3594,9 @@ function createApp(config = {}) {
       catch (e) { return json(res, 409, { error: e.message === 'keychain_locked' ? 'keychain is locked' : 'credential unavailable' }); }
       const auth = payload.auth && typeof payload.auth === 'object' && !Array.isArray(payload.auth) ? payload.auth : { type: 'bearer' };
       const authType = auth.type || 'bearer';
+      if (Array.isArray(entry.allowed_auth_modes) && entry.allowed_auth_modes.length && !entry.allowed_auth_modes.includes(authType)) {
+        return json(res, 403, { error: 'auth mode not allowed for this connection' });
+      }
       let tokenField = auth.field || entry.token_field || entry.tokenField;
       const providerDefaults = { github: ['token', 'github_token', 'personal_access_token'], cloudflare: ['api_token', 'token', 'cloudflare_token'], deepgram: ['DEEPGRAM_API_KEY', 'api_key', 'deepgram_api_key', 'token'] };
       const defaultFields = providerDefaults[String(entry.provider).toLowerCase()] || ['token'];
