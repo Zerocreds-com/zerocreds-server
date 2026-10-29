@@ -193,15 +193,21 @@ if (LOCAL_MODE) server.tool(
     tags: z.array(z.string().min(1).max(40)).max(20).nullable().optional().describe('Labels to group connections, e.g. ["ci","trained-assist"]. Null clears all tags.'),
     duplicate_of: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/).nullable().optional().describe('connection_id of the canonical credential this one duplicates. Null clears it.'),
     superseded_by: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/).nullable().optional().describe('connection_id of the credential that replaces this one. Null clears it.'),
+    allowed_hosts: z.array(z.string().min(1).max(253)).max(50).nullable().optional().describe('Hostnames the stored credential may be sent to. Null clears (falls back to provider default).'),
+    allowed_auth_modes: z.array(z.enum(['bearer', 'basic', 'header', 'none'])).max(4).nullable().optional().describe('Auth injection modes allowed for this connection. Null clears (all modes allowed).'),
+    direct_use: z.boolean().nullable().optional().describe('Whether the credential may be used directly without ZeroCreds brokering. Null clears.'),
   },
   { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
-  async ({ connection_id, description, notes, tags, duplicate_of, superseded_by }) => {
+  async ({ connection_id, description, notes, tags, duplicate_of, superseded_by, allowed_hosts, allowed_auth_modes, direct_use }) => {
     const body = {};
     if (description !== undefined) body.description = description;
     if (notes !== undefined) body.notes = notes;
     if (tags !== undefined) body.tags = tags;
     if (duplicate_of !== undefined) body.duplicate_of = duplicate_of;
     if (superseded_by !== undefined) body.superseded_by = superseded_by;
+    if (allowed_hosts !== undefined) body.allowed_hosts = allowed_hosts;
+    if (allowed_auth_modes !== undefined) body.allowed_auth_modes = allowed_auth_modes;
+    if (direct_use !== undefined) body.direct_use = direct_use;
     const data = await apiCall('PATCH', `/api/local/connections/${encodeURIComponent(connection_id)}`, body);
     if (data.error) throw new Error(data.error);
     return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
