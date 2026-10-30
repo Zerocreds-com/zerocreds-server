@@ -33,7 +33,7 @@ copy_runtime() {
       cp -R "$ROOT/$d" "$RUNTIME_ROOT/$d"
     fi
   done
-  local -a files=(server/package.json server/package-lock.json mcp/package.json mcp/package-lock.json)
+  local -a files=(server/package.json server/package-lock.json mcp/package.json mcp/package-lock.json scripts/git-credential-zerocreds.sh)
   local f
   for f in "${files[@]}"; do
     if [[ -f "$ROOT/$f" ]]; then
