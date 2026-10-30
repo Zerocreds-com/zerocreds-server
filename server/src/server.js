@@ -3,7 +3,7 @@
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
-const { verifyLocalCredential, credentialHint, parseKeychainRecord } = require('./local-verification');
+const { verifyLocalCredential, credentialHint } = require('./local-verification');
 const { validateRules: validatePlaygroundRules, evaluateRules, simulateScenario, listScenarios } = require('./credential-playground');
 const { diagnoseLocalSetup } = require('./local-doctor');
 const path = require('path');
@@ -1821,8 +1821,11 @@ function createApp(config = {}) {
       child.once('error', () => finish(new Error('unavailable')));
       child.once('close', (code) => {
         if (code !== 0 || !output.length) return finish(new Error(code === 4 ? 'keychain_locked' : 'unavailable'));
-        try { finish(null, parseKeychainRecord(output.toString('utf8'))); }
-        catch { finish(new Error('invalid credential record')); }
+        try {
+          const fields = JSON.parse(output.toString('utf8'));
+          if (!fields || typeof fields !== 'object' || Array.isArray(fields)) throw new Error('bad record');
+          finish(null, fields);
+        } catch { finish(new Error('invalid credential record')); }
       });
     });
   }
@@ -3359,9 +3362,6 @@ function createApp(config = {}) {
         ...(Array.isArray(entry.tags) && entry.tags.length ? { tags: entry.tags.filter((tag) => typeof tag === 'string') } : {}),
         ...(typeof entry.duplicate_of === 'string' ? { duplicate_of: entry.duplicate_of } : {}),
         ...(typeof entry.superseded_by === 'string' ? { superseded_by: entry.superseded_by } : {}),
-        ...(Array.isArray(entry.allowed_hosts) && entry.allowed_hosts.length ? { allowed_hosts: entry.allowed_hosts } : {}),
-        ...(Array.isArray(entry.allowed_auth_modes) && entry.allowed_auth_modes.length ? { allowed_auth_modes: entry.allowed_auth_modes } : {}),
-        ...(typeof entry.direct_use === 'boolean' ? { direct_use: entry.direct_use } : {}),
         storage: entry.storage,
         state: entry.state,
         credential_expires_at: entry.credential_expires_at,
@@ -3454,7 +3454,7 @@ function createApp(config = {}) {
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
         return json(res, 400, { error: 'a JSON object of metadata fields is required' });
       }
-      const allowed = ['description', 'notes', 'tags', 'duplicate_of', 'superseded_by', 'allowed_hosts', 'allowed_auth_modes', 'direct_use'];
+      const allowed = ['description', 'notes', 'tags', 'duplicate_of', 'superseded_by'];
       const unknown = Object.keys(payload).filter((key) => !allowed.includes(key));
       if (unknown.length) {
         return json(res, 400, { error: `unsupported field(s): ${unknown.join(', ')}`, allowed });
@@ -3485,24 +3485,6 @@ function createApp(config = {}) {
           patch.superseded_by = value === null ? null
             : (typeof value === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(value) ? value
               : (() => { throw new Error('superseded_by must be a connection_id or null'); })());
-        }
-        if ('allowed_hosts' in payload) {
-          const value = payload.allowed_hosts;
-          patch.allowed_hosts = value === null ? null
-            : (Array.isArray(value) && value.every((h) => typeof h === 'string' && h.length > 0 && h.length <= 253)
-              ? value.map((h) => h.trim().toLowerCase()) : (() => { throw new Error('allowed_hosts must be an array of hostnames or null'); })());
-        }
-        if ('allowed_auth_modes' in payload) {
-          const value = payload.allowed_auth_modes;
-          const modes = ['bearer', 'basic', 'header', 'none'];
-          patch.allowed_auth_modes = value === null ? null
-            : (Array.isArray(value) && value.every((m) => typeof m === 'string' && modes.includes(m))
-              ? value : (() => { throw new Error('allowed_auth_modes must be an array of auth modes or null'); })());
-        }
-        if ('direct_use' in payload) {
-          const value = payload.direct_use;
-          if (value !== null && typeof value !== 'boolean') throw new Error('direct_use must be a boolean or null');
-          patch.direct_use = value;
         }
         if ('tags' in payload) {
           const value = payload.tags;
@@ -3543,144 +3525,6 @@ function createApp(config = {}) {
         ...(typeof entry.duplicate_of === 'string' ? { duplicate_of: entry.duplicate_of } : {}),
         ...(typeof entry.superseded_by === 'string' ? { superseded_by: entry.superseded_by } : {}) });
     }
-
-    // Brokered HTTP request route.
-    const connectionRequestMatch = url.pathname.match(/^\/api\/local\/connections\/([a-zA-Z0-9_-]{1,100})\/request$/);
-    if (connectionRequestMatch && req.method === 'POST') {
-      if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
-      const { isAdmin } = resolveAuth(req.headers['authorization']);
-      if (!isAdmin) return json(res, 401, { error: 'admin token required' });
-      const connectionId = connectionRequestMatch[1];
-      const payload = await readJson(req);
-      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-        return json(res, 400, { error: 'a JSON object is required' });
-      }
-      const method = String(payload.method || 'GET').toUpperCase();
-      if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].includes(method)) {
-        return json(res, 400, { error: 'unsupported method' });
-      }
-      if (typeof payload.url !== 'string' || !payload.url) {
-        return json(res, 400, { error: 'url is required' });
-      }
-      let target;
-      try { target = new URL(payload.url); } catch { return json(res, 400, { error: 'invalid url' }); }
-      const loopback = target.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname);
-      if (target.protocol !== 'https:' && !loopback) {
-        return json(res, 400, { error: 'https required' });
-      }
-      let entries;
-      try { entries = readLocalCatalog(); } catch { return json(res, 503, { error: 'local catalog unavailable' }); }
-      const entry = entries.find((e) => e.connection_id === connectionId);
-      if (!entry) return json(res, 404, { error: 'connection not found' });
-      if (entry.state && entry.state !== 'active') {
-        return json(res, 409, { error: 'connection is not active' });
-      }
-      const providerHosts = { github: ['api.github.com'], cloudflare: ['api.cloudflare.com'], deepgram: ['api.deepgram.com'] };
-      const providerDefaultHosts = providerHosts[String(entry.provider).toLowerCase()] || [];
-      const allowedHosts = Array.isArray(entry.allowed_hosts) && entry.allowed_hosts.length ? entry.allowed_hosts : providerDefaultHosts;
-      const configuredAllowedHosts = Array.isArray(DEST_OPTS.httpPostAllowedHosts) ? DEST_OPTS.httpPostAllowedHosts : [];
-      const allowedHostSet = new Set([...allowedHosts, ...configuredAllowedHosts]);
-      if (!allowedHostSet.has(target.hostname)) {
-        return json(res, 403, { error: 'host not allowed for this connection' });
-      }
-      let fields;
-      try { fields = await (config.localCredentialReader || readLocalKeychainEntry)(entry.storage); }
-      catch (e) { return json(res, 409, { error: e.message === 'keychain_locked' ? 'keychain is locked' : 'credential unavailable' }); }
-      const auth = payload.auth && typeof payload.auth === 'object' && !Array.isArray(payload.auth) ? payload.auth : { type: 'bearer' };
-      const authType = auth.type || 'bearer';
-      if (Array.isArray(entry.allowed_auth_modes) && entry.allowed_auth_modes.length && !entry.allowed_auth_modes.includes(authType)) {
-        return json(res, 403, { error: 'auth mode not allowed for this connection' });
-      }
-      let tokenField = auth.field || entry.token_field || entry.tokenField;
-      const providerDefaults = { github: ['token', 'github_token', 'personal_access_token'], cloudflare: ['api_token', 'token', 'cloudflare_token'], deepgram: ['DEEPGRAM_API_KEY', 'api_key', 'deepgram_api_key', 'token'] };
-      const defaultFields = providerDefaults[String(entry.provider).toLowerCase()] || ['token'];
-      if (!tokenField && authType !== 'none') {
-        for (const f of defaultFields) {
-          if (fields && typeof fields[f] === 'string' && fields[f]) { tokenField = f; break; }
-        }
-      }
-      const headers = {};
-      if (payload.headers && typeof payload.headers === 'object' && !Array.isArray(payload.headers)) {
-        for (const [k, v] of Object.entries(payload.headers)) {
-          if (typeof v === 'string') headers[k] = v;
-        }
-      }
-      if (authType === 'bearer') {
-        const token = tokenField ? fields?.[tokenField] : null;
-        if (typeof token !== 'string' || !token) return json(res, 409, { error: 'credential field missing' });
-        headers['Authorization'] = `Bearer ${token}`;
-      } else if (authType === 'basic') {
-        const u = auth.username_field ? fields?.[auth.username_field] : null;
-        const p = auth.password_field ? fields?.[auth.password_field] : null;
-        if (typeof u !== 'string' || typeof p !== 'string') return json(res, 409, { error: 'credential fields missing' });
-        headers['Authorization'] = `Basic ${Buffer.from(`${u}:${p}`).toString('base64')}`;
-      } else if (authType === 'header') {
-        const token = auth.field ? fields?.[auth.field] : null;
-        if (typeof token !== 'string' || !token) return json(res, 409, { error: 'credential field missing' });
-        const name = auth.name || 'Authorization';
-        const prefix = auth.prefix || '';
-        headers[name] = `${prefix}${token}`;
-      } else if (authType !== 'none') {
-        return json(res, 400, { error: 'unsupported auth type' });
-      }
-      let body;
-      if (payload.body !== undefined) {
-        if (typeof payload.body === 'string') body = payload.body;
-        else body = JSON.stringify(payload.body);
-        if (!headers['Content-Type'] && typeof payload.body === 'object' && payload.body !== null) {
-          headers['Content-Type'] = 'application/json';
-        }
-      }
-      const timeoutMs = Number.isFinite(payload.timeout_ms) ? Math.min(Math.max(payload.timeout_ms, 1000), 30000) : 15000;
-      const maxBytes = Number.isFinite(payload.max_bytes) ? Math.min(Math.max(payload.max_bytes, 1024), 1048576) : 262144;
-      const started = Date.now();
-      let response;
-      let buf;
-      try {
-        response = await fetch(target.toString(), {
-          method,
-          headers,
-          body: (method === 'GET' || method === 'HEAD') ? undefined : body,
-          redirect: 'error',
-          signal: AbortSignal.timeout(timeoutMs),
-        });
-        buf = Buffer.from(await response.arrayBuffer());
-      } catch (e) {
-        return json(res, 502, { error: 'request failed', elapsed_ms: Date.now() - started });
-      }
-      const sliced = buf.byteLength > maxBytes ? buf.subarray(0, maxBytes) : buf;
-      let text = new TextDecoder().decode(sliced);
-      const secretValues = Object.values(fields || {}).filter((v) => typeof v === 'string' && v.length >= 4);
-      for (const secret of secretValues) {
-        text = text.split(secret).join('[REDACTED]');
-      }
-      const respHeaders = {};
-      const allowRespHeaders = ['content-type', 'cache-control', 'etag', 'last-modified', 'x-github-request-id', 'x-ratelimit-remaining', 'x-ratelimit-limit', 'location'];
-      for (const h of allowRespHeaders) {
-        let v = response.headers.get(h);
-        if (v) {
-          for (const secret of secretValues) v = v.split(secret).join('[REDACTED]');
-          respHeaders[h] = v;
-        }
-      }
-      let parsed = null;
-      try { parsed = JSON.parse(text); } catch {}
-      const truncated = buf.byteLength > maxBytes;
-      const elapsed = Date.now() - started;
-      console.info('[local-broker] connection=%s method=%s host=%s status=%s', connectionId, method, target.hostname, response.status);
-      entry.last_used_at = new Date().toISOString();
-      entry.last_use = { operation: 'request', run_id: payload.run_id || null, outcome: 'delivered', at: entry.last_used_at, method, host: target.hostname, status: response.status };
-      try { writeLocalCatalog(entries); } catch {}
-      return json(res, 200, {
-        status: response.status,
-        status_text: response.statusText,
-        headers: respHeaders,
-        body: parsed !== null ? parsed : text,
-        truncated,
-        elapsed_ms: elapsed,
-      });
-    }
-
 
     if (url.pathname.startsWith('/api/local/discovery/')) {
       if (!LOCAL_MODE) return json(res, 404, { error: 'not found' });
